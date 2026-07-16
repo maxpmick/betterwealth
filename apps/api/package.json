@@ -1,0 +1,29 @@
+{
+  "name": "@betterwealth/api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun --sourcemap=external",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "db:migrate": "bun src/cli/migrate.ts",
+    "db:seed": "bun src/cli/seed.ts",
+    "db:backup": "bun src/cli/backup.ts",
+    "bootstrap": "bun src/cli/bootstrap.ts"
+  },
+  "dependencies": {
+    "@betterwealth/db": "workspace:*",
+    "@betterwealth/shared": "workspace:*",
+    "@betterwealth/testkit": "workspace:*",
+    "@hono/zod-openapi": "latest",
+    "drizzle-orm": "latest",
+    "hono": "latest",
+    "ulid": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "latest"
+  }
+}

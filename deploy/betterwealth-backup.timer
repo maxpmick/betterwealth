@@ -1,0 +1,12 @@
+[Unit]
+Description=Nightly BetterWealth backup
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+RandomizedDelaySec=20m
+AccuracySec=1m
+Persistent=true
+Unit=betterwealth-backup.service
+
+[Install]
+WantedBy=timers.target

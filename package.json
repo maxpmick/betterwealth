@@ -1,0 +1,51 @@
+{
+  "name": "betterwealth",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "bun@1.3.14",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c blue,green \"bun run dev:api\" \"bun run dev:web\"",
+    "dev:api": "bun run --cwd apps/api dev",
+    "dev:web": "bun run --cwd apps/web dev",
+    "build": "bun run --filter @betterwealth/shared build && bun run --filter @betterwealth/db build && bun run --filter @betterwealth/api build && bun run --filter @betterwealth/web build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "test": "bun run test:unit && bun run test:web",
+    "test:unit": "bun test packages apps/api/src",
+    "test:web": "bun run --cwd apps/web test",
+    "test:e2e": "playwright test",
+    "test:all": "bun run audit && bun run db:check && bun run lint && bun run typecheck && bun run test && bun run build && bun run test:e2e",
+    "audit": "bun audit",
+    "db:generate": "bun run --cwd packages/db generate",
+    "db:check": "bun run --cwd packages/db drizzle-kit check --config drizzle.config.ts",
+    "db:migrate": "bun run --cwd apps/api db:migrate",
+    "db:seed": "bun run --cwd apps/api db:seed",
+    "db:backup": "bun run --cwd apps/api db:backup",
+    "ops:backup": "bun run db:backup && bun run ops:verify-backup",
+    "ops:verify-backup": "bun deploy/verify-backup.ts",
+    "ops:health": "bash deploy/healthcheck.sh --all",
+    "ops:preflight": "bash deploy/preflight.sh",
+    "auth:reset-password": "bun deploy/reset-password.ts",
+    "bootstrap": "bun run --cwd apps/api bootstrap",
+    "start:api": "bun run --cwd apps/api start",
+    "start:web": "bun run --cwd apps/web serve"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
+    "@biomejs/biome": "latest",
+    "@playwright/test": "latest",
+    "concurrently": "latest",
+    "typescript": "latest"
+  },
+  "overrides": {
+    "esbuild": "0.28.1"
+  },
+  "patchedDependencies": {
+    "@esbuild-kit/core-utils@3.3.2": "patches/@esbuild-kit%2Fcore-utils@3.3.2.patch"
+  }
+}

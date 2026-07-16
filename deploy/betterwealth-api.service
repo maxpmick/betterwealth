@@ -1,0 +1,56 @@
+[Unit]
+Description=BetterWealth API
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=5min
+StartLimitBurst=5
+ConditionPathExists=/opt/betterwealth/package.json
+RequiresMountsFor=/opt/betterwealth/data
+
+[Service]
+Type=simple
+User=betterwealth
+Group=betterwealth
+WorkingDirectory=/opt/betterwealth
+EnvironmentFile=/etc/betterwealth.env
+UnsetEnvironment=BOOTSTRAP_OPENROUTER_API_KEY BOOTSTRAP_SIMPLEFIN_SETUP_TOKEN BOOTSTRAP_USER_EMAIL BOOTSTRAP_USER_PASSWORD
+ExecStartPre=/usr/local/bin/bun run db:migrate
+ExecStart=/usr/local/bin/bun run start:api
+ExecStartPost=/opt/betterwealth/deploy/healthcheck.sh --api-only
+Restart=always
+RestartSec=5s
+TimeoutStartSec=60s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+RemoveIPC=true
+SystemCallArchitectures=native
+TasksMax=256
+LimitNOFILE=65536
+ReadWritePaths=/opt/betterwealth/data /opt/betterwealth/backups
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=betterwealth-api
+
+[Install]
+WantedBy=multi-user.target

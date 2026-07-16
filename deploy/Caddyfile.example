@@ -1,0 +1,43 @@
+finance.example.com {
+	encode zstd gzip
+
+	log {
+		output file /var/log/caddy/betterwealth-access.log {
+			mode 0640
+			roll_size 25MiB
+			roll_keep 10
+			roll_keep_for 720h
+		}
+		format json
+	}
+
+	@api path /api/* /health
+	handle @api {
+		reverse_proxy 127.0.0.1:3001 {
+			health_uri /health
+			health_interval 30s
+			health_timeout 3s
+		}
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:4173 {
+			health_uri /
+			health_interval 30s
+			health_timeout 3s
+		}
+	}
+
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Cross-Origin-Opener-Policy "same-origin"
+		Permissions-Policy "camera=(), geolocation=(), microphone=(), payment=(), usb=()"
+	}
+}

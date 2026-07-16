@@ -1,0 +1,36 @@
+[Unit]
+Description=Check BetterWealth local readiness
+After=betterwealth-api.service betterwealth-web.service
+Wants=betterwealth-api.service betterwealth-web.service
+
+[Service]
+Type=oneshot
+User=betterwealth
+Group=betterwealth
+WorkingDirectory=/opt/betterwealth
+ExecStart=/opt/betterwealth/deploy/healthcheck.sh --all
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+RemoveIPC=true
+SystemCallArchitectures=native
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=betterwealth-healthcheck

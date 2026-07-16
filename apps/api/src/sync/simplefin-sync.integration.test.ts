@@ -1,0 +1,150 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+  accounts,
+  balanceSnapshots,
+  closeDatabase,
+  createHouseholdRepositories,
+  openDatabase,
+  providerInstitutions,
+  runMigrations,
+  syncRuns,
+  transactions,
+  transfers,
+} from "@betterwealth/db";
+import { simpleFinPendingRevisionFixtures, simpleFinV2Fixture } from "@betterwealth/testkit";
+import { and, eq } from "drizzle-orm";
+import { ulid } from "ulid";
+import { registerUser } from "../auth/service";
+import { loadConfig } from "../config";
+import type { SimpleFinAccountSet } from "../integrations/simplefin";
+import { FieldCipher } from "../lib/crypto";
+import { syncSimpleFinConnection } from "./simplefin-sync";
+
+const databases: ReturnType<typeof openDatabase>[] = [];
+
+afterEach(() => {
+  for (const db of databases.splice(0)) closeDatabase(db);
+});
+
+function mutableFixture(): SimpleFinAccountSet {
+  const fixture = JSON.parse(JSON.stringify(simpleFinV2Fixture)) as Partial<SimpleFinAccountSet>;
+  return { ...fixture, errors: fixture.errors ?? [] } as SimpleFinAccountSet;
+}
+
+describe("SimpleFIN ledger sync", () => {
+  test("imports accounts once and reconciles a pending transaction into its posted form", async () => {
+    const db = openDatabase(":memory:", { wal: false });
+    databases.push(db);
+    runMigrations(db);
+    const config = loadConfig({
+      APP_ENV: "test",
+      DATABASE_URL: ":memory:",
+      ENCRYPTION_KEY: "b".repeat(64),
+      WEB_ORIGIN: "http://localhost:5173",
+      REGISTRATION_MODE: "open",
+    });
+    const registered = await registerUser(
+      db,
+      {
+        email: "sync@example.com",
+        password: "SyncJourney!2026",
+        householdName: "Sync test",
+      },
+      config,
+    );
+    const connectionId = ulid();
+    const aad = `connection:${connectionId}:credentials`;
+    createHouseholdRepositories(db, registered.householdId).connections.create({
+      id: connectionId,
+      ownerUserId: registered.userId,
+      provider: "simplefin",
+      displayName: "SimpleFIN test",
+      encryptedCredentials: new FieldCipher(config.ENCRYPTION_KEY).encrypt(
+        "https://fixture-user:fixture-password@example.com/simplefin",
+        aad,
+      ),
+      credentialsAad: aad,
+      capabilities: ["accounts", "balances", "transactions", "pending"],
+      status: "active",
+    });
+
+    const first = await syncSimpleFinConnection({
+      db,
+      config,
+      householdId: registered.householdId,
+      connectionId,
+      trigger: "initial",
+      fetchAccounts: async () => mutableFixture(),
+    });
+    expect(first).toMatchObject({
+      state: "succeeded",
+      accountsSeen: 3,
+      balancesCreated: 3,
+      transactionsCreated: 8,
+      transferReconciliation: { matched: 1 },
+    });
+    expect(await db.select().from(accounts)).toHaveLength(3);
+    expect(await db.select().from(providerInstitutions)).toHaveLength(2);
+    expect(await db.select().from(balanceSnapshots)).toHaveLength(3);
+    expect(await db.select().from(transactions)).toHaveLength(8);
+    expect(await db.select().from(transfers)).toHaveLength(1);
+    expect(
+      await db
+        .select({ isTransfer: transactions.isTransfer })
+        .from(transactions)
+        .where(eq(transactions.isTransfer, true)),
+    ).toHaveLength(2);
+    expect(
+      await db
+        .select()
+        .from(transactions)
+        .where(
+          and(
+            eq(transactions.status, "pending"),
+            eq(transactions.householdId, registered.householdId),
+          ),
+        ),
+    ).toHaveLength(1);
+
+    const postedFixture = mutableFixture();
+    const card = postedFixture.accounts.find(({ id }) => id === "alex-card-7331");
+    if (!card) throw new Error("Card fixture is missing");
+    card.transactions = [
+      ...card.transactions.filter(({ id }) => id !== "transit-pending-0801"),
+      { ...simpleFinPendingRevisionFixtures.posted },
+    ];
+    const second = await syncSimpleFinConnection({
+      db,
+      config,
+      householdId: registered.householdId,
+      connectionId,
+      trigger: "scheduled",
+      fetchAccounts: async () => postedFixture,
+    });
+    expect(second).toMatchObject({
+      state: "succeeded",
+      accountsSeen: 3,
+      balancesCreated: 0,
+      transactionsCreated: 0,
+      transactionsUpdated: 8,
+    });
+    expect(await db.select().from(balanceSnapshots)).toHaveLength(3);
+    expect(await db.select().from(transactions)).toHaveLength(8);
+    expect(
+      await db
+        .select({
+          status: transactions.status,
+          externalId: transactions.externalId,
+          pendingExternalId: transactions.pendingExternalId,
+        })
+        .from(transactions)
+        .where(eq(transactions.externalId, "transit-posted-0802"))
+        .get(),
+    ).toEqual({
+      status: "posted",
+      externalId: "transit-posted-0802",
+      pendingExternalId: "transit-pending-0801",
+    });
+    expect(await db.select().from(syncRuns)).toHaveLength(2);
+  });
+});
