@@ -248,7 +248,15 @@ describe("dashboard planning truth", () => {
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
       total: { minorUnits: string };
-      series: Array<{ date: string; total: { minorUnits: string } }>;
+      series: Array<{
+        date: string;
+        total: { minorUnits: string; currency: string };
+        liquid: { minorUnits: string; currency: string };
+        investable: { minorUnits: string; currency: string };
+        retirement: { minorUnits: string; currency: string };
+        assets: { minorUnits: string; currency: string };
+        debts: { minorUnits: string; currency: string };
+      }>;
     };
     expect(body.total.minorUnits).toBe("300000");
     expect(body.series).toEqual([
