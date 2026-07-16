@@ -689,24 +689,46 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
 
     const running = new Map<string, BalancePoint>();
     const runningValuations = new Map<string, (typeof report.valuationRows)[number]>();
+    const observedAccountIds = new Set(
+      report.balanceRows
+        .filter((snapshot) => {
+          const account = accountById.get(snapshot.accountId);
+          return account?.includeInNetWorth && snapshot.currency === report.currency;
+        })
+        .map((snapshot) => snapshot.accountId),
+    );
+    const observedAssetIds = new Set(
+      report.valuationRows
+        .filter(
+          (valuation) =>
+            assetById.has(valuation.assetId) && valuation.currency === report.currency,
+        )
+        .map((valuation) => valuation.assetId),
+    );
     const allDays = [...new Set([...byDay.keys(), ...valuationsByDay.keys()])].sort();
-    const completeSeries = allDays.map((day) => {
+    const completeSeries = allDays.flatMap((day) => {
       const dayAccounts = byDay.get(day) ?? new Map<string, BalancePoint>();
       for (const [accountId, balance] of dayAccounts) running.set(accountId, balance);
       for (const [assetId, valuation] of valuationsByDay.get(day) ?? []) {
         runningValuations.set(assetId, valuation);
       }
+      const hasCompleteCoverage =
+        [...observedAccountIds].every((accountId) => running.has(accountId)) &&
+        [...observedAssetIds].every((assetId) => runningValuations.has(assetId));
+      if (!hasCompleteCoverage) return [];
       const summary = summarize(running, runningValuations);
-      return {
-        date: day,
-        total: money(summary.total, report.currency),
-        liquid: money(summary.liquid, report.currency),
-        investable: money(summary.investable, report.currency),
-        retirement: money(summary.retirement, report.currency),
-        assets: money(summary.assets, report.currency),
-        debts: money(summary.debts, report.currency),
-        groups: summary.groups,
-      };
+      return [
+        {
+          date: day,
+          total: money(summary.total, report.currency),
+          liquid: money(summary.liquid, report.currency),
+          investable: money(summary.investable, report.currency),
+          retirement: money(summary.retirement, report.currency),
+          assets: money(summary.assets, report.currency),
+          debts: money(summary.debts, report.currency),
+          groups: summary.groups,
+        },
+      ];
     });
 
     const range = context.req.query("range") ?? "1Y";

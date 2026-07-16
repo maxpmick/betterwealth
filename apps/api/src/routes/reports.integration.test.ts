@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { balanceSnapshots } from "@betterwealth/db/schema";
+import { eq } from "drizzle-orm";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -212,5 +214,53 @@ describe("dashboard planning truth", () => {
     expect(body.trust.missingInputs).toContain(
       "Create or fund an envelope budget for this pay period",
     );
+  });
+
+  test("starts net-worth history only after every included account has balance coverage", async () => {
+    const firstResponse = await request("/accounts", {
+      name: "First checking",
+      group: "cash",
+      type: "checking",
+      currency: "USD",
+      balanceMinorUnits: "100000",
+      includeInBudget: true,
+    });
+    const secondResponse = await request("/accounts", {
+      name: "Second checking",
+      group: "cash",
+      type: "checking",
+      currency: "USD",
+      balanceMinorUnits: "200000",
+      includeInBudget: true,
+    });
+    const first = (await firstResponse.json()) as { id: string };
+    const second = (await secondResponse.json()) as { id: string };
+    await application.db
+      .update(balanceSnapshots)
+      .set({ asOf: `${dateOffset(-10)}T12:00:00.000Z` })
+      .where(eq(balanceSnapshots.accountId, first.id));
+    await application.db
+      .update(balanceSnapshots)
+      .set({ asOf: `${dateOffset(-1)}T12:00:00.000Z` })
+      .where(eq(balanceSnapshots.accountId, second.id));
+
+    const response = await request("/reports/net-worth?range=All");
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      total: { minorUnits: string };
+      series: Array<{ date: string; total: { minorUnits: string } }>;
+    };
+    expect(body.total.minorUnits).toBe("300000");
+    expect(body.series).toEqual([
+      {
+        date: dateOffset(-1),
+        total: { minorUnits: "300000", currency: "USD" },
+        liquid: { minorUnits: "300000", currency: "USD" },
+        investable: { minorUnits: "0", currency: "USD" },
+        retirement: { minorUnits: "0", currency: "USD" },
+        assets: { minorUnits: "300000", currency: "USD" },
+        debts: { minorUnits: "0", currency: "USD" },
+      },
+    ]);
   });
 });
