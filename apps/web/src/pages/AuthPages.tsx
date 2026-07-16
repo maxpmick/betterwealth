@@ -17,7 +17,7 @@ import {
   InputAdornment,
   Paper,
 } from "@mui/material";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { type UseFormRegisterReturn, useForm } from "react-hook-form";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
@@ -127,12 +127,18 @@ function AuthAside() {
         <Stack direction="row" justifyContent="space-between" alignItems="center">
           <Box>
             <Typography variant="caption" sx={{ color: "rgba(255,255,255,.65)" }}>
-              Projected liquid wealth at 30
+              Illustrative wealth path at age 30
             </Typography>
             <Typography
               sx={{ mt: 1, fontSize: 29, fontWeight: 720, fontVariantNumeric: "tabular-nums" }}
             >
               $223,400
+            </Typography>
+            <Typography
+              variant="caption"
+              sx={{ display: "block", mt: 1, color: "rgba(255,255,255,.65)" }}
+            >
+              Example scenario · not your forecast
             </Typography>
           </Box>
           <Box
@@ -162,7 +168,7 @@ function AuthAside() {
           ))}
         </Stack>
         <Stack direction="row" gap={3} sx={{ mt: 4 }}>
-          {["No tracking", "Explainable math", "Your data"].map((item) => (
+          {["Private by design", "Explainable math", "Uses your inputs"].map((item) => (
             <Stack key={item} direction="row" gap={1} alignItems="center">
               <CheckCircleRounded sx={{ fontSize: 16, color: "#68DFB3" }} />
               <Typography variant="caption" sx={{ color: "rgba(255,255,255,.75)" }}>
@@ -245,6 +251,12 @@ function PasswordField({
 export function LoginPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const capabilities = useQuery({
+    queryKey: ["capabilities"],
+    queryFn: api.capabilities,
+    retry: 1,
+    staleTime: 5 * 60_000,
+  });
   const {
     register,
     handleSubmit,
@@ -327,12 +339,26 @@ export function LoginPage() {
       <Button fullWidth variant="outlined" color="inherit" onClick={exploreDemo} sx={{ mt: 3 }}>
         Explore with Alex’s demo data
       </Button>
-      <Typography variant="body2" color="text.secondary" textAlign="center" sx={{ mt: 5 }}>
-        New to BetterWealth?{" "}
-        <RouterLink to="/register" style={{ color: "inherit", fontWeight: 700 }}>
-          Create an account
-        </RouterLink>
-      </Typography>
+      {capabilities.data?.registration.selfService ? (
+        <Typography variant="body2" color="text.secondary" textAlign="center" sx={{ mt: 5 }}>
+          New to BetterWealth?{" "}
+          <RouterLink to="/register" style={{ color: "inherit", fontWeight: 700 }}>
+            Create an account
+          </RouterLink>
+        </Typography>
+      ) : capabilities.isPending ? (
+        <Typography variant="caption" color="text.secondary" textAlign="center" sx={{ mt: 5 }}>
+          Checking this instance’s account policy…
+        </Typography>
+      ) : (
+        <Alert severity="info" sx={{ mt: 5 }}>
+          {capabilities.data?.registration.mode === "invite"
+            ? "This instance accepts invited accounts only. Ask its operator for access."
+            : capabilities.data?.registration.mode === "closed"
+              ? "This is a private BetterWealth instance. New account creation is closed."
+              : "Account creation availability could not be verified. Existing accounts can still sign in."}
+        </Alert>
+      )}
     </AuthLayout>
   );
 }
@@ -340,6 +366,12 @@ export function LoginPage() {
 export function RegisterPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const capabilities = useQuery({
+    queryKey: ["capabilities"],
+    queryFn: api.capabilities,
+    retry: 1,
+    staleTime: 5 * 60_000,
+  });
   const {
     register,
     handleSubmit,
@@ -366,6 +398,49 @@ export function RegisterPage() {
       : registerAccount.error
         ? "Your account could not be created."
         : null;
+
+  if (capabilities.isPending) {
+    return (
+      <AuthLayout>
+        <Typography component="h1" variant="h1">
+          Checking account policy
+        </Typography>
+        <Typography color="text.secondary" sx={{ mt: 2 }}>
+          Confirming whether this BetterWealth instance accepts new accounts.
+        </Typography>
+      </AuthLayout>
+    );
+  }
+
+  if (capabilities.isError || !capabilities.data?.registration.selfService) {
+    const mode = capabilities.data?.registration.mode;
+    return (
+      <AuthLayout>
+        <Typography component="h1" variant="h1">
+          {mode === "invite"
+            ? "An invitation is required"
+            : mode === "closed"
+              ? "Account creation is closed"
+              : "Account policy is unavailable"}
+        </Typography>
+        <Typography color="text.secondary" sx={{ mt: 2 }}>
+          {mode === "invite"
+            ? "This instance accepts invited accounts only. Ask its operator for access."
+            : mode === "closed"
+              ? "This private instance already has its owner account. New accounts are disabled by its operator."
+              : "BetterWealth could not safely verify that self-registration is enabled."}
+        </Typography>
+        {capabilities.isError ? (
+          <Button variant="outlined" onClick={() => capabilities.refetch()} sx={{ mt: 5 }}>
+            Check again
+          </Button>
+        ) : null}
+        <Button component={RouterLink} to="/login" variant="contained" sx={{ mt: 3 }}>
+          Back to sign in
+        </Button>
+      </AuthLayout>
+    );
+  }
 
   return (
     <AuthLayout>

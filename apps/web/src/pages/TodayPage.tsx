@@ -7,7 +7,6 @@ import {
   ExpandMoreRounded,
   FlagRounded,
   ReceiptLongRounded,
-  ScheduleRounded,
   ShieldRounded,
   TrendingUpRounded,
   WarningAmberRounded,
@@ -41,6 +40,7 @@ import { useMemo, useState } from "react";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
 import {
   type ApiBill,
+  type ApiBudget,
   type ApiEnvelope,
   type ApiGoal,
   type ApiGoalContribution,
@@ -51,6 +51,7 @@ import {
   type NetWorthReport,
 } from "../api";
 import { Stack, Typography } from "../components/mui";
+import { PlanFlowCard } from "../components/PlanFlowCard";
 import {
   ChartMaskedState,
   EmptyState,
@@ -163,6 +164,27 @@ const demoBills: CursorPage<ApiBill> = {
       dueRule: { cadence: "monthly" },
       isRequired: true,
       isActive: true,
+    },
+  ],
+  page: { cursor: null, hasMore: false },
+};
+
+const demoBudgets: CursorPage<ApiBudget> = {
+  data: [
+    {
+      id: "budget-demo-today",
+      periodKind: "pay_cycle",
+      startDate: "2026-07-16",
+      endDate: "2026-07-30",
+      plannedIncome: asMoney(2_200),
+      funded: asMoney(2_050),
+      spent: asMoney(121.73),
+      remaining: asMoney(1_928.27),
+      unassigned: asMoney(150),
+      totalPlanned: asMoney(2_050),
+      surplus: asMoney(150),
+      status: "open",
+      envelopes: demoEnvelopes.data,
     },
   ],
   page: { cursor: null, hasMore: false },
@@ -628,53 +650,6 @@ function SafeToSpendHero({
   );
 }
 
-function SignalCard({
-  icon,
-  title,
-  value,
-  detail,
-  tone,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  value: React.ReactNode;
-  detail: string;
-  tone: string;
-}) {
-  return (
-    <Card>
-      <CardContent sx={{ p: 4.5 }}>
-        <Stack direction="row" gap={2.5} alignItems="flex-start">
-          <Box
-            sx={{
-              width: 38,
-              height: 38,
-              borderRadius: 2.5,
-              display: "grid",
-              placeItems: "center",
-              bgcolor: alpha(tone, 0.12),
-              color: tone,
-            }}
-          >
-            {icon}
-          </Box>
-          <Box sx={{ minWidth: 0 }}>
-            <Typography variant="caption" color="text.secondary">
-              {title}
-            </Typography>
-            <Typography component="div" variant="h3" sx={{ mt: 0.5 }}>
-              {value}
-            </Typography>
-            <Typography variant="caption" color="text.secondary">
-              {detail}
-            </Typography>
-          </Box>
-        </Stack>
-      </CardContent>
-    </Card>
-  );
-}
-
 function WealthChart({
   query,
   range,
@@ -774,7 +749,9 @@ function WealthChart({
             <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
               {privacyEnabled
                 ? "Chart values are hidden."
-                : `Summary: total net worth moved from ${new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(history[0]?.total ?? 0)} to ${new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(history.at(-1)?.total ?? 0)}.`}
+                : history.length === 1
+                  ? `Current synced baseline: ${new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(history[0]?.total ?? 0)} total and ${new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(history[0]?.liquid ?? 0)} liquid. Add a later complete snapshot before reading this as momentum.`
+                  : `Summary: total net worth moved from ${new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(history[0]?.total ?? 0)} to ${new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(history.at(-1)?.total ?? 0)}.`}
             </Typography>
             <Accordion
               disableGutters
@@ -1182,6 +1159,13 @@ export function TodayPage() {
     enabled: !demo,
     retry: 1,
   });
+  const budgetsQuery = useQuery({
+    queryKey: ["budgets", "pay_cycle"],
+    queryFn: () => api.budgets("pay_cycle"),
+    initialData: demo ? demoBudgets : undefined,
+    enabled: !demo,
+    retry: 1,
+  });
   const goalsQuery = useQuery({
     queryKey: ["goals"],
     queryFn: api.goals,
@@ -1270,24 +1254,38 @@ export function TodayPage() {
   const report = dashboard.data;
   const stale = dashboard.isError || report.trust.state === "stale";
   const runway = daysThrough(report.coveredThrough);
-  const target = minor(report.targetLiquidNetWorth);
-  const projected = minor(report.projectedLiquidNetWorth);
-  const targetProgress =
-    BigInt(report.targetLiquidNetWorth.minorUnits) > 0n
-      ? Number(
-          (BigInt(report.projectedLiquidNetWorth.minorUnits) * 100n) /
-            BigInt(report.targetLiquidNetWorth.minorUnits),
-        )
-      : null;
   const firstName = sessionQuery.data?.user.name?.trim().split(/\s+/)[0] || "there";
-  const planningWindowLabel =
-    report.coveredThroughSource === "income_source" ? "Covered through" : "Planning window through";
-  const projectionLabel =
-    report.projectionSource === "forecast"
-      ? "model forecast"
-      : report.projectionSource === "cash_flow_run_rate"
-        ? "90-day cash-flow run rate"
-        : "current liquid balance";
+  const currentBudget = budgetsQuery.data?.data[0];
+  const budgetEnvelopes = (currentBudget?.envelopes ?? []).filter(
+    (envelope) => envelope.isActive !== false,
+  );
+  const budgetSurplus = currentBudget
+    ? currentBudget.surplus
+      ? BigInt(currentBudget.surplus.minorUnits)
+      : BigInt(currentBudget.plannedIncome.minorUnits) -
+        budgetEnvelopes.reduce((sum, envelope) => sum + BigInt(envelope.planned.minorUnits), 0n)
+    : 0n;
+  const latestTransactions = transactionsQuery.data?.data ?? [];
+  const categorizedTransactions = latestTransactions.filter(
+    (transaction) => transaction.categoryName.toLocaleLowerCase() !== "uncategorized",
+  ).length;
+  const reviewCount = latestTransactions.filter(
+    (transaction) => transaction.reviewState === "needs_review",
+  ).length;
+  const today = new Date().toISOString().slice(0, 10);
+  const upcomingBills = (billsQuery.data?.data ?? []).filter(
+    (bill) =>
+      bill.isActive &&
+      bill.nextDueDate &&
+      bill.nextDueDate >= today &&
+      bill.nextDueDate <= report.coveredThrough.slice(0, 10),
+  );
+  const goalProjection = activeGoal?.projectedDate ?? activeGoal?.earliestSafeDate;
+  const goalRemaining = activeGoal
+    ? BigInt(activeGoal.remaining?.minorUnits ?? activeGoal.target.minorUnits) -
+      (activeGoal.remaining ? 0n : BigInt(activeGoal.funded.minorUnits))
+    : 0n;
+  const setupGapCount = report.trust.missingInputs.length;
 
   return (
     <Stack gap={{ xs: 5, sm: 6 }}>
@@ -1338,41 +1336,113 @@ export function TodayPage() {
           contribution.error instanceof Error ? contribution.error.message : undefined
         }
       />
-      <Box
-        sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "repeat(3, 1fr)" }, gap: 3 }}
-      >
-        <SignalCard
-          icon={<ScheduleRounded />}
-          title="Pay-cycle runway"
-          value={`${runway} ${runway === 1 ? "day" : "days"}`}
-          detail={`${planningWindowLabel} ${formatDate(report.coveredThrough, { month: "short", day: "numeric" })}`}
-          tone="#4A7FD1"
-        />
-        <SignalCard
-          icon={<CheckCircleRounded />}
-          title="Plan status"
-          value={
-            report.trust.state === "ready"
-              ? "Ready"
-              : `${report.trust.missingInputs.length} input${report.trust.missingInputs.length === 1 ? "" : "s"} needed`
-          }
-          detail={report.trust.missingInputs[0] ?? report.trust.confidenceLabel}
-          tone="#1F9D72"
-        />
-        <SignalCard
-          icon={<TrendingUpRounded />}
-          title={report.targetAge ? `Age-${report.targetAge} trajectory` : "Wealth trajectory"}
-          value={
-            <Money value={projected} currency={report.projectedLiquidNetWorth.currency} compact />
-          }
-          detail={
-            target > 0 && targetProgress !== null
-              ? `${Math.max(0, targetProgress)}% of your target · ${projectionLabel}`
-              : `Add a target to compare progress · ${projectionLabel}`
-          }
-          tone="#8B6CCF"
-        />
-      </Box>
+      <PlanFlowCard
+        testId="today-money-loop"
+        title="Your paycheck-to-freedom loop"
+        description="Four connected checks turn income into protected bills, a clean ledger, and measurable progress toward future-you."
+        steps={[
+          {
+            id: "paycheck",
+            label: "Paycheck plan",
+            value: currentBudget ? (
+              <Money
+                value={minor(currentBudget.plannedIncome)}
+                currency={currentBudget.plannedIncome.currency}
+              />
+            ) : (
+              "No plan yet"
+            ),
+            detail: currentBudget
+              ? `${budgetEnvelopes.length} active envelope${budgetEnvelopes.length === 1 ? "" : "s"} · ${runway} day runway`
+              : "Create the current pay-cycle budget before treating surplus as free cash.",
+            icon: <CalendarMonthRounded />,
+            to: "/budget",
+            tone: "#4A7FD1",
+            status: currentBudget ? "Pay cycle mapped" : "Setup needed",
+            statusTone: currentBudget ? "info" : "warning",
+          },
+          {
+            id: "protect",
+            label: "Protect first",
+            value: (
+              <Money value={minor(report.reservedBills)} currency={report.reservedBills.currency} />
+            ),
+            detail: `${upcomingBills.length} dated obligation${upcomingBills.length === 1 ? "" : "s"} due before ${formatDate(report.coveredThrough, { month: "short", day: "numeric" })}`,
+            icon: <ShieldRounded />,
+            to: "/budget",
+            tone: "#1F9D72",
+            status:
+              BigInt(report.reservedBills.minorUnits) > 0n ? "Bills reserved" : "Check due dates",
+            statusTone: BigInt(report.reservedBills.minorUnits) > 0n ? "positive" : "neutral",
+          },
+          {
+            id: "automate",
+            label: "Automate",
+            value: latestTransactions.length
+              ? `${categorizedTransactions}/${latestTransactions.length}`
+              : "No activity",
+            detail: latestTransactions.length
+              ? `Latest entries categorized · ${reviewCount} need${reviewCount === 1 ? "s" : ""} review`
+              : "Import transactions to start learning narrow merchant patterns.",
+            icon: <AutoAwesomeRounded />,
+            to: reviewCount ? "/automation?tab=ai" : "/automation",
+            tone: "#D98B2B",
+            status: reviewCount ? `${reviewCount} to resolve` : "Ledger clean",
+            statusTone: reviewCount ? "warning" : "positive",
+          },
+          {
+            id: "grow",
+            label: "Future you",
+            value: activeGoal ? (
+              goalProjection ? (
+                formatDate(goalProjection, { month: "short", year: "numeric" })
+              ) : (
+                <Money value={Number(goalRemaining) / 100} currency={activeGoal.target.currency} />
+              )
+            ) : (
+              "Add a goal"
+            ),
+            detail: activeGoal
+              ? `${activeGoal.name} · ${typeof activeGoal.probability === "number" ? `${Math.round(activeGoal.probability * 100)}% modeled likelihood. ` : ""}Funding projection, not purchase permission.`
+              : "Give surplus a named target and BetterWealth can project its funding date.",
+            icon: <TrendingUpRounded />,
+            to: "/goals",
+            tone: "#8B6CCF",
+            status: activeGoal
+              ? activeGoal.onTrack === false
+                ? "Pace needs work"
+                : "Goal in motion"
+              : "Choose future-you",
+            statusTone: activeGoal
+              ? activeGoal.onTrack === false
+                ? "warning"
+                : "info"
+              : "neutral",
+          },
+        ]}
+        footer={
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            alignItems={{ xs: "flex-start", sm: "center" }}
+            justifyContent="space-between"
+            gap={2}
+          >
+            <Typography variant="body2" color="text.secondary">
+              {setupGapCount
+                ? `Decision-readiness gap: ${report.trust.missingInputs[0]}`
+                : "Income, commitments, categorization, and goal pacing are connected to live records."}
+            </Typography>
+            <StatusChip
+              label={
+                currentBudget
+                  ? `${budgetSurplus >= 0n ? "Plan surplus" : "Plan gap"} ${new Intl.NumberFormat("en-US", { style: "currency", currency: currentBudget.plannedIncome.currency, maximumFractionDigits: 0 }).format(Number(budgetSurplus < 0n ? -budgetSurplus : budgetSurplus) / 100)}`
+                  : `${setupGapCount} setup gap${setupGapCount === 1 ? "" : "s"}`
+              }
+              tone={currentBudget ? (budgetSurplus >= 0n ? "positive" : "risk") : "warning"}
+            />
+          </Stack>
+        }
+      />
       <TrustStatePanel
         state={stale ? "stale" : report.trust.state}
         asOf={new Date(report.trust.asOf).toLocaleString("en-US", {

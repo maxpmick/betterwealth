@@ -50,6 +50,13 @@ describe("Automation rules", () => {
     expect(screen.getByRole("tab", { name: /ai review/i })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /merchants/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /recurring/i })).not.toBeInTheDocument();
+    const pipeline = screen.getByTestId("automation-money-pipeline");
+    expect(
+      within(pipeline).getByRole("heading", { name: /from raw swipe to trusted budget/i }),
+    ).toBeInTheDocument();
+    expect(within(pipeline).getByText("7/9")).toBeInTheDocument();
+    expect(within(pipeline).getByText(/1 ai-approved/i)).toBeInTheDocument();
+    expect(within(pipeline).getByText(/78% of this ledger sample/i)).toBeInTheDocument();
 
     const search = screen.getByRole("textbox", { name: /search rules/i });
     await user.type(search, "payroll");
@@ -119,9 +126,12 @@ describe("Automation rules", () => {
 
   it("keeps AI proposals approval-gated", async () => {
     const user = userEvent.setup();
-    renderPage();
+    renderPage("/automation?tab=ai");
 
-    await user.click(screen.getByRole("tab", { name: /ai review/i }));
+    expect(screen.getByRole("tab", { name: /ai review/i })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     expect(screen.getByRole("heading", { name: "Corner Table" })).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /approve category only/i })).toHaveLength(2);
     expect(screen.getAllByRole("button", { name: /approve \+ rule/i })).toHaveLength(2);

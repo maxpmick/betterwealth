@@ -54,6 +54,7 @@ import {
   type CursorPage,
 } from "../api";
 import { Drawer, Stack, Switch, TextField, Typography } from "../components/mui";
+import { PlanFlowCard } from "../components/PlanFlowCard";
 import {
   EmptyState,
   ErrorState,
@@ -702,6 +703,11 @@ function demoTransaction(transaction: (typeof fixtureTransactions)[number]): Api
     tags: [],
   };
 }
+
+const demoAutomationTransactions: CursorPage<ApiTransaction> = {
+  data: fixtureTransactions.map(demoTransaction),
+  page: { cursor: null, hasMore: false },
+};
 
 function previewDemoRule(
   input: Pick<ApiRuleWriteInput, "conditions" | "actions">,
@@ -1630,7 +1636,9 @@ function SuggestionCard({
 
 export function AutomationPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [tab, setTab] = useState<"rules" | "ai">("rules");
+  const [tab, setTab] = useState<"rules" | "ai">(() =>
+    searchParams.get("tab") === "ai" ? "ai" : "rules",
+  );
   const [builderOpen, setBuilderOpen] = useState(false);
   const [editingRule, setEditingRule] = useState<ApiRule | null>(null);
   const [deletingRule, setDeletingRule] = useState<ApiRule | null>(null);
@@ -1673,6 +1681,13 @@ export function AutomationPage() {
     enabled: !demo,
     retry: 1,
   });
+  const transactionsQuery = useQuery({
+    queryKey: ["transactions", "automation-coverage"],
+    queryFn: () => api.transactions("limit=100"),
+    initialData: demo ? demoAutomationTransactions : undefined,
+    enabled: !demo,
+    retry: 1,
+  });
 
   const rules = rulesQuery.data?.data ?? [];
   const categories = categoriesQuery.data?.data ?? [];
@@ -1681,6 +1696,20 @@ export function AutomationPage() {
   const suggestionViews =
     suggestionsQuery.data?.data.filter((item) => item.status === "pending").map(toSuggestionView) ??
     [];
+  const coverageTransactions = (transactionsQuery.data?.data ?? []).filter(
+    (transaction) => !transaction.isExcluded && !transaction.isTransfer,
+  );
+  const categorizedCount = coverageTransactions.filter(
+    (transaction) => transaction.categoryName.toLocaleLowerCase() !== "uncategorized",
+  ).length;
+  const readyCount = coverageTransactions.filter(
+    (transaction) =>
+      transaction.categoryName.toLocaleLowerCase() !== "uncategorized" &&
+      transaction.reviewState !== "needs_review",
+  ).length;
+  const activeRules = rules.filter((rule) => rule.enabled);
+  const aiRules = activeRules.filter((rule) => rule.origin === "approved_ai");
+  const handledCount = rules.reduce((sum, rule) => sum + rule.matchCount, 0);
 
   const summaries = useMemo(
     () =>
@@ -1717,6 +1746,10 @@ export function AutomationPage() {
     next.delete("action");
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
+  useEffect(() => {
+    const requestedTab = searchParams.get("tab");
+    if (requestedTab === "ai" || requestedTab === "rules") setTab(requestedTab);
+  }, [searchParams]);
 
   const updateRule = useMutation({
     mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) => {
@@ -1894,52 +1927,94 @@ export function AutomationPage() {
           </Button>
         }
       />
-      <Box
-        sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "repeat(3, 1fr)" }, gap: 3 }}
-      >
-        <Card>
-          <CardContent sx={{ p: 4.5 }}>
-            <Typography variant="caption" color="text.secondary">
-              Active rules
+      <PlanFlowCard
+        testId="automation-money-pipeline"
+        title="From raw swipe to trusted budget"
+        description="Every imported pattern moves through deterministic matching and an approval-gated review before it becomes dependable planning data."
+        steps={[
+          {
+            id: "observe",
+            label: "Observe",
+            value: coverageTransactions.length
+              ? coverageTransactions.length.toLocaleString()
+              : "No activity",
+            detail: coverageTransactions.length
+              ? "Latest non-transfer ledger entries checked for repeatable patterns"
+              : "Sync or import transactions to begin pattern discovery.",
+            icon: <SearchRounded />,
+            to: "/transactions",
+            tone: "#4A7FD1",
+            status: transactionsQuery.isError ? "Coverage unavailable" : "Live ledger sample",
+            statusTone: transactionsQuery.isError ? "warning" : "info",
+          },
+          {
+            id: "rules",
+            label: "Match",
+            value: activeRules.length.toLocaleString(),
+            detail: `${aiRules.length} AI-approved · ${handledCount.toLocaleString()} auditable historical matches`,
+            icon: <RuleRounded />,
+            to: "/automation",
+            tone: "#1F9D72",
+            status: activeRules.length ? "Deterministic rules" : "Build first rule",
+            statusTone: activeRules.length ? "positive" : "warning",
+          },
+          {
+            id: "review",
+            label: "Review",
+            value: suggestionViews.length.toLocaleString(),
+            detail: suggestionViews.length
+              ? "AI proposals waiting for category-only or category-plus-rule approval"
+              : "No AI proposal can change the ledger without your approval.",
+            icon: <SmartToyRounded />,
+            to: "/automation?tab=ai",
+            tone: "#D98B2B",
+            status: suggestionViews.length ? "Approval required" : "Queue clear",
+            statusTone: suggestionViews.length ? "warning" : "positive",
+          },
+          {
+            id: "ready",
+            label: "Budget ready",
+            value: coverageTransactions.length
+              ? `${readyCount}/${coverageTransactions.length}`
+              : "Waiting",
+            detail: coverageTransactions.length
+              ? `${categorizedCount} categorized; ${coverageTransactions.length - readyCount} still need a category or review`
+              : "Coverage appears after the first imported ledger entries.",
+            icon: <CheckCircleRounded />,
+            to: "/budget",
+            tone: "#8B6CCF",
+            status:
+              readyCount === coverageTransactions.length && coverageTransactions.length
+                ? "Planning clean"
+                : "Finish the queue",
+            statusTone:
+              readyCount === coverageTransactions.length && coverageTransactions.length
+                ? "positive"
+                : "warning",
+          },
+        ]}
+        footer={
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            alignItems={{ xs: "flex-start", sm: "center" }}
+            justifyContent="space-between"
+            gap={2}
+          >
+            <Typography variant="body2" color="text.secondary">
+              {coverageTransactions.length
+                ? `${Math.round((readyCount / coverageTransactions.length) * 100)}% of this ledger sample is categorized and review-ready.`
+                : "Coverage is intentionally not estimated until real ledger data exists."}
             </Typography>
-            <Typography sx={{ mt: 1, fontSize: 28, fontWeight: 760 }}>
-              {rules.filter((rule) => rule.enabled).length}
-            </Typography>
-            <Typography variant="caption" color="success.main">
-              Local and deterministic
-            </Typography>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent sx={{ p: 4.5 }}>
-            <Typography variant="caption" color="text.secondary">
-              Transactions handled
-            </Typography>
-            <Typography sx={{ mt: 1, fontSize: 28, fontWeight: 760 }}>
-              {rules.reduce((sum, rule) => sum + rule.matchCount, 0).toLocaleString()}
-            </Typography>
-            <Typography variant="caption" color="text.secondary">
-              Auditable rule matches
-            </Typography>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent sx={{ p: 4.5 }}>
-            <Typography variant="caption" color="text.secondary">
-              AI review queue
-            </Typography>
-            <Typography sx={{ mt: 1, fontSize: 28, fontWeight: 760 }}>
-              {suggestionViews.length}
-            </Typography>
-            <Typography
-              variant="caption"
-              color={suggestionViews.length ? "warning.main" : "success.main"}
+            <Button
+              size="small"
+              endIcon={<PlayArrowRounded />}
+              onClick={() => (suggestionViews.length ? setTab("ai") : openNewRule())}
             >
-              {suggestionViews.length ? "Your approval required" : "Nothing waiting"}
-            </Typography>
-          </CardContent>
-        </Card>
-      </Box>
+              {suggestionViews.length ? "Review next proposal" : "Teach a new pattern"}
+            </Button>
+          </Stack>
+        }
+      />
       <Card sx={{ p: 1 }}>
         <Tabs
           value={tab}

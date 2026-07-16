@@ -31,12 +31,31 @@ function installMatchMedia(width: number) {
   });
 }
 
-function renderApp(path: string, width = 1280) {
+function renderApp(
+  path: string,
+  width = 1280,
+  registrationMode: "open" | "invite" | "closed" = "open",
+) {
   installMatchMedia(width);
   window.sessionStorage.setItem("bw-demo", "true");
   vi.stubGlobal(
     "fetch",
-    vi.fn(() => new Promise<Response>(() => undefined)),
+    vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes("/api/v1/capabilities")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              registration: {
+                mode: registrationMode,
+                selfService: registrationMode === "open",
+              },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+        );
+      }
+      return new Promise<Response>(() => undefined);
+    }),
   );
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -91,7 +110,7 @@ describe("BetterWealth routing and shell", () => {
       "autocomplete",
       "email",
     );
-    await user.click(screen.getByRole("link", { name: /create an account/i }));
+    await user.click(await screen.findByRole("link", { name: /create an account/i }));
 
     expect(
       await screen.findByRole("heading", { level: 1, name: /build your better plan/i }),
@@ -99,6 +118,27 @@ describe("BetterWealth routing and shell", () => {
     expect(await screen.findByRole("button", { name: /create secure account/i })).toHaveAttribute(
       "type",
       "submit",
+    );
+  });
+
+  it("removes dead signup paths when the self-hosted instance is closed", async () => {
+    const rendered = renderApp("/login", 1280, "closed");
+
+    expect(await screen.findByText(/new account creation is closed/i)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /create an account/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/example scenario · not your forecast/i)).toBeInTheDocument();
+
+    rendered.unmount();
+    renderApp("/register", 1280, "closed");
+    expect(
+      await screen.findByRole("heading", { level: 1, name: /account creation is closed/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /create secure account/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /back to sign in/i })).toHaveAttribute(
+      "href",
+      "/login",
     );
   });
 });

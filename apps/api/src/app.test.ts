@@ -1,5 +1,6 @@
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { alexFixture } from "@betterwealth/testkit";
@@ -9,7 +10,7 @@ import { loadConfig } from "./config";
 import { sha256 } from "./lib/crypto";
 import { ALEX_DEMO_EMAIL, ALEX_DEMO_PASSWORD, seedCanonicalAlex } from "./seed/canonical-alex";
 
-function testConfig(databasePath: string) {
+function testConfig(databasePath: string, registrationMode: "open" | "invite" | "closed" = "open") {
   return loadConfig({
     APP_ENV: "test",
     API_HOST: "127.0.0.1",
@@ -18,7 +19,7 @@ function testConfig(databasePath: string) {
     DATABASE_URL: databasePath,
     ENCRYPTION_KEY: "a".repeat(64),
     COOKIE_SECURE: "false",
-    REGISTRATION_MODE: "open",
+    REGISTRATION_MODE: registrationMode,
     SESSION_IDLE_DAYS: "14",
     SESSION_ABSOLUTE_DAYS: "30",
     SYNC_INTERVAL_MINUTES: "360",
@@ -64,6 +65,29 @@ describe("BetterWealth API", () => {
     expect(await response.json()).toMatchObject({ status: "ok", database: "ready" });
   });
 
+  test("publishes registration capability without authentication or private configuration", async () => {
+    const openResponse = await application.app.request("/api/v1/capabilities");
+    expect(openResponse.status).toBe(200);
+    expect(await openResponse.json()).toEqual({
+      registration: { mode: "open", selfService: true },
+    });
+
+    const closedDirectory = mkdtempSync(join(tmpdir(), "betterwealth-capabilities-"));
+    const closedApplication = createApp(
+      testConfig(join(closedDirectory, "closed.sqlite"), "closed"),
+    );
+    try {
+      const closedResponse = await closedApplication.app.request("/api/v1/capabilities");
+      expect(closedResponse.status).toBe(200);
+      expect(await closedResponse.json()).toEqual({
+        registration: { mode: "closed", selfService: false },
+      });
+    } finally {
+      closedApplication.close();
+      rmSync(closedDirectory, { recursive: true, force: true });
+    }
+  });
+
   test("publishes a mobile-client-ready OpenAPI surface", async () => {
     const response = await application.app.request("/api/v1/openapi.json");
     expect(response.status).toBe(200);
@@ -75,6 +99,7 @@ describe("BetterWealth API", () => {
     expect(document.openapi).toBe("3.1.0");
     expect(Object.keys(document.paths).length).toBeGreaterThan(50);
     expect(document.paths).toHaveProperty("/connections/simplefin/claim");
+    expect(document.paths).toHaveProperty("/capabilities");
     expect(document.paths).toHaveProperty("/settings/integrations/ai");
     expect(document.paths).toHaveProperty("/reports/net-worth");
     expect(document.paths).toHaveProperty("/assets/{id}/valuations");
@@ -272,8 +297,29 @@ describe("BetterWealth API", () => {
     });
     expect(backup.status).toBe(200);
     expect(backup.headers.get("content-type")).toBe("application/vnd.sqlite3");
-    const header = new TextDecoder().decode((await backup.arrayBuffer()).slice(0, 15));
+    const backupBytes = await backup.arrayBuffer();
+    const header = new TextDecoder().decode(backupBytes.slice(0, 15));
     expect(header).toBe("SQLite format 3");
+    const downloadedPath = join(directory, "downloaded.sqlite");
+    writeFileSync(downloadedPath, Buffer.from(backupBytes));
+    const downloaded = new Database(downloadedPath, {
+      create: false,
+      readonly: true,
+      strict: true,
+    });
+    try {
+      expect(
+        downloaded.query<{ journal_mode: string }, []>("PRAGMA journal_mode").get()?.journal_mode,
+      ).toBe("delete");
+      expect(downloaded.query("PRAGMA quick_check").values()).toEqual([["ok"]]);
+      expect(
+        downloaded.query<{ count: number }, []>("SELECT count(*) AS count FROM users").get()?.count,
+      ).toBe(1);
+    } finally {
+      downloaded.close();
+    }
+    expect(existsSync(`${downloadedPath}-wal`)).toBe(false);
+    expect(existsSync(`${downloadedPath}-shm`)).toBe(false);
   });
 
   test("canonical age-22 dashboard and net worth report exact live planning data", async () => {

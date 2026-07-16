@@ -31,6 +31,7 @@ export interface BetterWealthApplication {
 
 const documentedOperations = [
   ["GET", "/health", "Runtime readiness", true],
+  ["GET", "/capabilities", "Read public instance capabilities", true],
   ["POST", "/auth/register", "Register a user and household", true],
   ["POST", "/auth/login", "Create a browser or mobile session", true],
   ["GET", "/auth/session", "Read the current session"],
@@ -263,6 +264,14 @@ export function createApp(config: AppConfig): BetterWealthApplication {
   });
   app.get("/health", (context) => context.json(health()));
   app.get("/api/v1/health", (context) => context.json(health()));
+  app.get("/api/v1/capabilities", (context) =>
+    context.json({
+      registration: {
+        mode: config.REGISTRATION_MODE,
+        selfService: config.REGISTRATION_MODE === "open",
+      },
+    }),
+  );
 
   app.get("/api/v1/openapi.json", (context) =>
     context.json({

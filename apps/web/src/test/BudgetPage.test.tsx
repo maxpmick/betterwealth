@@ -46,6 +46,16 @@ describe("Budget planning", () => {
       screen.getByRole("heading", { level: 1, name: /a job for every dollar/i }),
     ).toBeInTheDocument();
     expect(screen.getByText("Plan surplus")).toBeInTheDocument();
+    const paycheckFlow = screen.getByTestId("budget-paycheck-flow");
+    expect(
+      within(paycheckFlow).getByRole("heading", { name: /from paycheck to free cash/i }),
+    ).toBeInTheDocument();
+    expect(within(paycheckFlow).getByText("Priority protected")).toBeInTheDocument();
+    expect(within(paycheckFlow).getByText("Available for goals")).toBeInTheDocument();
+    expect(within(paycheckFlow).getByRole("link", { name: /tighten matching/i })).toHaveAttribute(
+      "href",
+      "/automation",
+    );
     expect(screen.getByText(/plan total/i)).toBeInTheDocument();
     expect(screen.getAllByText(/priority \d+/i).length).toBeGreaterThan(2);
     expect(screen.getByText(/funding plus transfers and confirmed refunds/i)).toBeInTheDocument();

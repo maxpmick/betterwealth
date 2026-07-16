@@ -109,6 +109,13 @@ export interface ApiTransaction {
   refundLinkIds?: string[];
 }
 
+export interface ApiCapabilities {
+  registration: {
+    mode: "open" | "invite" | "closed";
+    selfService: boolean;
+  };
+}
+
 export interface ApiTransactionSplit {
   id: string;
   sequence: number;
@@ -750,6 +757,7 @@ function idempotencyKey(): string {
 }
 
 export const api = {
+  capabilities: () => request<ApiCapabilities>("/capabilities"),
   register: (input: { email: string; password: string; householdName: string }) =>
     request<{ userId: string; householdId: string }>("/auth/register", {
       method: "POST",

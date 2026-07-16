@@ -233,6 +233,16 @@ describe("Today weekly action", () => {
 
     expect(screen.getAllByText("Ready").length).toBeGreaterThan(0);
     expect(screen.queryByText(/% ready/i)).not.toBeInTheDocument();
+    const moneyLoop = screen.getByTestId("today-money-loop");
+    expect(
+      within(moneyLoop).getByRole("heading", { name: /paycheck-to-freedom loop/i }),
+    ).toBeInTheDocument();
+    expect(within(moneyLoop).getByText("Pay cycle mapped")).toBeInTheDocument();
+    expect(within(moneyLoop).getByText("1 to resolve")).toBeInTheDocument();
+    expect(
+      within(moneyLoop).getByText(/funding projection, not purchase permission/i),
+    ).toBeInTheDocument();
+    expect(within(moneyLoop).getByText(/plan surplus \$150/i)).toBeInTheDocument();
     expect(screen.getByText(/this week: earmark/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /preview impact/i }));
 

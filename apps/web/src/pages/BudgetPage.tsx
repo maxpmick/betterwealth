@@ -38,7 +38,7 @@ import {
 } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link as RouterLink, useSearchParams } from "react-router-dom";
 import {
   type ApiBudget,
   type ApiEnvelope,
@@ -47,6 +47,7 @@ import {
   type Money as TransportMoney,
 } from "../api";
 import { Stack, TextField, Typography } from "../components/mui";
+import { PlanFlowCard } from "../components/PlanFlowCard";
 import {
   EmptyState,
   ErrorState,
@@ -731,6 +732,16 @@ export function BudgetPage() {
   );
   const totalOverage = overages.reduce((sum, envelope) => sum - minor(envelope.available), 0n);
   const periodName = `${dateLabel(budget.startDate)}–${dateLabel(budget.endDate)}`;
+  const activeEnvelopes = budget.envelopes.filter((envelope) => envelope.isActive !== false);
+  const requiredPlanned = activeEnvelopes
+    .filter((envelope) => envelope.isRequired)
+    .reduce((sum, envelope) => sum + minor(envelope.planned), 0n);
+  const flexiblePlanned = activeEnvelopes
+    .filter((envelope) => !envelope.isRequired)
+    .reduce((sum, envelope) => sum + minor(envelope.planned), 0n);
+  const linkedEnvelopes = activeEnvelopes.filter(
+    (envelope) => Boolean(envelope.categoryId) || Boolean(envelope.categoryIds?.length),
+  ).length;
 
   return (
     <Stack gap={5}>
@@ -766,6 +777,81 @@ export function BudgetPage() {
           <Tab value="plan" label="Plan" />
         </Tabs>
       </Card>
+      <PlanFlowCard
+        testId="budget-paycheck-flow"
+        title="From paycheck to free cash"
+        description="The plan protects required commitments first, caps flexible spending next, then leaves the remainder visibly unassigned."
+        steps={[
+          {
+            id: "income",
+            label: "Income",
+            value: <Money value={dollars(budget.plannedIncome)} />,
+            detail: `${periodName} expected take-home available to assign`,
+            icon: <AccountBalanceWalletRounded />,
+            to: "/budget",
+            tone: "#4A7FD1",
+            status: budget.status === "closed" ? "Period closed" : "Pay cycle open",
+            statusTone: budget.status === "closed" ? "neutral" : "info",
+          },
+          {
+            id: "required",
+            label: "Protect",
+            value: <Money value={Number(requiredPlanned) / 100} />,
+            detail: `${activeEnvelopes.filter((envelope) => envelope.isRequired).length} required envelope${activeEnvelopes.filter((envelope) => envelope.isRequired).length === 1 ? "" : "s"} fund before optional spending`,
+            icon: <CalendarMonthRounded />,
+            to: "/budget",
+            tone: "#1F9D72",
+            status: requiredPlanned > 0n ? "Priority protected" : "Mark essentials",
+            statusTone: requiredPlanned > 0n ? "positive" : "warning",
+          },
+          {
+            id: "flexible",
+            label: "Live",
+            value: <Money value={Number(flexiblePlanned) / 100} />,
+            detail: `${activeEnvelopes.filter((envelope) => !envelope.isRequired).length} flexible envelope${activeEnvelopes.filter((envelope) => !envelope.isRequired).length === 1 ? "" : "s"} define the lifestyle ceiling`,
+            icon: <PaymentsRounded />,
+            to: "/budget",
+            tone: "#D98B2B",
+            status: overages.length ? `${overages.length} over plan` : "Within plan",
+            statusTone: overages.length ? "warning" : "positive",
+          },
+          {
+            id: "surplus",
+            label: "Build wealth",
+            value: <Money value={Number(surplus < 0n ? -surplus : surplus) / 100} />,
+            detail:
+              surplus >= 0n
+                ? "Still free after every planned envelope; assign it intentionally."
+                : "Plan exceeds expected income; reduce or defer before funding.",
+            icon: <AutoAwesomeRounded />,
+            to: surplus >= 0n ? "/goals" : "/budget",
+            tone: surplus >= 0n ? "#8B6CCF" : "#DD625B",
+            status: surplus >= 0n ? "Available for goals" : "Close the gap",
+            statusTone: surplus >= 0n ? "info" : "risk",
+          },
+        ]}
+        footer={
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            alignItems={{ xs: "flex-start", sm: "center" }}
+            justifyContent="space-between"
+            gap={2}
+          >
+            <Typography variant="body2" color="text.secondary">
+              {linkedEnvelopes} of {activeEnvelopes.length} active envelopes are linked to ledger
+              categories. Deterministic rules can route repeat merchants into those envelopes.
+            </Typography>
+            <Button
+              component={RouterLink}
+              to="/automation"
+              size="small"
+              endIcon={<ArrowForwardRounded />}
+            >
+              Tighten matching
+            </Button>
+          </Stack>
+        }
+      />
       <Box
         sx={{
           display: "grid",
