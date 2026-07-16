@@ -71,14 +71,24 @@ web_origin="$(value_for WEB_ORIGIN)"
 database_url="$(value_for DATABASE_URL)"
 encryption_key="$(value_for ENCRYPTION_KEY)"
 cookie_secure="$(value_for COOKIE_SECURE)"
+trust_proxy="$(value_for TRUST_PROXY)"
 registration_mode="$(value_for REGISTRATION_MODE)"
+backup_retention_days="$(value_for BACKUP_RETENTION_DAYS)"
 
 [[ "$app_env" == "production" ]] && pass "APP_ENV is production" || fail "APP_ENV must be production"
 [[ "$api_host" == "127.0.0.1" ]] && pass "API is bound to IPv4 loopback" || fail "API_HOST must be 127.0.0.1 for the supplied units"
 [[ "$api_port" == "3001" ]] && pass "API port matches the web and Caddy examples" || fail "API_PORT must be 3001 unless both proxy configurations are changed"
-[[ "$web_origin" =~ ^https://[^/]+$ ]] && pass "WEB_ORIGIN is an exact HTTPS origin" || fail "WEB_ORIGIN must be one exact HTTPS origin with no path or trailing slash"
+[[ "$web_origin" =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]] && pass "WEB_ORIGIN is an exact HTTPS origin" || fail "WEB_ORIGIN must be one exact HTTPS hostname origin with no credentials, path, query, fragment, or trailing slash"
 [[ "$cookie_secure" == "true" ]] && pass "secure cookies are enabled" || fail "COOKIE_SECURE must be true"
+[[ "$trust_proxy" == "true" ]] && pass "trusted proxy handling is enabled for loopback Caddy" || fail "TRUST_PROXY must be true for the supplied loopback Caddy deployment"
 [[ "$encryption_key" =~ ^[0-9a-fA-F]{64}$ ]] && pass "encryption key has the required format" || fail "ENCRYPTION_KEY must be exactly 64 hexadecimal characters"
+
+if [[ "$backup_retention_days" =~ ^[0-9]+$ ]] &&
+   ((10#$backup_retention_days >= 1 && 10#$backup_retention_days <= 3650)); then
+  pass "backup retention is within the supported range"
+else
+  fail "BACKUP_RETENTION_DAYS must be an integer between 1 and 3650"
+fi
 
 case "$registration_mode" in
   closed|invite) pass "public registration is disabled" ;;
@@ -86,10 +96,22 @@ case "$registration_mode" in
   *) fail "REGISTRATION_MODE must be closed, invite, or open" ;;
 esac
 
-case "$database_url" in
-  ./data/*|/opt/betterwealth/data/*) pass "database path is inside the writable data directory" ;;
-  *) fail "DATABASE_URL must resolve inside /opt/betterwealth/data for the supplied sandbox" ;;
-esac
+if command -v realpath >/dev/null 2>&1; then
+  if [[ "$database_url" == /* ]]; then
+    database_candidate="$database_url"
+  else
+    database_candidate="$app_root/$database_url"
+  fi
+  resolved_data_directory="$(realpath -m -- "$app_root/data")"
+  resolved_database_path="$(realpath -m -- "$database_candidate")"
+  if [[ "$resolved_database_path" == "$resolved_data_directory/"* ]]; then
+    pass "database path resolves inside the writable data directory"
+  else
+    fail "DATABASE_URL must resolve inside $app_root/data for the supplied sandbox"
+  fi
+else
+  fail "missing required command: realpath"
+fi
 
 if [[ -e "$app_root/.env.local" ]]; then
   fail "remove .env.local from the production checkout; systemd must be the only environment source"
@@ -97,7 +119,7 @@ else
   pass "production checkout has no .env.local override"
 fi
 
-for command_name in /usr/local/bin/bun curl; do
+for command_name in /usr/local/bin/bun curl realpath; do
   if command -v "$command_name" >/dev/null 2>&1; then
     pass "found $command_name"
   else

@@ -104,7 +104,7 @@ bun run --cwd apps/api db:backup -- /secure/path/wealth.sqlite
 bun run ops:verify-backup -- /secure/path/wealth.sqlite
 ```
 
-The managed backup is a standalone SQLite snapshot; do not copy the live main database while it is in WAL mode. Local backups do not protect against disk failure or host compromise, so copy verified snapshots to encrypted off-host storage. Test restoration before relying on it. The exact stop, preserve-WAL, restore, migrate, and application-validation procedure is in [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md#6-restore-drill).
+The managed command uses SQLite's online snapshot mechanism and produces one verified, mode-0600, DELETE-journal database file. Do not copy the live main database while it is in WAL mode. Local backups do not protect against disk failure or host compromise, so copy verified snapshots to encrypted off-host storage. Test restoration before relying on it. The exact stop, preserve-WAL, restore, migrate, and application-validation procedure is in [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md#6-restore-drill).
 
 For a non-destructive migration check on a disposable copy:
 
@@ -113,7 +113,7 @@ cp /secure/path/wealth.sqlite data/restore-test.sqlite
 DATABASE_URL=./data/restore-test.sqlite bun run db:migrate
 ```
 
-The Settings API also exposes a secret-free JSON export and an owner-only SQLite download. Exports omit password hashes, sessions, access URLs, and encrypted integration settings.
+The Settings API also exposes a secret-free JSON export and an owner-only standalone SQLite download. JSON exports omit password hashes, sessions, access URLs, and encrypted integration settings; SQLite backups necessarily contain the complete database and must be protected like the live data directory.
 
 ## Security notes
 

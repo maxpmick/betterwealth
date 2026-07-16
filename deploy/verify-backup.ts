@@ -44,18 +44,28 @@ if (existsSync(`${backupPath}-wal`) || existsSync(`${backupPath}-shm`)) {
 }
 
 const descriptor = openSync(backupPath, "r");
-const header = Buffer.alloc(16);
+const header = Buffer.alloc(20);
 try {
   readSync(descriptor, header, 0, header.length, 0);
 } finally {
   closeSync(descriptor);
 }
-if (header.toString("utf8") !== "SQLite format 3\u0000") {
+if (header.subarray(0, 16).toString("utf8") !== "SQLite format 3\u0000") {
   fail("Backup does not have a SQLite 3 header");
+}
+if (header[18] !== 1 || header[19] !== 1) {
+  fail("Backup header is WAL-mode; a standalone backup must use DELETE journaling");
 }
 
 const database = new Database(backupPath, { readonly: true, create: false, strict: true });
 try {
+  const journalMode = database
+    .query<{ journal_mode: string }, []>("PRAGMA journal_mode")
+    .get()?.journal_mode;
+  if (journalMode?.toLowerCase() !== "delete") {
+    fail(`Backup journal mode is ${journalMode ?? "unknown"}; expected delete`);
+  }
+
   const check = full ? "integrity_check" : "quick_check";
   const integrityRows = database.query(`PRAGMA ${check}`).values() as unknown[][];
   if (integrityRows.length !== 1 || integrityRows[0]?.[0] !== "ok") {
@@ -80,6 +90,7 @@ try {
       status: "verified",
       file: basename(backupPath),
       check,
+      journalMode: "delete",
       sizeBytes: metadata.size,
       pageCount,
       schemaObjects,

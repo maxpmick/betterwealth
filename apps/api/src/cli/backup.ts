@@ -1,14 +1,21 @@
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   readdirSync,
+  realpathSync,
   renameSync,
-  rmSync,
   statSync,
-  writeFileSync,
 } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
-import { closeDatabase, openDatabase } from "@betterwealth/db";
+import {
+  closeDatabase,
+  createStandaloneSqliteSnapshot,
+  openDatabase,
+  removeSqliteFileSet,
+  removeSqliteSidecars,
+} from "@betterwealth/db";
 import { loadConfig } from "../config";
 
 const config = loadConfig();
@@ -21,11 +28,30 @@ const destination = resolve(
 );
 const destinationDirectory = dirname(destination);
 mkdirSync(destinationDirectory, { recursive: true, mode: 0o700 });
-const temporary = `${destination}.tmp`;
+const sourceIdentity = realpathSync(config.databasePath);
+const destinationIdentity = (() => {
+  try {
+    return realpathSync(destination);
+  } catch {
+    return destination;
+  }
+})();
+const sourceMetadata = statSync(sourceIdentity);
+const destinationMetadata = existsSync(destination) ? statSync(destination) : undefined;
+if (
+  sourceIdentity === destinationIdentity ||
+  (destinationMetadata &&
+    sourceMetadata.dev === destinationMetadata.dev &&
+    sourceMetadata.ino === destinationMetadata.ino)
+) {
+  throw new Error("Backup destination must not replace the live database");
+}
+
+const temporary = `${destination}.tmp-${process.pid}-${randomUUID()}`;
 const db = openDatabase(config.databasePath, { create: false });
 try {
-  db.$client.exec("PRAGMA wal_checkpoint(FULL)");
-  writeFileSync(temporary, db.$client.serialize(), { mode: 0o600, flag: "wx" });
+  createStandaloneSqliteSnapshot(db.$client, temporary);
+  removeSqliteSidecars(destination);
   renameSync(temporary, destination);
   chmodSync(destination, 0o600);
   let pruned = 0;
@@ -35,15 +61,13 @@ try {
       if (!/^betterwealth-.*\.sqlite$/.test(name) || name === basename(destination)) continue;
       const candidate = resolve(destinationDirectory, name);
       if (statSync(candidate).mtimeMs < cutoff) {
-        rmSync(candidate, { force: true });
+        removeSqliteFileSet(candidate);
         pruned += 1;
       }
     }
   }
   console.log(JSON.stringify({ status: "backed_up", destination, pruned }));
-} catch (error) {
-  rmSync(temporary, { force: true });
-  throw error;
 } finally {
+  removeSqliteFileSet(temporary);
   closeDatabase(db);
 }

@@ -1,4 +1,11 @@
-import type { BetterWealthDatabase } from "@betterwealth/db";
+import { chmodSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  type BetterWealthDatabase,
+  createStandaloneSqliteSnapshot,
+  removeSqliteFileSet,
+} from "@betterwealth/db";
 import {
   accounts,
   assets,
@@ -324,16 +331,26 @@ export function createOperationRoutes(db: BetterWealthDatabase, config: AppConfi
   routes.get("/database-backup", (context) => {
     const auth = context.get("auth");
     requireRole(auth, ["owner"]);
-    const bytes = db.$client.serialize();
-    const date = new Date().toISOString().replace(/[:.]/g, "-");
-    return new Response(Uint8Array.from(bytes).buffer, {
-      headers: {
-        "content-type": "application/vnd.sqlite3",
-        "content-disposition": `attachment; filename="betterwealth-${date}.sqlite"`,
-        "cache-control": "no-store",
-        "x-content-type-options": "nosniff",
-      },
-    });
+    const temporaryParent = config.dataDirectory === ":memory:" ? tmpdir() : config.dataDirectory;
+    const temporaryDirectory = mkdtempSync(join(temporaryParent, ".betterwealth-download-"));
+    const snapshotPath = join(temporaryDirectory, "snapshot.sqlite");
+    chmodSync(temporaryDirectory, 0o700);
+    try {
+      createStandaloneSqliteSnapshot(db.$client, snapshotPath);
+      const bytes = readFileSync(snapshotPath);
+      const date = new Date().toISOString().replace(/[:.]/g, "-");
+      return new Response(Uint8Array.from(bytes).buffer, {
+        headers: {
+          "content-type": "application/vnd.sqlite3",
+          "content-disposition": `attachment; filename="betterwealth-${date}.sqlite"`,
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+        },
+      });
+    } finally {
+      removeSqliteFileSet(snapshotPath);
+      rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
   });
 
   return routes;

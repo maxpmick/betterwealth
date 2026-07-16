@@ -77,6 +77,8 @@ cd /opt/betterwealth
 sudo bash deploy/preflight.sh /etc/betterwealth.env
 ```
 
+Preflight also requires `TRUST_PROXY=true` for the supplied loopback Caddy topology, validates the backup-retention range, resolves `DATABASE_URL` before confirming it stays inside the sandboxed data directory, and rejects origins with credentials or URL suffixes.
+
 ## 3. Bootstrap once
 
 Bootstrap can create the owner, store the AI configuration with field-level encryption, claim a one-time SimpleFIN setup token, and perform the first sync. Put only the bootstrap inputs you intend to use in `/etc/betterwealth.env`, then run the isolated one-shot unit:
@@ -157,9 +159,9 @@ Use an external HTTPS monitor for real alerting. The five-minute local timer rec
 
 ## 5. Backups
 
-The database runs in WAL mode. Never back up the live main `.sqlite` file with plain `cp`, `rsync`, or a filesystem watcher: recent committed pages may still be in the WAL. The application backup command checkpoints and serializes a standalone SQLite snapshot, writes it atomically with mode 0600, and prunes managed files according to `BACKUP_RETENTION_DAYS`.
+The live database runs in WAL mode. Never back up its main `.sqlite` file with plain `cp`, `rsync`, or a filesystem watcher: recent committed pages may still be in the WAL. The application backup command uses SQLite's online `VACUUM INTO` snapshot mechanism, verifies the copy, forces standalone DELETE journaling, writes it atomically with mode 0600, and prunes managed files according to `BACKUP_RETENTION_DAYS`. Temporary databases and every WAL, SHM, or rollback-journal sidecar are removed on both success and failure.
 
-The scheduled unit also runs `PRAGMA quick_check`, `PRAGMA foreign_key_check`, header/size/schema checks, and rejects a backup that depends on adjacent WAL/SHM files:
+The scheduled unit then reopens the finished file read-only and runs `PRAGMA quick_check`, `PRAGMA foreign_key_check`, header/size/schema/journal-mode checks, and rejects a backup that depends on adjacent WAL/SHM files:
 
 ```bash
 sudo systemctl start betterwealth-backup.service
@@ -175,7 +177,7 @@ sudo -u betterwealth /usr/local/bin/bun \
   /opt/betterwealth/backups/betterwealth-YYYY-MM-DDTHH-MM-SS.sqlite
 ```
 
-Local retention does not protect against disk loss, theft, or ransomware. After local verification, copy the standalone backup to encrypted off-host storage with a tool such as restic or borg. Keep at least one versioned, immutable/offline copy. Monitor the timer and backup age:
+Local retention does not protect against disk loss, theft, or ransomware. After local verification, copy the standalone DELETE-journal backup file (no `-wal` or `-shm` companion is required) to encrypted off-host storage with a tool such as restic or borg. Keep at least one versioned, immutable/offline copy. Monitor the timer and backup age:
 
 ```bash
 systemctl list-timers betterwealth-backup.timer
