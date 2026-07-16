@@ -157,18 +157,33 @@ export async function safeFetch(
   }
 }
 
-export async function readLimitedText(response: Response, maxBytes = 10_000_000): Promise<string> {
+export async function readLimitedText(
+  response: Response,
+  maxBytes = 10_000_000,
+  timeoutMs = 20_000,
+): Promise<string> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
     throw new RangeError("maxBytes must be a positive safe integer");
+  }
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    throw new RangeError("timeoutMs must be a positive safe integer");
   }
   if (!response.body) return "";
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let total = 0;
   let text = "";
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    void reader.cancel("Provider response body timed out").catch(() => undefined);
+  }, timeoutMs);
   try {
     while (true) {
       const chunk = await reader.read();
+      if (timedOut) {
+        throw new AppError("Provider response timed out", 504, "provider_timeout");
+      }
       if (chunk.done) break;
       total += chunk.value.byteLength;
       if (total > maxBytes) {
@@ -177,8 +192,17 @@ export async function readLimitedText(response: Response, maxBytes = 10_000_000)
       }
       text += decoder.decode(chunk.value, { stream: true });
     }
+    if (timedOut) {
+      throw new AppError("Provider response timed out", 504, "provider_timeout");
+    }
     return text + decoder.decode();
+  } catch (error) {
+    if (timedOut) {
+      throw new AppError("Provider response timed out", 504, "provider_timeout");
+    }
+    throw error;
   } finally {
+    clearTimeout(timeout);
     reader.releaseLock();
   }
 }

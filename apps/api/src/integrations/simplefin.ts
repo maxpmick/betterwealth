@@ -116,7 +116,7 @@ export async function claimSimpleFinToken(setupToken: string): Promise<string> {
   }
   if (!response.ok)
     throw new AppError("SimpleFIN could not claim this token", 502, "simplefin_claim_failed");
-  const accessUrlValue = (await readLimitedText(response, 8_192)).trim();
+  const accessUrlValue = (await readLimitedText(response, 8_192, 20_000)).trim();
   let accessUrl: URL;
   try {
     accessUrl = new URL(accessUrlValue);
@@ -174,7 +174,7 @@ export async function fetchSimpleFinAccounts(
   if (response.status === 403)
     throw new AppError("SimpleFIN access was revoked or expired", 409, "simplefin_reauth_required");
   if (!response.ok) throw new AppError("SimpleFIN sync failed", 502, "simplefin_sync_failed");
-  const body = await readLimitedText(response, 25_000_000);
+  const body = await readLimitedText(response, 25_000_000, 45_000);
   let decoded: unknown;
   try {
     decoded = JSON.parse(body);

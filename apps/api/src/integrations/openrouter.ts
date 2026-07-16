@@ -175,7 +175,7 @@ export async function suggestTransactionCategory(input: {
       502,
       "ai_provider_failed",
     );
-  const text = await readLimitedText(response, 1_000_000);
+  const text = await readLimitedText(response, 1_000_000, 30_000);
   let outer: unknown;
   try {
     outer = JSON.parse(text);

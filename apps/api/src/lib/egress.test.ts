@@ -56,4 +56,24 @@ describe("bounded provider responses", () => {
     });
     expect(cancelled).toBe(true);
   });
+
+  test("cancels a response body that stalls after headers arrive", async () => {
+    let cancelled = false;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("partial"));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      }),
+    );
+
+    await expect(readLimitedText(response, 100, 10)).rejects.toMatchObject({
+      code: "provider_timeout",
+      status: 504,
+    });
+    expect(cancelled).toBe(true);
+  });
 });
