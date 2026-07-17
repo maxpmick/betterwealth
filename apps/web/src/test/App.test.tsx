@@ -88,6 +88,47 @@ describe("BetterWealth routing and shell", () => {
     expect(screen.getByRole("heading", { level: 1, name: "Transactions" })).toBeInTheDocument();
   });
 
+  it("routes global search commands into their concrete page state", async () => {
+    const user = userEvent.setup();
+    renderApp("/today");
+
+    await user.click(await screen.findByRole("button", { name: /^search$/i }));
+    const palette = screen.getByRole("dialog", { name: /find anything/i });
+    await user.click(within(palette).getByText("Review transactions"));
+
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Transactions" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /review/i })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("opens real quick-add workflows and labels demo sync as unavailable", async () => {
+    const user = userEvent.setup();
+    renderApp("/today");
+
+    const syncButtons = await screen.findAllByRole("button", {
+      name: /sync unavailable for demo data/i,
+    });
+    expect(syncButtons.length).toBeGreaterThan(0);
+    for (const button of syncButtons) expect(button).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: /quick add/i }));
+    await user.click(screen.getByRole("menuitem", { name: /add transaction/i }));
+
+    expect(await screen.findByRole("dialog", { name: /add a transaction/i })).toBeVisible();
+  });
+
+  it("cycles and persists the global appearance preference", async () => {
+    window.localStorage.setItem("bw-theme", "system");
+    const user = userEvent.setup();
+    renderApp("/today");
+
+    await user.click(await screen.findByRole("button", { name: /theme is system; change theme/i }));
+    expect(window.localStorage.getItem("bw-theme")).toBe("light");
+    expect(
+      screen.getByRole("button", { name: /theme is light; change theme/i }),
+    ).toBeInTheDocument();
+  });
+
   it("exposes exactly the contracted five-item mobile navigation at 320px", async () => {
     renderApp("/budget", 320);
 

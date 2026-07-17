@@ -622,7 +622,7 @@ function ValuationDialog({
                   onChange={(event) => setSource(event.target.value as ApiAssetValuation["source"])}
                 >
                   <MenuItem value="manual">My estimate</MenuItem>
-                  <MenuItem value="provider">Valuation provider</MenuItem>
+                  <MenuItem value="provider">External estimate (entered manually)</MenuItem>
                   <MenuItem value="appraisal">Appraisal</MenuItem>
                   <MenuItem value="import">Imported</MenuItem>
                 </Select>
@@ -646,7 +646,7 @@ function ValuationDialog({
               value={reference}
               onChange={(event) => setReference(event.target.value)}
               inputProps={{ maxLength: 500 }}
-              helperText="For example, a Zillow URL, appraisal reference, or fair-market-value note."
+              helperText="Paste the source link and enter its estimate above; BetterWealth records the dated value but does not scrape the provider."
             />
             <Box sx={{ p: 3.5, borderRadius: 3, bgcolor: "action.hover" }}>
               <Typography variant="body2" fontWeight={720}>

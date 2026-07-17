@@ -32,6 +32,7 @@
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "@vitejs/plugin-react": "latest",
+    "happy-dom": "latest",
     "jsdom": "latest",
     "typescript": "latest",
     "vite": "latest",

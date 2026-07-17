@@ -14,6 +14,7 @@ import {
   goals,
   households,
   incomeSources,
+  refundLinks,
   settings,
   transactionSplits,
   transactions,
@@ -27,6 +28,14 @@ import { z } from "zod";
 import { requireAuth, requireCsrf } from "../auth/middleware";
 import type { AppConfig } from "../config";
 import { ConflictError, NotFoundError } from "../lib/errors";
+import {
+  isNetWorthAccountIncluded,
+  isRetirementAccount,
+  liquidAccountContribution,
+  liquidAssetContribution,
+  signedNetWorthBalance,
+} from "../lib/net-worth";
+import { cappedConfirmedRefund, confirmedRefundAmounts } from "../lib/refunds";
 import type { AppEnv } from "../types";
 
 type BalancePoint = {
@@ -119,11 +128,6 @@ function dashboardPreferencesDto(
         ? null
         : money(BigInt(preference.reservedBillsMinorUnits), currency),
   };
-}
-
-function signedNetWorthBalance(amount: bigint, isLiability: boolean): bigint {
-  if (!isLiability) return amount;
-  return amount > 0n ? -amount : amount;
 }
 
 async function reportContext(db: BetterWealthDatabase, householdId: string, userId: string) {
@@ -284,6 +288,7 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
     const defaultSpendable = report.accounts.filter(
       (account) =>
         account.group === "cash" &&
+        account.status === "active" &&
         account.includeInBudget &&
         !/saving|money.?market/i.test(`${account.type} ${account.subtype ?? ""}`),
     );
@@ -292,7 +297,12 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
         (defaultSpendable.length > 0
           ? defaultSpendable.map(({ id }) => id)
           : report.accounts
-              .filter((account) => account.group === "cash" && account.includeInBudget)
+              .filter(
+                (account) =>
+                  account.group === "cash" &&
+                  account.status === "active" &&
+                  account.includeInBudget,
+              )
               .map(({ id }) => id)),
     );
     let availableCash = 0n;
@@ -301,16 +311,27 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
     for (const account of report.accounts) {
       const balance = report.latest.get(account.id);
       if (!balance || balance.currency !== report.currency) continue;
-      if (!latestAsOf || balance.asOf > latestAsOf) latestAsOf = balance.asOf;
-      if (spendableIds.has(account.id)) {
+      if (
+        account.status !== "hidden" &&
+        account.status !== "closed" &&
+        (!latestAsOf || balance.asOf > latestAsOf)
+      )
+        latestAsOf = balance.asOf;
+      if (account.status === "active" && spendableIds.has(account.id)) {
         availableCash += balance.available ?? balance.amount;
       }
-      if (
-        account.includeInNetWorth &&
-        ["cash", "credit", "loan", "investment", "crypto"].includes(account.group)
-      ) {
-        liquidNetWorth += signedNetWorthBalance(balance.amount, account.isLiability);
+      liquidNetWorth += liquidAccountContribution(account, balance.amount);
+    }
+    const latestValuationByAsset = new Map<string, (typeof report.valuationRows)[number]>();
+    for (const valuation of report.valuationRows) {
+      if (!latestValuationByAsset.has(valuation.assetId)) {
+        latestValuationByAsset.set(valuation.assetId, valuation);
       }
+    }
+    for (const asset of report.assets) {
+      const valuation = latestValuationByAsset.get(asset.id);
+      if (!valuation || valuation.currency !== report.currency) continue;
+      liquidNetWorth += liquidAssetContribution(asset, valuation.amount);
     }
 
     const now = new Date();
@@ -345,6 +366,7 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
     const ninetyDaysAgo = new Date(Date.now() - 90 * 86_400_000).toISOString();
     const activity = await db
       .select({
+        id: transactions.id,
         amount: transactions.amount,
         status: transactions.status,
         isExcluded: transactions.isExcluded,
@@ -360,6 +382,11 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
           gte(transactions.transactedOn, ninetyDaysAgo),
         ),
       );
+    const confirmedRefundByTransaction = await confirmedRefundAmounts(
+      db,
+      auth.householdId,
+      activity.filter(({ amount }) => amount > 0n).map(({ id }) => id),
+    );
     let income = 0n;
     let expenses = 0n;
     let pendingImpact = 0n;
@@ -369,7 +396,12 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
       if (transaction.status !== "posted") continue;
       if (transaction.amount > 0n) {
         if (transaction.isIncome) income += transaction.amount;
-        else if (transaction.isReimbursement) expenses -= transaction.amount;
+        else {
+          expenses -= cappedConfirmedRefund(
+            transaction.amount,
+            confirmedRefundByTransaction.get(transaction.id),
+          );
+        }
       } else {
         expenses += -transaction.amount;
       }
@@ -516,7 +548,14 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
       ? BigInt(preference.targetLiquidNetWorthMinorUnits)
       : 0n;
     const missingInputs: string[] = [];
-    if (report.accounts.length === 0) missingInputs.push("Connect or add at least one account");
+    if (report.accounts.length === 0) {
+      missingInputs.push("Connect or add at least one account");
+    } else if (report.accounts.every(({ status }) => status === "hidden" || status === "closed")) {
+      missingInputs.push("Reopen or add at least one active account");
+    }
+    if (report.accounts.some(({ status }) => status === "stale")) {
+      missingInputs.push("Reconnect or review accounts missing from the latest provider sync");
+    }
     const hasConfirmedIncome = activeIncomeRows.some(
       (source) => source.typicalAmount > 0n && source.currency === report.currency,
     );
@@ -583,6 +622,9 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
     for (const snapshot of report.balanceRows.sort((left, right) =>
       left.asOf.localeCompare(right.asOf),
     )) {
+      const account = accountById.get(snapshot.accountId);
+      if (!account || !isNetWorthAccountIncluded(account) || snapshot.currency !== report.currency)
+        continue;
       const day = snapshot.asOf.slice(0, 10);
       const dayAccounts = byDay.get(day) ?? new Map<string, BalancePoint>();
       dayAccounts.set(snapshot.accountId, {
@@ -604,16 +646,13 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
       valuationsByDay.set(day, dayAssets);
     }
 
-    const retirementPattern = /retire|401.?k|403.?b|457|ira|pension/i;
     const groupLabel = (account: (typeof report.accounts)[number]) => {
       if (account.isLiability) {
         return account.group === "credit" ? "Credit cards" : "Loans & debt";
       }
       if (account.group === "cash") return "Cash";
       if (account.group === "investment") {
-        return retirementPattern.test(`${account.name} ${account.type} ${account.subtype ?? ""}`)
-          ? "Retirement"
-          : "Taxable investments";
+        return isRetirementAccount(account) ? "Retirement" : "Taxable investments";
       }
       if (account.group === "crypto") return "Crypto";
       if (account.group === "property") return "Property";
@@ -648,22 +687,19 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
       };
       for (const [accountId, balance] of balances) {
         const account = accountById.get(accountId);
-        if (!account?.includeInNetWorth || balance.currency !== report.currency) continue;
+        if (!account || !isNetWorthAccountIncluded(account) || balance.currency !== report.currency)
+          continue;
         const signed = signedNetWorthBalance(balance.amount, account.isLiability);
         total += signed;
-        const isRetirement =
-          account.group === "investment" &&
-          retirementPattern.test(`${account.name} ${account.type} ${account.subtype ?? ""}`);
+        const isRetirement = isRetirementAccount(account);
         if (account.isLiability) {
           debts += signed < 0n ? -signed : signed;
-          if (account.group === "credit") liquid += signed;
+          liquid += liquidAccountContribution(account, balance.amount);
         } else {
           if (signed > 0n) grossAssets += signed;
           if (["investment", "crypto"].includes(account.group)) investable += signed;
           if (isRetirement) retirement += signed;
-          if (["cash", "investment", "crypto"].includes(account.group) && !isRetirement) {
-            liquid += signed;
-          }
+          liquid += liquidAccountContribution(account, balance.amount);
         }
         addGroup(
           groupLabel(account),
@@ -677,7 +713,7 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
         if (!asset || valuation.currency !== report.currency) continue;
         total += valuation.amount;
         grossAssets += valuation.amount;
-        if (asset.liquidityClass === "liquid") liquid += valuation.amount;
+        liquid += liquidAssetContribution(asset, valuation.amount);
         addGroup(
           assetGroupLabel(asset),
           valuation.amount,
@@ -694,15 +730,18 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
       report.balanceRows
         .filter((snapshot) => {
           const account = accountById.get(snapshot.accountId);
-          return account?.includeInNetWorth && snapshot.currency === report.currency;
+          return (
+            account !== undefined &&
+            isNetWorthAccountIncluded(account) &&
+            snapshot.currency === report.currency
+          );
         })
         .map((snapshot) => snapshot.accountId),
     );
     const observedAssetIds = new Set(
       report.valuationRows
         .filter(
-          (valuation) =>
-            assetById.has(valuation.assetId) && valuation.currency === report.currency,
+          (valuation) => assetById.has(valuation.assetId) && valuation.currency === report.currency,
         )
         .map((valuation) => valuation.assetId),
     );
@@ -800,6 +839,11 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
         ),
       )
       .orderBy(asc(transactions.transactedOn));
+    const confirmedRefundByTransaction = await confirmedRefundAmounts(
+      db,
+      auth.householdId,
+      rows.filter(({ amount }) => amount > 0n).map(({ id }) => id),
+    );
     const months = new Map<string, { income: bigint; expenses: bigint }>();
     for (const transaction of rows) {
       if (
@@ -812,7 +856,12 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
       const value = months.get(key) ?? { income: 0n, expenses: 0n };
       if (transaction.amount > 0n) {
         if (transaction.isIncome) value.income += transaction.amount;
-        else if (transaction.isReimbursement) value.expenses -= transaction.amount;
+        else {
+          value.expenses -= cappedConfirmedRefund(
+            transaction.amount,
+            confirmedRefundByTransaction.get(transaction.id),
+          );
+        }
       } else {
         value.expenses += -transaction.amount;
       }
@@ -840,7 +889,6 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
         amount: transactions.amount,
         currency: transactions.currency,
         isIncome: transactions.isIncome,
-        isReimbursement: transactions.isReimbursement,
         category: categories.name,
       })
       .from(transactions)
@@ -855,7 +903,47 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
         ),
       );
     const transactionIds = rows.map(({ id }) => id);
-    const splitRows = transactionIds.length
+    const refundTransactionIds = rows
+      .filter(({ amount, isIncome }) => amount > 0n && !isIncome)
+      .map(({ id }) => id);
+    const confirmedRefundRows = refundTransactionIds.length
+      ? await db
+          .select({
+            refundTransactionId: refundLinks.refundTransactionId,
+            purchaseTransactionId: refundLinks.purchaseTransactionId,
+            amount: refundLinks.amount,
+          })
+          .from(refundLinks)
+          .where(
+            and(
+              eq(refundLinks.householdId, auth.householdId),
+              eq(refundLinks.status, "confirmed"),
+              inArray(refundLinks.refundTransactionId, refundTransactionIds),
+            ),
+          )
+          .orderBy(asc(refundLinks.createdAt), asc(refundLinks.id))
+      : [];
+    const purchaseIds = [
+      ...new Set(confirmedRefundRows.map(({ purchaseTransactionId }) => purchaseTransactionId)),
+    ];
+    const purchaseRows = purchaseIds.length
+      ? await db
+          .select({
+            id: transactions.id,
+            amount: transactions.amount,
+            category: categories.name,
+          })
+          .from(transactions)
+          .leftJoin(categories, eq(categories.id, transactions.categoryId))
+          .where(
+            and(
+              eq(transactions.householdId, auth.householdId),
+              inArray(transactions.id, purchaseIds),
+            ),
+          )
+      : [];
+    const splitLookupIds = [...new Set([...transactionIds, ...purchaseIds])];
+    const splitRows = splitLookupIds.length
       ? await db
           .select({
             transactionId: transactionSplits.transactionId,
@@ -867,31 +955,80 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
           .where(
             and(
               eq(transactionSplits.householdId, auth.householdId),
-              inArray(transactionSplits.transactionId, transactionIds),
+              inArray(transactionSplits.transactionId, splitLookupIds),
             ),
           )
       : [];
     const totals = new Map<string, bigint>();
-    const splitTransactionIds = new Set(splitRows.map(({ transactionId }) => transactionId));
-    const addActivity = (
-      categoryName: string | null,
-      amount: bigint,
-      isIncome: boolean,
-      isReimbursement: boolean,
-    ) => {
-      if (amount > 0n && (isIncome || !isReimbursement)) return;
+    const splitsByTransaction = new Map<string, typeof splitRows>();
+    for (const split of splitRows) {
+      splitsByTransaction.set(split.transactionId, [
+        ...(splitsByTransaction.get(split.transactionId) ?? []),
+        split,
+      ]);
+    }
+    const addActivity = (categoryName: string | null, amount: bigint, isIncome: boolean) => {
+      if (amount === 0n || (amount > 0n && isIncome)) return;
       const category = categoryName ?? "Uncategorized";
       totals.set(category, (totals.get(category) ?? 0n) - amount);
     };
+    const addRefundAcrossPieces = (
+      pieces: Array<{ amount: bigint; category: string | null }>,
+      refundable: bigint,
+    ) => {
+      const denominator = pieces.reduce(
+        (total, piece) => total + (piece.amount < 0n ? -piece.amount : piece.amount),
+        0n,
+      );
+      if (refundable <= 0n || denominator === 0n) return;
+      const apportioned = pieces.map((piece, sequence) => {
+        const weight = piece.amount < 0n ? -piece.amount : piece.amount;
+        const numerator = refundable * weight;
+        return {
+          piece,
+          sequence,
+          amount: numerator / denominator,
+          remainder: numerator % denominator,
+        };
+      });
+      let centsLeft = refundable - apportioned.reduce((total, item) => total + item.amount, 0n);
+      apportioned.sort((left, right) =>
+        left.remainder === right.remainder
+          ? left.sequence - right.sequence
+          : left.remainder > right.remainder
+            ? -1
+            : 1,
+      );
+      for (const item of apportioned) {
+        const extra = centsLeft > 0n ? 1n : 0n;
+        centsLeft -= extra;
+        addActivity(item.piece.category, item.amount + extra, false);
+      }
+    };
     for (const row of rows) {
-      if (row.currency !== report.currency || splitTransactionIds.has(row.id)) continue;
-      addActivity(row.category, row.amount, row.isIncome, row.isReimbursement);
-    }
-    const transactionById = new Map(rows.map((row) => [row.id, row]));
-    for (const split of splitRows) {
-      const parent = transactionById.get(split.transactionId);
-      if (parent?.currency !== report.currency) continue;
-      addActivity(split.category, split.amount, parent.isIncome, parent.isReimbursement);
+      if (row.currency !== report.currency) continue;
+      if (row.amount <= 0n) {
+        const pieces = splitsByTransaction.get(row.id);
+        if (pieces?.length) {
+          for (const piece of pieces) addActivity(piece.category, piece.amount, false);
+        } else {
+          addActivity(row.category, row.amount, false);
+        }
+        continue;
+      }
+      if (row.isIncome) continue;
+      let remainingCredit = row.amount;
+      for (const link of confirmedRefundRows.filter(
+        ({ refundTransactionId }) => refundTransactionId === row.id,
+      )) {
+        if (remainingCredit <= 0n) break;
+        const purchase = purchaseRows.find(({ id }) => id === link.purchaseTransactionId);
+        if (!purchase) continue;
+        const pieces = splitsByTransaction.get(purchase.id) ?? [purchase];
+        const refundable = link.amount < remainingCredit ? link.amount : remainingCredit;
+        addRefundAcrossPieces(pieces, refundable);
+        remainingCredit -= refundable;
+      }
     }
     return context.json({
       categories: [...totals.entries()]

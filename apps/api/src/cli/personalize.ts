@@ -16,6 +16,7 @@ type Options = {
   aiBatchLimit: number;
   employerHint: string;
   starterProfile: boolean;
+  rebaseManagedBudget: boolean;
   userEmail?: string;
   householdId?: string;
 };
@@ -35,6 +36,7 @@ function parseArgs(args: string[]): Options {
     aiBatchLimit: 25,
     employerHint: "Park Place Tech",
     starterProfile: true,
+    rebaseManagedBudget: false,
   };
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
@@ -42,6 +44,7 @@ function parseArgs(args: string[]): Options {
     else if (argument === "--dry-run") options.apply = false;
     else if (argument === "--no-starter-profile") options.starterProfile = false;
     else if (argument === "--starter-profile") options.starterProfile = true;
+    else if (argument === "--rebase-managed-budget") options.rebaseManagedBudget = true;
     else if (argument === "--ai-batches") {
       options.aiBatches = integerArgument(args[++index], "--ai-batches", 20);
     } else if (argument.startsWith("--ai-batches=")) {
@@ -83,6 +86,7 @@ function parseArgs(args: string[]): Options {
           "  --user-email <email>      Explicit active owner/admin user target",
           "  --household <id>          Explicit active household target",
           "  --no-starter-profile      Do not apply the editable age-22/30 starter assumptions",
+          "  --rebase-managed-budget   Replace preserved generated allocation amounts with the latest evidence",
         ].join("\n"),
       );
       process.exit(0);
@@ -142,6 +146,7 @@ try {
     aiBatchLimit: options.aiBatchLimit,
     employerHint: options.employerHint,
     starterProfile: options.starterProfile,
+    rebaseManagedBudget: options.rebaseManagedBudget,
   });
   // This contract intentionally contains only aggregate counts, ratios, and cadence. It never
   // prints account names, merchant names, transaction descriptions, balances, or credentials.

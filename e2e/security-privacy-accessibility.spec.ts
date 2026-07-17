@@ -28,7 +28,7 @@ test.describe("security, privacy, and inclusive interaction", () => {
     const dialog = page.getByRole("dialog", { name: "Configure AI categorization" });
     await expect(dialog).toBeVisible();
     await dialog
-      .getByRole("textbox", { name: "OpenAI-compatible base URL" })
+      .getByRole("textbox", { name: "Supported AI provider base URL" })
       .fill("https://openrouter.ai/api/v1");
     await dialog.getByRole("textbox", { name: "Model" }).fill("tencent/hy3:free");
     await dialog.getByLabel(/API key|Replace API key/).fill(syntheticKey);

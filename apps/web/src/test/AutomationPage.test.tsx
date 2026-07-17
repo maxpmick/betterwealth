@@ -142,4 +142,35 @@ describe("Automation rules", () => {
       expect(screen.queryByRole("heading", { name: "Corner Table" })).not.toBeInTheDocument(),
     );
   });
+
+  it("regenerates a pending proposal from user context without applying it", async () => {
+    const user = userEvent.setup();
+    renderPage("/automation?tab=ai");
+
+    const heading = screen.getByRole("heading", { name: "Corner Table" });
+    const card = heading.closest(".MuiCard-root");
+    expect(card).not.toBeNull();
+    const suggestion = within(card as HTMLElement);
+    const regenerate = suggestion.getByRole("button", { name: /regenerate proposal/i });
+    expect(regenerate).toBeDisabled();
+    expect(
+      suggestion.getByRole("switch", { name: /research merchant on the web when needed/i }),
+    ).toBeChecked();
+
+    await user.type(
+      suggestion.getByRole("textbox", { name: /tell the ai what this really is/i }),
+      "This is actually my weekly grocery store.",
+    );
+    expect(regenerate).toBeEnabled();
+    await user.click(regenerate);
+
+    await waitFor(() => expect(suggestion.getByText("Groceries")).toBeInTheDocument());
+    expect(
+      suggestion.getByText("Description contains “TST* CORNER TABLE” → Groceries"),
+    ).toBeInTheDocument();
+    expect(suggestion.getByText(/updated from your correction/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Corner Table" })).toBeInTheDocument();
+    expect(suggestion.getByRole("button", { name: /approve category only/i })).toBeEnabled();
+    expect(suggestion.getByRole("button", { name: /approve \+ rule/i })).toBeEnabled();
+  });
 });

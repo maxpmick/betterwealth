@@ -7,6 +7,7 @@ import {
   envelopeAllocations,
   envelopes,
   incomeSources,
+  refundLinks,
   settings,
   transactions,
   users,
@@ -755,10 +756,11 @@ describe("goal planning API", () => {
     const oldest = new Date(Date.now() - 70 * 86_400_000).toISOString().slice(0, 10);
     const middle = new Date(Date.now() - 35 * 86_400_000).toISOString().slice(0, 10);
     const newest = new Date().toISOString().slice(0, 10);
+    const spendingId = ulid();
     const creditId = ulid();
     await application.db.insert(transactions).values([
       {
-        id: ulid(),
+        id: spendingId,
         householdId: auth.householdId,
         accountId: cashAccountId,
         amount: 900_000n,
@@ -818,14 +820,20 @@ describe("goal planning API", () => {
       monthlySurplusSource: "observed_90_day",
     });
 
-    await application.db
-      .update(transactions)
-      .set({ isReimbursement: true })
-      .where(eq(transactions.id, creditId));
+    await application.db.insert(refundLinks).values({
+      id: ulid(),
+      householdId: auth.householdId,
+      refundTransactionId: creditId,
+      purchaseTransactionId: spendingId,
+      amount: 100_000n,
+      confidenceBps: 10_000,
+      status: "confirmed",
+    });
     const goalsResponse = await request("/api/v1/goals");
     const goalsBody = (await goalsResponse.json()) as { data: GoalResponse[] };
     const refreshed = goalsBody.data.find(({ id }) => id === purchase.id);
-    const expectedAfterConfirmation = (900_000n * 30n) / BigInt(coverageDays + 1) - 100_000n;
+    const expectedAfterConfirmation =
+      ((900_000n - 200_000n) * 30n) / BigInt(coverageDays + 1) - 100_000n;
     expect(refreshed?.comfortablePurchase?.inputs.monthlySurplus).toEqual({
       minorUnits: expectedAfterConfirmation.toString(),
       currency: "USD",

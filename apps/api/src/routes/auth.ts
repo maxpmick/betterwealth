@@ -45,6 +45,10 @@ export function createAuthRoutes(db: BetterWealthDatabase, config: AppConfig) {
     });
     setCookie(context, SESSION_COOKIE, session.token, sessionCookieOptions(config, true));
     setCookie(context, CSRF_COOKIE, session.csrfToken, sessionCookieOptions(config, false));
+    // A host-scoped selector can outlive an older local instance or a removed membership. Start a
+    // fresh session from the user's first active household instead of letting stale browser state
+    // turn a valid login into an immediate forbidden response.
+    deleteCookie(context, HOUSEHOLD_COOKIE, { path: "/" });
     return context.json({ user, csrfToken: session.csrfToken });
   });
 

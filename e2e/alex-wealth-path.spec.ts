@@ -1,5 +1,10 @@
 import { expect, test } from "@playwright/test";
-import { expectNoHorizontalOverflow, loginAsAlex, patchTransactionByMerchant } from "./helpers";
+import {
+  authenticatedApi,
+  expectNoHorizontalOverflow,
+  loginAsAlex,
+  patchTransactionByMerchant,
+} from "./helpers";
 
 test.describe("Alex's age-22 path to wealth at 30", () => {
   test.beforeEach(async ({ page }) => {
@@ -56,12 +61,9 @@ test.describe("Alex's age-22 path to wealth at 30", () => {
   });
 
   test("loads the seeded paycheck budget and previews funding", async ({ page }) => {
-    const responsePromise = page.waitForResponse(
-      (response) =>
-        response.url().includes("/api/v1/budgets") && response.request().method() === "GET",
-    );
     await page.goto("/budget");
-    expect((await responsePromise).status()).toBe(200);
+    const budget = await authenticatedApi(page, "GET", "/budgets");
+    expect(budget.status).toBe(200);
     await expect(page.getByRole("heading", { name: "A job for every dollar" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Rent" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Groceries" })).toBeVisible();

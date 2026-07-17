@@ -690,7 +690,7 @@ function demoTransaction(transaction: (typeof fixtureTransactions)[number]): Api
   const accountId = fixtureAccounts.find((account) => account.name === transaction.account)?.id;
   return {
     id: transaction.id,
-    ...(accountId ? { accountId } : {}),
+    accountId: accountId ?? "demo-account",
     effectiveDate: "2026-07-16",
     description: transaction.rawDescription,
     merchant: transaction.merchant,
@@ -737,16 +737,69 @@ function previewDemoRule(
 }
 
 function toSuggestionView(suggestion: ApiAiSuggestion): SuggestionView {
+  const categoryPath = (suggestion.categoryPath ?? [])
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  if (
+    categoryPath.length > 0 &&
+    categoryPath.at(-1)?.toLocaleLowerCase() !== suggestion.categoryName.toLocaleLowerCase()
+  ) {
+    categoryPath.push(suggestion.categoryName);
+  }
   return {
     id: suggestion.id,
     merchant: suggestion.merchant,
     raw: suggestion.rawDescription ?? suggestion.merchant,
-    category: suggestion.categoryName,
+    category: categoryPath.length > 0 ? categoryPath.join(" › ") : suggestion.categoryName,
     confidence: Math.round(suggestion.confidence * 100),
     amount: suggestion.amount ? Number(suggestion.amount.minorUnits) / 100 : 0,
     rationale: suggestion.rationale,
     proposal:
       suggestion.proposedRule?.name ?? `Categorize this merchant as ${suggestion.categoryName}`,
+  };
+}
+
+function regenerateDemoSuggestion(
+  suggestion: ApiAiSuggestion,
+  feedback: string,
+  categories: ApiCategory[],
+): ApiAiSuggestion {
+  const normalizedFeedback = feedback.toLocaleLowerCase();
+  const categoryAliases: Array<[RegExp, string]> = [
+    [/\b(grocer(?:y|ies)|supermarket|food market)\b/u, "Groceries"],
+    [/\b(restaurant|dining|cafe|coffee|takeout)\b/u, "Dining"],
+    [/\b(gas|fuel|parking|transit|transportation|rideshare)\b/u, "Transportation"],
+    [/\b(power|electric|water|internet|utility|utilities)\b/u, "Utilities"],
+    [/\b(paycheck|payroll|salary|income)\b/u, "Income"],
+    [/\b(transfer|card payment)\b/u, "Transfer"],
+  ];
+  const namedCategory = categories.find((category) =>
+    normalizedFeedback.includes(category.name.toLocaleLowerCase()),
+  );
+  const aliasName = categoryAliases.find(([pattern]) => pattern.test(normalizedFeedback))?.[1];
+  const aliasCategory = categories.find((category) => category.name === aliasName);
+  const category = namedCategory ?? aliasCategory;
+  const rawDescription = suggestion.rawDescription ?? suggestion.merchant;
+  const correctedCategoryId = category?.id ?? suggestion.categoryId;
+  const correctedCategoryName = category?.name ?? suggestion.categoryName;
+
+  return {
+    ...suggestion,
+    categoryId: correctedCategoryId,
+    categoryName: correctedCategoryName,
+    confidence: Math.max(suggestion.confidence, 0.9),
+    rationale: `Updated from your correction: “${feedback.trim()}”. Review the new category and rule before applying either one.`,
+    proposedRule: {
+      name: `Description contains “${rawDescription}” → ${correctedCategoryName}`,
+      conditions: {
+        field: "normalizedDescription",
+        operator: "contains",
+        value: rawDescription,
+        caseSensitive: false,
+      },
+      actions: [{ type: "setCategory", categoryId: correctedCategoryId }],
+    },
+    status: "pending",
   };
 }
 
@@ -1527,22 +1580,43 @@ function RuleRow({
 function SuggestionCard({
   suggestion,
   onReview,
+  onRegenerate,
 }: {
   suggestion: SuggestionView;
   onReview: (status: "accepted" | "rejected", createRule: boolean) => Promise<void>;
+  onRegenerate: (feedback: string, allowWebResearch: boolean) => Promise<void>;
 }) {
-  const [working, setWorking] = useState(false);
-  const [error, setError] = useState("");
+  const [reviewing, setReviewing] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+  const [feedback, setFeedback] = useState("");
+  const [allowWebResearch, setAllowWebResearch] = useState(true);
+  const [reviewError, setReviewError] = useState("");
+  const [regenerationError, setRegenerationError] = useState("");
   const review = async (status: "accepted" | "rejected", createRule: boolean) => {
     try {
-      setWorking(true);
-      setError("");
+      setReviewing(true);
+      setReviewError("");
       await onReview(status, createRule);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Review failed.");
-      setWorking(false);
+      setReviewError(caught instanceof Error ? caught.message : "Review failed.");
+      setReviewing(false);
     }
   };
+  const regenerate = async () => {
+    try {
+      setRegenerating(true);
+      setRegenerationError("");
+      await onRegenerate(feedback.trim(), allowWebResearch);
+      setFeedback("");
+    } catch (caught) {
+      setRegenerationError(
+        caught instanceof Error ? caught.message : "The proposal could not be regenerated.",
+      );
+    } finally {
+      setRegenerating(false);
+    }
+  };
+  const busy = reviewing || regenerating;
   return (
     <Card>
       <CardContent sx={{ p: 5 }}>
@@ -1599,10 +1673,68 @@ function SuggestionCard({
               {suggestion.proposal}
             </Typography>
           </Box>
+          <Box sx={{ mt: 1 }}>
+            <TextField
+              fullWidth
+              multiline
+              minRows={2}
+              maxRows={5}
+              label="Tell the AI what this really is"
+              placeholder="Example: This is my weekly grocery store, not a restaurant."
+              value={feedback}
+              disabled={busy}
+              onChange={(event) => setFeedback(event.target.value)}
+              inputProps={{ maxLength: 800 }}
+              helperText="Your correction and minimized transaction context go to your configured AI provider. No transaction or rule changes until you approve."
+            />
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              alignItems={{ xs: "stretch", sm: "center" }}
+              justifyContent="space-between"
+              gap={2}
+              sx={{ mt: 2 }}
+            >
+              <FormControlLabel
+                sx={{ m: 0 }}
+                control={
+                  <Switch
+                    checked={allowWebResearch}
+                    disabled={busy}
+                    onChange={(event) => setAllowWebResearch(event.target.checked)}
+                    inputProps={{ "aria-label": "Research merchant on the web when needed" }}
+                  />
+                }
+                label={
+                  <Box>
+                    <Typography variant="body2" fontWeight={700}>
+                      Research merchant on the web when needed
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      May use public merchant information to resolve an uncertain name.
+                    </Typography>
+                  </Box>
+                }
+              />
+              <Button
+                variant="outlined"
+                startIcon={<AutoAwesomeRounded />}
+                disabled={busy || feedback.trim().length < 3}
+                onClick={() => void regenerate()}
+                sx={{ flexShrink: 0 }}
+              >
+                {regenerating ? "Regenerating…" : "Regenerate proposal"}
+              </Button>
+            </Stack>
+          </Box>
         </Stack>
-        {error ? (
+        {regenerationError ? (
           <Alert severity="error" sx={{ mt: 3 }}>
-            {error}
+            {regenerationError}
+          </Alert>
+        ) : null}
+        {reviewError ? (
+          <Alert severity="error" sx={{ mt: 3 }}>
+            {reviewError}
           </Alert>
         ) : null}
         <Stack
@@ -1611,22 +1743,14 @@ function SuggestionCard({
           gap={2}
           sx={{ mt: 5 }}
         >
-          <Button color="inherit" disabled={working} onClick={() => void review("rejected", false)}>
+          <Button color="inherit" disabled={busy} onClick={() => void review("rejected", false)}>
             Reject
           </Button>
-          <Button
-            variant="outlined"
-            disabled={working}
-            onClick={() => void review("accepted", false)}
-          >
+          <Button variant="outlined" disabled={busy} onClick={() => void review("accepted", false)}>
             Approve category only
           </Button>
-          <Button
-            variant="contained"
-            disabled={working}
-            onClick={() => void review("accepted", true)}
-          >
-            {working ? "Saving…" : "Approve + rule"}
+          <Button variant="contained" disabled={busy} onClick={() => void review("accepted", true)}>
+            {reviewing ? "Saving…" : "Approve + rule"}
           </Button>
         </Stack>
       </CardContent>
@@ -1865,6 +1989,42 @@ export function AutomationPage() {
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: ["ai-suggestions"] }),
           queryClient.invalidateQueries({ queryKey: ["rules"] }),
+        ]);
+      }
+    },
+  });
+  const regenerateSuggestion = useMutation({
+    mutationFn: async ({
+      id,
+      feedback,
+      allowWebResearch,
+    }: {
+      id: string;
+      feedback: string;
+      allowWebResearch: boolean;
+    }) => {
+      let regenerated: ApiAiSuggestion;
+      if (demo) {
+        const current = queryClient.getQueryData<CursorPage<ApiAiSuggestion>>(["ai-suggestions"]);
+        const suggestion = current?.data.find((item) => item.id === id);
+        if (!suggestion) throw new Error("That suggestion is no longer in the review queue.");
+        regenerated = regenerateDemoSuggestion(suggestion, feedback, categories);
+      } else {
+        regenerated = await api.regenerateAiSuggestion(id, { feedback, allowWebResearch });
+      }
+      queryClient.setQueryData<CursorPage<ApiAiSuggestion>>(["ai-suggestions"], (current) => ({
+        data: (current?.data ?? []).map((suggestion) =>
+          suggestion.id === id ? regenerated : suggestion,
+        ),
+        page: current?.page ?? { cursor: null, hasMore: false },
+      }));
+      return regenerated;
+    },
+    onSuccess: async () => {
+      if (!demo) {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["ai-suggestions"] }),
+          queryClient.invalidateQueries({ queryKey: ["categories"] }),
         ]);
       }
     },
@@ -2115,6 +2275,13 @@ export function AutomationPage() {
                   onReview={(status, createRule) =>
                     reviewSuggestion.mutateAsync({ id: suggestion.id, status, createRule })
                   }
+                  onRegenerate={async (feedback, allowWebResearch) => {
+                    await regenerateSuggestion.mutateAsync({
+                      id: suggestion.id,
+                      feedback,
+                      allowWebResearch,
+                    });
+                  }}
                 />
               ))}
               {!suggestionViews.length ? (

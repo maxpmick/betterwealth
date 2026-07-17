@@ -11,12 +11,13 @@ import { cors } from "hono/cors";
 import { requestId } from "hono/request-id";
 import { secureHeaders } from "hono/secure-headers";
 import { ZodError } from "zod";
+import { isTrustedWebOrigin } from "./auth/middleware";
 import type { AppConfig } from "./config";
 import { AppError } from "./lib/errors";
 import { createLogger } from "./lib/logger";
 import { rateLimit } from "./lib/rate-limit";
 import { createAuthRoutes } from "./routes/auth";
-import { createIntegrationRoutes } from "./routes/integrations";
+import { createIntegrationRoutes, type IntegrationRouteDependencies } from "./routes/integrations";
 import { createLedgerRoutes } from "./routes/ledger";
 import { createOperationRoutes } from "./routes/operations";
 import { createPlanningRoutes } from "./routes/planning";
@@ -27,6 +28,10 @@ export interface BetterWealthApplication {
   app: Hono<AppEnv>;
   db: BetterWealthDatabase;
   close(): void;
+}
+
+export interface BetterWealthApplicationDependencies {
+  integrations?: IntegrationRouteDependencies;
 }
 
 const documentedOperations = [
@@ -53,6 +58,9 @@ const documentedOperations = [
   ["POST", "/transactions", "Create a manual transaction"],
   ["GET", "/transactions/{id}", "Read transaction details and ledger links"],
   ["PATCH", "/transactions/{id}", "Update or approve a transaction"],
+  ["DELETE", "/transactions/{id}", "Soft-remove a transaction with audit history"],
+  ["POST", "/transactions/{id}/restore", "Restore a soft-removed transaction"],
+  ["PUT", "/transactions/{id}/tags", "Replace transaction tags"],
   ["PUT", "/transactions/{id}/splits", "Replace exact transaction splits"],
   ["DELETE", "/transactions/{id}/splits", "Remove transaction splits"],
   ["POST", "/transactions/bulk", "Bulk update transactions"],
@@ -71,6 +79,7 @@ const documentedOperations = [
   ["PUT", "/settings/integrations/ai", "Configure the current user's encrypted AI provider"],
   ["POST", "/ai/suggestions/transactions/{id}", "Request a bounded transaction suggestion"],
   ["GET", "/ai/suggestions", "List AI categorization suggestions"],
+  ["POST", "/ai/suggestions/{id}/regenerate", "Regenerate an AI suggestion from user feedback"],
   ["PATCH", "/ai/suggestions/{id}", "Review an AI suggestion"],
   ["GET", "/envelopes", "List envelope definitions"],
   ["POST", "/envelopes", "Create an envelope"],
@@ -171,7 +180,10 @@ function openApiPaths() {
   return paths;
 }
 
-export function createApp(config: AppConfig): BetterWealthApplication {
+export function createApp(
+  config: AppConfig,
+  dependencies: BetterWealthApplicationDependencies = {},
+): BetterWealthApplication {
   if (config.dataDirectory !== ":memory:") {
     mkdirSync(config.dataDirectory, { recursive: true, mode: 0o700 });
     chmodSync(config.dataDirectory, 0o700);
@@ -212,7 +224,7 @@ export function createApp(config: AppConfig): BetterWealthApplication {
   app.use(
     "/api/*",
     cors({
-      origin: config.WEB_ORIGIN,
+      origin: (origin) => (isTrustedWebOrigin(config, origin) ? origin : undefined),
       allowHeaders: ["Content-Type", "X-CSRF-Token", "Idempotency-Key"],
       allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
       exposeHeaders: ["X-Request-Id", "RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset"],
@@ -247,6 +259,7 @@ export function createApp(config: AppConfig): BetterWealthApplication {
     ["/api/v1/connections/simplefin/claim", 5, 3_600_000, "simplefin-claim"],
     ["/api/v1/sync-runs", 30, 3_600_000, "sync"],
     ["/api/v1/ai/suggestions/transactions/*", 30, 60_000, "ai-suggestion"],
+    ["/api/v1/ai/suggestions/*/regenerate", 20, 60_000, "ai-regenerate"],
     ["/api/v1/imports/transactions", 12, 3_600_000, "import"],
     ["/api/v1/forecasts", 20, 60_000, "forecast"],
     ["/api/v1/data-export", 6, 3_600_000, "export"],
@@ -317,7 +330,7 @@ export function createApp(config: AppConfig): BetterWealthApplication {
   app.route("/api/v1/auth", createAuthRoutes(db, config));
   app.route("/api/v1", createLedgerRoutes(db, config));
   app.route("/api/v1/reports", createReportRoutes(db, config));
-  app.route("/api/v1", createIntegrationRoutes(db, config));
+  app.route("/api/v1", createIntegrationRoutes(db, config, dependencies.integrations));
   app.route("/api/v1", createOperationRoutes(db, config));
   app.route("/api/v1", createPlanningRoutes(db, config));
 

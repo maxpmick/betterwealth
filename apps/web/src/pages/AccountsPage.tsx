@@ -1,7 +1,6 @@
 import {
   AccountBalanceRounded,
   AddRounded,
-  CheckCircleRounded,
   CloseRounded,
   CloudSyncRounded,
   CreditCardRounded,
@@ -9,10 +8,10 @@ import {
   LinkRounded,
   ReceiptLongRounded,
   RefreshRounded,
+  RestoreRounded,
   SavingsRounded,
   ShowChartRounded,
   WalletRounded,
-  WarningAmberRounded,
 } from "@mui/icons-material";
 import {
   Alert,
@@ -42,6 +41,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Link as RouterLink, useSearchParams } from "react-router-dom";
 import {
+  type AccountUpdateInput,
   type ApiAccount,
   type ApiAccountBalanceHistory,
   type ApiAsset,
@@ -87,6 +87,13 @@ const groupTransport: Record<string, ApiAccount["group"]> = {
   Custom: "custom",
 };
 
+type AccountView = AccountItem & {
+  groupKey: ApiAccount["group"];
+  accountType: string;
+  accountSubtype: string;
+  accountStatus: NonNullable<ApiAccount["status"]>;
+};
+
 export function parseSignedCurrencyMinorUnits(value: string): string | null {
   const normalized = value.trim().replace(/[$,\s]/g, "");
   if (!/^[+-]?\d+(?:\.\d{1,2})?$/.test(normalized)) return null;
@@ -103,6 +110,10 @@ const demoAccounts: CursorPage<ApiAccount> = {
     name: account.name,
     mask: account.mask,
     group: groupTransport[account.group] ?? "custom",
+    type: account.type,
+    subtype: null,
+    institutionName: account.institution,
+    isManual: account.status === "Manual",
     balance: { minorUnits: String(Math.round(account.balance * 100)), currency: "USD" },
     syncStatus:
       account.status === "Healthy"
@@ -166,12 +177,18 @@ function demoBalanceHistory(account: AccountItem): ApiAccountBalanceHistory {
   };
 }
 
-function toAccountItem(account: ApiAccount): AccountItem {
+function toAccountItem(account: ApiAccount): AccountView {
+  const accountType = account.subtype || account.type;
   return {
     id: account.id,
     name: account.name,
-    institution: account.syncStatus === "manual" ? "Manual" : "Connected institution",
-    type: groupLabels[account.group],
+    institution:
+      account.syncStatus === "manual" || account.isManual
+        ? "Manual"
+        : account.institutionName || "Connected account",
+    type: accountType
+      ? accountType.replace(/[_-]+/g, " ").replace(/\b\w/g, (character) => character.toUpperCase())
+      : groupLabels[account.group],
     group: groupLabels[account.group],
     mask: account.mask,
     balance: Number(account.balance.minorUnits) / 100,
@@ -183,6 +200,10 @@ function toAccountItem(account: ApiAccount): AccountItem {
           ? "Manual"
           : "Attention",
     updated: new Date(account.updatedAt).toLocaleString(),
+    groupKey: account.group,
+    accountType: account.type ?? (account.syncStatus === "manual" ? "manual" : account.group),
+    accountSubtype: account.subtype ?? "",
+    accountStatus: account.status ?? "active",
   };
 }
 
@@ -258,9 +279,9 @@ function AccountDetail({
   saving,
   error,
 }: {
-  account: AccountItem | null;
+  account: AccountView | null;
   onClose: () => void;
-  onSave: (id: string, name: string, balanceMinorUnits?: string) => Promise<void>;
+  onSave: (id: string, input: AccountUpdateInput) => Promise<void>;
   saving: boolean;
   error: string | null;
 }) {
@@ -270,11 +291,23 @@ function AccountDetail({
   const demo = isDemoMode();
   const [tab, setTab] = useState("overview");
   const [name, setName] = useState(account?.name ?? "");
+  const [accountGroup, setAccountGroup] = useState<ApiAccount["group"]>(
+    account?.groupKey ?? "cash",
+  );
+  const [accountType, setAccountType] = useState(account?.accountType ?? "");
+  const [accountSubtype, setAccountSubtype] = useState(account?.accountSubtype ?? "");
+  const [accountStatus, setAccountStatus] = useState<NonNullable<ApiAccount["status"]>>(
+    account?.accountStatus ?? "active",
+  );
   const [recordedBalance, setRecordedBalance] = useState(
     account ? account.balance.toFixed(2) : "0.00",
   );
   useEffect(() => {
     setName(account?.name ?? "");
+    setAccountGroup(account?.groupKey ?? "cash");
+    setAccountType(account?.accountType ?? "");
+    setAccountSubtype(account?.accountSubtype ?? "");
+    setAccountStatus(account?.accountStatus ?? "active");
     setRecordedBalance(account ? account.balance.toFixed(2) : "0.00");
   }, [account]);
   const balanceQuery = useQuery({
@@ -289,7 +322,10 @@ function AccountDetail({
   });
   const transactionsQuery = useQuery({
     queryKey: ["transactions", "account", account?.id],
-    queryFn: () => api.transactions(""),
+    queryFn: () =>
+      account
+        ? api.accountTransactions(account.id, 100)
+        : Promise.reject(new Error("Select an account to load its recent activity.")),
     enabled: Boolean(account) && !demo && tab === "activity",
     retry: 1,
   });
@@ -304,13 +340,26 @@ function AccountDetail({
       balance: Number(snapshot.current.minorUnits) / 100,
     })) ?? [];
   const activity =
-    transactionsQuery.data?.data.filter(
-      (transaction) =>
-        transaction.accountId === account.id ||
-        (!transaction.accountId && transaction.accountName === account.name),
-    ) ?? [];
-  const reconciliation = balanceQuery.data?.summary.reconciled;
+    transactionsQuery.data?.data.filter((transaction) => transaction.status !== "removed") ?? [];
   const recordedBalanceMinorUnits = parseSignedCurrencyMinorUnits(recordedBalance);
+  const normalizedName = name.trim();
+  const normalizedType = accountType.trim();
+  const normalizedSubtype = accountSubtype.trim() || null;
+  const accountPatch: AccountUpdateInput = {
+    ...(normalizedName !== account.name ? { name: normalizedName } : {}),
+    ...(accountGroup !== account.groupKey ? { group: accountGroup } : {}),
+    ...(normalizedType !== account.accountType ? { type: normalizedType } : {}),
+    ...(normalizedSubtype !== (account.accountSubtype || null)
+      ? { subtype: normalizedSubtype }
+      : {}),
+    ...(accountStatus !== account.accountStatus ? { status: accountStatus } : {}),
+    ...(account.status === "Manual" &&
+    recordedBalanceMinorUnits !== null &&
+    recordedBalanceMinorUnits !== String(Math.round(account.balance * 100))
+      ? { balanceMinorUnits: recordedBalanceMinorUnits }
+      : {}),
+  };
+  const hasChanges = Object.keys(accountPatch).length > 0;
   return (
     <Drawer
       anchor="right"
@@ -422,42 +471,61 @@ function AccountDetail({
                   : "Sync or update this account to create a dated snapshot."}
             </Typography>
             <Divider sx={{ my: 5 }} />
-            <SectionHeader
-              title="Reconciliation"
-              description="The provider’s current balance is compared with its ledger balance at the latest checkpoint."
-            />
-            <Box sx={{ mt: 3, p: 4, borderRadius: 3, bgcolor: "action.hover" }}>
-              <Stack direction="row" gap={2} alignItems="center">
-                {reconciliation === true ? (
-                  <CheckCircleRounded color="success" />
-                ) : reconciliation === false ? (
-                  <WarningAmberRounded color="warning" />
-                ) : (
-                  <CloudSyncRounded color="disabled" />
-                )}
-                <Box>
-                  <Typography variant="body2" fontWeight={700}>
-                    {reconciliation === true
-                      ? "Current and ledger balances agree"
-                      : reconciliation === false
-                        ? "Current and ledger balances differ"
-                        : "No reconciliation checkpoint yet"}
-                  </Typography>
-                  {balanceQuery.data?.summary.latestAsOf ? (
-                    <Typography variant="caption" color="text.secondary">
-                      Checked {new Date(balanceQuery.data.summary.latestAsOf).toLocaleString()}
-                    </Typography>
-                  ) : null}
-                </Box>
-              </Stack>
-            </Box>
-            <Divider sx={{ my: 5 }} />
             <TextField
               label="Display name"
               value={name}
               onChange={(event) => setName(event.target.value)}
               fullWidth
             />
+            <Box
+              sx={{
+                display: "grid",
+                gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
+                gap: 3,
+                mt: 3,
+              }}
+            >
+              <TextField
+                select
+                label="Account group"
+                value={accountGroup}
+                onChange={(event) => setAccountGroup(event.target.value as ApiAccount["group"])}
+              >
+                {(Object.entries(groupLabels) as Array<[ApiAccount["group"], string]>).map(
+                  ([value, label]) => (
+                    <MenuItem key={value} value={value}>
+                      {label}
+                    </MenuItem>
+                  ),
+                )}
+              </TextField>
+              <TextField
+                select
+                label="Account status"
+                value={accountStatus}
+                onChange={(event) =>
+                  setAccountStatus(event.target.value as NonNullable<ApiAccount["status"]>)
+                }
+              >
+                <MenuItem value="active">Active</MenuItem>
+                <MenuItem value="hidden">Hidden</MenuItem>
+                <MenuItem value="closed">Closed</MenuItem>
+                {accountStatus === "stale" ? (
+                  <MenuItem value="stale">Needs attention (provider)</MenuItem>
+                ) : null}
+              </TextField>
+              <TextField
+                label="Account type"
+                value={accountType}
+                onChange={(event) => setAccountType(event.target.value)}
+                helperText="Examples: checking, credit card, brokerage, mortgage"
+              />
+              <TextField
+                label="Account subtype (optional)"
+                value={accountSubtype}
+                onChange={(event) => setAccountSubtype(event.target.value)}
+              />
+            </Box>
             {account.status === "Manual" ? (
               <TextField
                 label="Recorded balance"
@@ -488,46 +556,53 @@ function AccountDetail({
             onRetry={() => transactionsQuery.refetch()}
           />
         ) : activity.length ? (
-          <Stack divider={<Divider />}>
-            {activity.slice(0, 100).map((transaction: ApiTransaction) => (
-              <Stack
-                key={transaction.id}
-                direction="row"
-                alignItems="center"
-                gap={2.5}
-                sx={{ py: 2.5 }}
-              >
-                <Box
-                  sx={{
-                    width: 38,
-                    height: 38,
-                    borderRadius: 2.5,
-                    display: "grid",
-                    placeItems: "center",
-                    bgcolor: "action.hover",
-                    color: "text.secondary",
-                  }}
+          <Stack>
+            <Typography variant="caption" color="text.secondary" sx={{ mb: 2 }}>
+              {transactionsQuery.data?.page.hasMore
+                ? "Showing the 100 most recent ledger entries for this account. Older activity remains available in the full ledger."
+                : `Showing ${activity.length} recent ledger entr${activity.length === 1 ? "y" : "ies"} for this account.`}
+            </Typography>
+            <Stack divider={<Divider />}>
+              {activity.map((transaction: ApiTransaction) => (
+                <Stack
+                  key={transaction.id}
+                  direction="row"
+                  alignItems="center"
+                  gap={2.5}
+                  sx={{ py: 2.5 }}
                 >
-                  <ReceiptLongRounded fontSize="small" />
-                </Box>
-                <Box sx={{ minWidth: 0, flex: 1 }}>
-                  <Typography variant="body2" fontWeight={700} noWrap>
-                    {transaction.merchant || transaction.description}
+                  <Box
+                    sx={{
+                      width: 38,
+                      height: 38,
+                      borderRadius: 2.5,
+                      display: "grid",
+                      placeItems: "center",
+                      bgcolor: "action.hover",
+                      color: "text.secondary",
+                    }}
+                  >
+                    <ReceiptLongRounded fontSize="small" />
+                  </Box>
+                  <Box sx={{ minWidth: 0, flex: 1 }}>
+                    <Typography variant="body2" fontWeight={700} noWrap>
+                      {transaction.merchant || transaction.description}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" noWrap>
+                      {transaction.categoryName} ·{" "}
+                      {new Date(transaction.effectiveDate).toLocaleDateString()}
+                    </Typography>
+                  </Box>
+                  <Typography variant="body2" fontWeight={750}>
+                    <Money
+                      value={Number(transaction.amount.minorUnits) / 100}
+                      currency={transaction.amount.currency}
+                      sign
+                    />
                   </Typography>
-                  <Typography variant="caption" color="text.secondary" noWrap>
-                    {transaction.categoryName} ·{" "}
-                    {new Date(transaction.effectiveDate).toLocaleDateString()}
-                  </Typography>
-                </Box>
-                <Typography variant="body2" fontWeight={750}>
-                  <Money
-                    value={Number(transaction.amount.minorUnits) / 100}
-                    currency={transaction.amount.currency}
-                    sign
-                  />
-                </Typography>
-              </Stack>
-            ))}
+                </Stack>
+              ))}
+            </Stack>
           </Stack>
         ) : (
           <EmptyState
@@ -553,17 +628,13 @@ function AccountDetail({
           <Button
             variant="contained"
             disabled={
-              !name.trim() ||
+              !normalizedName ||
+              !normalizedType ||
+              !hasChanges ||
               saving ||
               (account.status === "Manual" && recordedBalanceMinorUnits === null)
             }
-            onClick={() =>
-              void onSave(
-                account.id,
-                name,
-                account.status === "Manual" ? (recordedBalanceMinorUnits ?? undefined) : undefined,
-              )
-            }
+            onClick={() => void onSave(account.id, accountPatch)}
           >
             {saving ? "Saving…" : "Save changes"}
           </Button>
@@ -579,12 +650,15 @@ function AccountDetail({
 
 export function AccountsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [selected, setSelected] = useState<AccountItem | null>(null);
+  const [selected, setSelected] = useState<AccountView | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [addMode, setAddMode] = useState<"choose" | "account" | "asset">("choose");
   const [name, setName] = useState("");
   const [group, setGroup] = useState<ApiAccount["group"]>("cash");
   const [balance, setBalance] = useState("0");
+  const [demoAccountData, setDemoAccountData] = useState<ApiAccount[]>(demoAccounts.data);
+  const [demoAssetData, setDemoAssetData] = useState<ApiAsset[]>(demoAssets.data);
+  const [demoMessage, setDemoMessage] = useState("");
   const demo = isDemoMode();
   const queryClient = useQueryClient();
   const newBalanceMinorUnits = parseSignedCurrencyMinorUnits(balance);
@@ -621,7 +695,14 @@ export function AccountsPage() {
     enabled: !demo,
     retry: 1,
   });
-  const accountItems = accountsQuery.data?.data.map(toAccountItem) ?? [];
+  const accountData = demo ? demoAccountData : (accountsQuery.data?.data ?? []);
+  const assetData = demo ? demoAssetData : (assetsQuery.data?.data ?? []);
+  const activeAccountItems = accountData
+    .filter((account) => account.status !== "hidden" && account.status !== "closed")
+    .map(toAccountItem);
+  const archivedAccountItems = accountData
+    .filter((account) => account.status === "hidden" || account.status === "closed")
+    .map(toAccountItem);
   const invalidate = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["accounts"] }),
@@ -655,19 +736,8 @@ export function AccountsPage() {
     },
   });
   const updateAccount = useMutation({
-    mutationFn: ({
-      id,
-      displayName,
-      balanceMinorUnits,
-    }: {
-      id: string;
-      displayName: string;
-      balanceMinorUnits?: string;
-    }) =>
-      api.updateAccount(id, {
-        name: displayName,
-        ...(balanceMinorUnits !== undefined ? { balanceMinorUnits } : {}),
-      }),
+    mutationFn: ({ id, input }: { id: string; input: Parameters<typeof api.updateAccount>[1] }) =>
+      api.updateAccount(id, input),
     onSuccess: async (_result, variables) => {
       setSelected(null);
       await Promise.all([
@@ -680,30 +750,27 @@ export function AccountsPage() {
     mutationFn: api.sync,
     onSuccess: async () => queryClient.invalidateQueries({ queryKey: ["accounts"] }),
   });
-  const groups = [...new Set(accountItems.map((account) => account.group))];
+  const groups = [...new Set(activeAccountItems.map((account) => account.group))];
   const totals = useMemo(
     () => ({
       assets:
-        accountItems
+        activeAccountItems
           .filter((item) => item.balance > 0)
           .reduce((sum, item) => sum + item.balance, 0) +
-        (assetsQuery.data?.data.reduce(
-          (sum, asset) => sum + Number(asset.value.minorUnits) / 100,
-          0,
-        ) ?? 0),
+        (assetData.reduce((sum, asset) => sum + Number(asset.value.minorUnits) / 100, 0) ?? 0),
       liabilities: Math.abs(
-        accountItems
+        activeAccountItems
           .filter((item) => item.balance < 0)
           .reduce((sum, item) => sum + item.balance, 0),
       ),
-      cash: accountItems
+      cash: activeAccountItems
         .filter((item) => item.group === "Cash")
         .reduce((sum, item) => sum + item.balance, 0),
-      invested: accountItems
+      invested: activeAccountItems
         .filter((item) => item.group === "Investments")
         .reduce((sum, item) => sum + item.balance, 0),
     }),
-    [accountItems, assetsQuery.data],
+    [activeAccountItems, assetData],
   );
 
   if (accountsQuery.isPending || assetsQuery.isPending || connectionsQuery.isPending)
@@ -737,7 +804,45 @@ export function AccountsPage() {
     );
   const saveNew = () => {
     if (demo) {
+      const now = new Date().toISOString();
+      const id = `demo_${addMode}_${Date.now()}`;
+      if (addMode === "account") {
+        setDemoAccountData((current) => [
+          ...current,
+          {
+            id,
+            name: name.trim(),
+            mask: "manual",
+            group,
+            balance: { minorUnits: newBalanceMinorUnits ?? "0", currency: "USD" },
+            syncStatus: "manual",
+            type: "manual",
+            subtype: null,
+            institutionName: null,
+            isManual: true,
+            updatedAt: now,
+          },
+        ]);
+        setDemoMessage(`${name.trim()} was added to this interactive demo session.`);
+      }
+      if (addMode === "asset") {
+        setDemoAssetData((current) => [
+          ...current,
+          {
+            id,
+            name: name.trim(),
+            type: group === "vehicle" ? "vehicle" : group === "property" ? "property" : "custom",
+            value: { minorUnits: newBalanceMinorUnits ?? "0", currency: "USD" },
+            valuedAt: now,
+            source: "manual",
+            confidence: "medium",
+            liquidityClass: "illiquid",
+          },
+        ]);
+        setDemoMessage(`${name.trim()} was added to this interactive demo session.`);
+      }
       setAddOpen(false);
+      setName("");
       return;
     }
     if (addMode === "account")
@@ -756,7 +861,7 @@ export function AccountsPage() {
       <PageHeader
         eyebrow="Accounts & assets"
         title="Every balance, in its proper place"
-        description="Connection health stays separate from account truth. Manual accounts remain first-class and fully reconcilable."
+        description="Connection health stays separate from account truth. Manual accounts remain first-class and editable."
         actions={
           <>
             {connectionsQuery.data?.data.length ? (
@@ -791,6 +896,7 @@ export function AccountsPage() {
           </>
         }
       />
+      {demoMessage ? <Alert severity="success">{demoMessage}</Alert> : null}
       {sync.error instanceof Error ? <Alert severity="error">{sync.error.message}</Alert> : null}
       <Box
         sx={{
@@ -802,7 +908,7 @@ export function AccountsPage() {
         <MetricCard
           label="Assets"
           value={<Money value={totals.assets} />}
-          helper={`${accountItems.filter((item) => item.balance > 0).length} accounts + ${assetsQuery.data?.data.length ?? 0} assets`}
+          helper={`${activeAccountItems.filter((item) => item.balance > 0).length} active account${activeAccountItems.filter((item) => item.balance > 0).length === 1 ? "" : "s"} + ${assetData.length} asset${assetData.length === 1 ? "" : "s"}`}
         />
         <MetricCard
           label="Liabilities"
@@ -881,11 +987,11 @@ export function AccountsPage() {
         <Box key={accountGroup}>
           <SectionHeader
             title={accountGroup}
-            description={`${accountItems.filter((account) => account.group === accountGroup).length} account${accountItems.filter((account) => account.group === accountGroup).length === 1 ? "" : "s"}`}
+            description={`${activeAccountItems.filter((account) => account.group === accountGroup).length} account${activeAccountItems.filter((account) => account.group === accountGroup).length === 1 ? "" : "s"}`}
           />
           <Card sx={{ mt: 3 }}>
             <Stack divider={<Divider />}>
-              {accountItems
+              {activeAccountItems
                 .filter((account) => account.group === accountGroup)
                 .map((account) => (
                   <AccountRow
@@ -898,11 +1004,15 @@ export function AccountsPage() {
           </Card>
         </Box>
       ))}
-      {!accountItems.length ? (
+      {!activeAccountItems.length ? (
         <EmptyState
           icon={<AccountBalanceRounded />}
-          title="No accounts yet"
-          description="Connect SimpleFIN or add a manual opening balance."
+          title={archivedAccountItems.length ? "No active accounts" : "No accounts yet"}
+          description={
+            archivedAccountItems.length
+              ? "Reopen an account below, connect SimpleFIN, or add a manual opening balance."
+              : "Connect SimpleFIN or add a manual opening balance."
+          }
           actionLabel="Add account"
           onAction={() => {
             chooseAddMode("account");
@@ -910,10 +1020,71 @@ export function AccountsPage() {
           }}
         />
       ) : null}
+      {archivedAccountItems.length ? (
+        <Box>
+          <SectionHeader
+            title="Hidden & closed accounts"
+            description={`${archivedAccountItems.length} account${archivedAccountItems.length === 1 ? " is" : "s are"} excluded from active totals, net worth, budgets, and safe to spend. Reopening restores each account's saved inclusion settings.`}
+          />
+          <Card sx={{ mt: 3 }}>
+            <Stack divider={<Divider />}>
+              {archivedAccountItems.map((account) => (
+                <Stack
+                  key={account.id}
+                  direction={{ xs: "column", sm: "row" }}
+                  alignItems={{ xs: "stretch", sm: "center" }}
+                  gap={{ xs: 0, sm: 2 }}
+                  sx={{ pr: { sm: 3 }, pb: { xs: 2, sm: 0 } }}
+                >
+                  <Box sx={{ minWidth: 0, flex: 1 }}>
+                    <AccountRow account={account} onOpen={() => setSelected(account)} />
+                  </Box>
+                  <Stack
+                    direction="row"
+                    alignItems="center"
+                    justifyContent={{ xs: "space-between", sm: "flex-end" }}
+                    gap={2}
+                    sx={{ px: { xs: 3, sm: 0 } }}
+                  >
+                    <StatusChip
+                      label={account.accountStatus === "hidden" ? "Hidden" : "Closed"}
+                      tone="neutral"
+                    />
+                    <Button
+                      size="small"
+                      aria-label={`Reopen ${account.name}`}
+                      startIcon={<RestoreRounded />}
+                      disabled={updateAccount.isPending}
+                      onClick={() => {
+                        if (demo) {
+                          setDemoAccountData((current) =>
+                            current.map((item) =>
+                              item.id === account.id
+                                ? { ...item, status: "active", updatedAt: new Date().toISOString() }
+                                : item,
+                            ),
+                          );
+                          setDemoMessage(
+                            `${account.name} was reopened with its saved planning settings.`,
+                          );
+                          return;
+                        }
+                        updateAccount.mutate({ id: account.id, input: { status: "active" } });
+                      }}
+                    >
+                      Reopen
+                    </Button>
+                  </Stack>
+                </Stack>
+              ))}
+            </Stack>
+          </Card>
+        </Box>
+      ) : null}
       <Box>
         <SectionHeader
           title="Manual assets"
-          description="Dated values now; optional provider adapters later."
+          description="Dated manual values with an explicit source and confidence level."
           action={
             <Button
               startIcon={<AddRounded />}
@@ -934,7 +1105,7 @@ export function AccountsPage() {
             mt: 3,
           }}
         >
-          {assetsQuery.data?.data.map((asset) => (
+          {assetData.map((asset) => (
             <Card key={asset.id}>
               <CardContent sx={{ p: 5 }}>
                 <Stack direction="row" gap={3}>
@@ -972,15 +1143,42 @@ export function AccountsPage() {
       <AccountDetail
         account={selected}
         onClose={() => setSelected(null)}
-        onSave={async (id, displayName, balanceMinorUnits) => {
+        onSave={async (id, input) => {
           if (demo) {
+            setDemoAccountData((current) =>
+              current.map((account) =>
+                account.id === id
+                  ? {
+                      ...account,
+                      ...(input.name !== undefined ? { name: input.name } : {}),
+                      ...(input.group !== undefined ? { group: input.group } : {}),
+                      ...(input.type !== undefined ? { type: input.type } : {}),
+                      ...(input.subtype !== undefined ? { subtype: input.subtype } : {}),
+                      ...(input.status !== undefined ? { status: input.status } : {}),
+                      ...(input.balanceMinorUnits !== undefined
+                        ? {
+                            balance: {
+                              minorUnits: input.balanceMinorUnits,
+                              currency: account.balance.currency,
+                            },
+                          }
+                        : {}),
+                      updatedAt: new Date().toISOString(),
+                    }
+                  : account,
+              ),
+            );
+            const displayName =
+              input.name ?? accountData.find((account) => account.id === id)?.name;
+            setDemoMessage(
+              `${displayName ?? "Account"} was updated for this interactive demo session.`,
+            );
             setSelected(null);
             return;
           }
           await updateAccount.mutateAsync({
             id,
-            displayName,
-            ...(balanceMinorUnits !== undefined ? { balanceMinorUnits } : {}),
+            input,
           });
         }}
         saving={updateAccount.isPending}

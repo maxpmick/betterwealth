@@ -3,6 +3,7 @@ import { createHouseholdRepositories } from "@betterwealth/db";
 import {
   accounts,
   aiSuggestions,
+  auditEvents,
   categories,
   connections,
   jobs,
@@ -12,17 +13,24 @@ import {
   syncRuns,
   transactions,
 } from "@betterwealth/db/schema";
-import { type RuleCondition, ruleSpecificity } from "@betterwealth/shared";
-import { and, desc, eq } from "drizzle-orm";
+import { money, ruleSpecificity } from "@betterwealth/shared";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { ulid } from "ulid";
 import { z } from "zod";
 import { requireAuth, requireCsrf } from "../auth/middleware";
+import { buildAiRule } from "../categorization/service";
 import type { AppConfig } from "../config";
-import { coarseAmountBand, suggestTransactionCategory } from "../integrations/openrouter";
+import {
+  assertTrustedAiBaseUrl,
+  coarseAmountBand,
+  type ProposedCategoryPath,
+  regenerateTransactionCategory,
+  suggestTransactionCategory,
+} from "../integrations/openrouter";
 import { claimSimpleFinToken } from "../integrations/simplefin";
 import { FieldCipher, sha256 } from "../lib/crypto";
-import { ForbiddenError, NotFoundError } from "../lib/errors";
+import { AppError, ForbiddenError, NotFoundError } from "../lib/errors";
 import { normalizeDescription } from "../sync/reconcile";
 import type { AppEnv } from "../types";
 
@@ -45,9 +53,14 @@ const aiSettingsSchema = z.object({
   model: z.string().trim().min(1).max(200),
   apiKey: z.string().trim().min(10).max(2_000).optional(),
   confidenceThreshold: z.number().min(0).max(1).default(0.9),
+  webResearchEnabled: z.boolean().default(false),
 });
 
 type AiSettingsSecret = z.infer<typeof aiSettingsSchema> & { apiKey: string };
+
+export type IntegrationRouteDependencies = {
+  regenerateTransactionCategory?: typeof regenerateTransactionCategory;
+};
 
 function aiSettingsAad(householdId: string, userId: string) {
   return `settings:${householdId}:${userId}:openrouter`;
@@ -93,8 +106,190 @@ function publicConnection(connection: {
   };
 }
 
-export function createIntegrationRoutes(db: BetterWealthDatabase, config: AppConfig) {
+type CategoryPromptRow = {
+  id: string;
+  name: string;
+  parentId: string | null;
+  kind: "income" | "expense" | "transfer" | "debt" | "investment";
+  slug: string;
+};
+
+function normalizedTaxonomyName(value: string) {
+  return value.normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US");
+}
+
+function taxonomySlug(value: string) {
+  return (
+    value
+      .normalize("NFKD")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "category"
+  );
+}
+
+function categoryPathMap(rows: CategoryPromptRow[]) {
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const memo = new Map<string, string>();
+  const visit = (row: CategoryPromptRow, seen = new Set<string>()): string => {
+    const cached = memo.get(row.id);
+    if (cached) return cached;
+    if (!row.parentId || seen.has(row.id)) return row.name;
+    const parent = byId.get(row.parentId);
+    if (!parent) return row.name;
+    const next = new Set(seen).add(row.id);
+    const path = `${visit(parent, next)} / ${row.name}`;
+    memo.set(row.id, path);
+    return path;
+  };
+  for (const row of rows) memo.set(row.id, visit(row));
+  return memo;
+}
+
+function categoryDisclosures(rows: CategoryPromptRow[]) {
+  const paths = categoryPathMap(rows);
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return rows.map((row) => {
+    const parent = row.parentId ? byId.get(row.parentId) : undefined;
+    return {
+      id: row.id,
+      name: row.name,
+      path: paths.get(row.id) ?? row.name,
+      ...(parent ? { parentName: parent.name } : {}),
+    };
+  });
+}
+
+function configuredAiForUser(
+  db: BetterWealthDatabase,
+  config: AppConfig,
+  householdId: string,
+  userId: string,
+) {
+  const stored = createHouseholdRepositories(db, householdId).settings.get(
+    "integration.openrouter",
+    userId,
+  );
+  return stored
+    ? decodeAiSettings(new FieldCipher(config.ENCRYPTION_KEY), householdId, userId, stored.value)
+    : undefined;
+}
+
+function materializeCategoryProposal(
+  db: BetterWealthDatabase,
+  householdId: string,
+  proposal: ProposedCategoryPath,
+) {
+  return db.transaction((transaction) => {
+    const rows = transaction
+      .select({
+        id: categories.id,
+        name: categories.name,
+        parentId: categories.parentId,
+        kind: categories.kind,
+        slug: categories.slug,
+        isActive: categories.isActive,
+        sortOrder: categories.sortOrder,
+      })
+      .from(categories)
+      .where(eq(categories.householdId, householdId))
+      .all();
+    const createdCategoryIds: string[] = [];
+    const slugs = new Set(rows.map(({ slug }) => slug));
+    const nextSortOrder = () =>
+      Math.max(0, ...rows.map(({ sortOrder }) => sortOrder), rows.length) +
+      createdCategoryIds.length +
+      1;
+    const uniqueSlug = (name: string, id: string) => {
+      const base = taxonomySlug(name);
+      const slug = slugs.has(base) ? `${base}-${id.slice(-6).toLowerCase()}` : base;
+      slugs.add(slug);
+      return slug;
+    };
+    const reactivate = (row: (typeof rows)[number]) => {
+      if (!row.isActive) {
+        transaction
+          .update(categories)
+          .set({ isActive: true, updatedAt: new Date().toISOString() })
+          .where(and(eq(categories.householdId, householdId), eq(categories.id, row.id)))
+          .run();
+      }
+      return row;
+    };
+    const insert = (name: string, parentId: string | null, kind: ProposedCategoryPath["kind"]) => {
+      const id = ulid();
+      const row = {
+        id,
+        name,
+        parentId,
+        kind,
+        slug: uniqueSlug(name, id),
+        isActive: true,
+        sortOrder: nextSortOrder(),
+      };
+      transaction
+        .insert(categories)
+        .values({ ...row, householdId, isSystem: false })
+        .run();
+      rows.push(row);
+      createdCategoryIds.push(id);
+      return row;
+    };
+
+    const topLevelName = proposal.topLevelName.trim().replace(/\s+/g, " ");
+    const topLevelKey = normalizedTaxonomyName(topLevelName);
+    const childName = proposal.childName?.trim().replace(/\s+/g, " ") || null;
+    if (!childName) {
+      const existing =
+        rows.find(
+          (row) => row.parentId === null && normalizedTaxonomyName(row.name) === topLevelKey,
+        ) ?? rows.find((row) => normalizedTaxonomyName(row.name) === topLevelKey);
+      const category = existing ? reactivate(existing) : insert(topLevelName, null, proposal.kind);
+      const paths = categoryPathMap(rows);
+      return {
+        categoryId: category.id,
+        categoryName: category.name,
+        categoryPath: paths.get(category.id) ?? category.name,
+        createdCategoryIds,
+      };
+    }
+
+    let parent = rows.find(
+      (row) => row.parentId === null && normalizedTaxonomyName(row.name) === topLevelKey,
+    );
+    parent = parent ? reactivate(parent) : insert(topLevelName, null, proposal.kind);
+    if (normalizedTaxonomyName(childName) === normalizedTaxonomyName(parent.name)) {
+      return {
+        categoryId: parent.id,
+        categoryName: parent.name,
+        categoryPath: parent.name,
+        createdCategoryIds,
+      };
+    }
+    const childKey = normalizedTaxonomyName(childName);
+    const existingChild = rows.find(
+      (row) => row.parentId === parent?.id && normalizedTaxonomyName(row.name) === childKey,
+    );
+    const child = existingChild
+      ? reactivate(existingChild)
+      : insert(childName, parent.id, parent.kind);
+    return {
+      categoryId: child.id,
+      categoryName: child.name,
+      categoryPath: `${parent.name} / ${child.name}`,
+      createdCategoryIds,
+    };
+  });
+}
+
+export function createIntegrationRoutes(
+  db: BetterWealthDatabase,
+  config: AppConfig,
+  dependencies: IntegrationRouteDependencies = {},
+) {
   const routes = new Hono<AppEnv>();
+  const regenerateCategory =
+    dependencies.regenerateTransactionCategory ?? regenerateTransactionCategory;
   routes.use("*", requireAuth(db, config));
 
   routes.get("/connections", async (context) => {
@@ -203,11 +398,11 @@ export function createIntegrationRoutes(db: BetterWealthDatabase, config: AppCon
         and(
           eq(connections.householdId, auth.householdId),
           eq(connections.provider, "simplefin"),
-          eq(connections.status, "active"),
+          inArray(connections.status, ["active", "degraded"]),
           requested.connectionId ? eq(connections.id, requested.connectionId) : undefined,
         ),
       );
-    if (candidates.length === 0) throw new NotFoundError("Active SimpleFIN connection");
+    if (candidates.length === 0) throw new NotFoundError("Retryable SimpleFIN connection");
     const suppliedKey = context.req.header("idempotency-key")?.trim();
     const queued: Array<{ id: string; state: typeof jobs.$inferSelect.state }> = [];
     for (const candidate of candidates) {
@@ -273,6 +468,7 @@ export function createIntegrationRoutes(db: BetterWealthDatabase, config: AppCon
         baseUrl: config.OPENROUTER_BASE_URL,
         model: config.BOOTSTRAP_OPENROUTER_MODEL,
         confidenceThreshold: 0.9,
+        webResearchEnabled: false,
       });
     }
     const decrypted = decodeAiSettings(
@@ -287,6 +483,7 @@ export function createIntegrationRoutes(db: BetterWealthDatabase, config: AppCon
       baseUrl: decrypted?.baseUrl ?? config.OPENROUTER_BASE_URL,
       model: decrypted?.model ?? config.BOOTSTRAP_OPENROUTER_MODEL,
       confidenceThreshold: decrypted?.confidenceThreshold ?? 0.9,
+      webResearchEnabled: decrypted?.webResearchEnabled ?? false,
     });
   });
 
@@ -317,6 +514,7 @@ export function createIntegrationRoutes(db: BetterWealthDatabase, config: AppCon
               "account_type",
               "allowed_categories",
               "limited_examples",
+              ...(configured.webResearchEnabled ? ["public_merchant_web_search"] : []),
             ]
           : [],
       },
@@ -357,6 +555,7 @@ export function createIntegrationRoutes(db: BetterWealthDatabase, config: AppCon
           model: input.ai.model ?? previous?.model ?? config.BOOTSTRAP_OPENROUTER_MODEL,
           apiKey,
           confidenceThreshold: previous?.confidenceThreshold ?? 0.9,
+          webResearchEnabled: previous?.webResearchEnabled ?? false,
         };
         const row = repositories.settings.set(
           previousStored?.id ?? ulid(),
@@ -378,6 +577,7 @@ export function createIntegrationRoutes(db: BetterWealthDatabase, config: AppCon
   routes.put("/settings/integrations/ai", requireCsrf(config), async (context) => {
     const auth = context.get("auth");
     const input = aiSettingsSchema.parse(await context.req.json());
+    assertTrustedAiBaseUrl(input.baseUrl);
     const repositories = createHouseholdRepositories(db, auth.householdId);
     const cipher = new FieldCipher(config.ENCRYPTION_KEY);
     const previousStored = repositories.settings.get("integration.openrouter", auth.user.id);
@@ -404,6 +604,7 @@ export function createIntegrationRoutes(db: BetterWealthDatabase, config: AppCon
       baseUrl: input.baseUrl,
       model: input.model,
       confidenceThreshold: input.confidenceThreshold,
+      webResearchEnabled: input.webResearchEnabled,
     });
   });
 
@@ -422,7 +623,13 @@ export function createIntegrationRoutes(db: BetterWealthDatabase, config: AppCon
       .get();
     if (!transaction) throw new NotFoundError("Transaction");
     const categoryRows = await db
-      .select({ id: categories.id, name: categories.name, parentId: categories.parentId })
+      .select({
+        id: categories.id,
+        name: categories.name,
+        parentId: categories.parentId,
+        kind: categories.kind,
+        slug: categories.slug,
+      })
       .from(categories)
       .where(and(eq(categories.householdId, auth.householdId), eq(categories.isActive, true)));
     const repositories = createHouseholdRepositories(db, auth.householdId);
@@ -438,10 +645,10 @@ export function createIntegrationRoutes(db: BetterWealthDatabase, config: AppCon
             model: config.BOOTSTRAP_OPENROUTER_MODEL,
             apiKey: config.BOOTSTRAP_OPENROUTER_API_KEY,
             confidenceThreshold: 0.9,
+            webResearchEnabled: false,
           }
         : undefined;
     if (!configured?.enabled) throw new NotFoundError("Enabled AI integration");
-    const parentNames = new Map(categoryRows.map((category) => [category.id, category.name]));
     const suggestion = await suggestTransactionCategory({
       apiKey: configured.apiKey,
       baseUrl: configured.baseUrl,
@@ -453,14 +660,7 @@ export function createIntegrationRoutes(db: BetterWealthDatabase, config: AppCon
         currency: transaction.transaction.currency,
         accountType: transaction.account.type,
       },
-      categories: categoryRows.map((category) => {
-        const parentName = category.parentId ? parentNames.get(category.parentId) : undefined;
-        return {
-          id: category.id,
-          name: category.name,
-          ...(parentName ? { parentName } : {}),
-        };
-      }),
+      categories: categoryDisclosures(categoryRows),
     });
     const inputFingerprint = sha256(
       `${transaction.transaction.normalizedDescription}\u001f${transaction.transaction.amount}\u001f${categoryRows.map(({ id }) => id).join(",")}`,
@@ -497,21 +697,34 @@ export function createIntegrationRoutes(db: BetterWealthDatabase, config: AppCon
 
   routes.get("/ai/suggestions", async (context) => {
     const auth = context.get("auth");
-    const rows = await db
-      .select({
-        suggestion: aiSuggestions,
-        categoryName: categories.name,
-        rawDescription: transactions.rawDescription,
-        normalizedDescription: transactions.normalizedDescription,
-        amount: transactions.amount,
-        currency: transactions.currency,
-      })
-      .from(aiSuggestions)
-      .innerJoin(transactions, eq(transactions.id, aiSuggestions.transactionId))
-      .leftJoin(categories, eq(categories.id, aiSuggestions.suggestedCategoryId))
-      .where(eq(aiSuggestions.householdId, auth.householdId))
-      .orderBy(desc(aiSuggestions.createdAt))
-      .limit(100);
+    const [rows, taxonomy] = await Promise.all([
+      db
+        .select({
+          suggestion: aiSuggestions,
+          categoryName: categories.name,
+          rawDescription: transactions.rawDescription,
+          normalizedDescription: transactions.normalizedDescription,
+          amount: transactions.amount,
+          currency: transactions.currency,
+        })
+        .from(aiSuggestions)
+        .innerJoin(transactions, eq(transactions.id, aiSuggestions.transactionId))
+        .leftJoin(categories, eq(categories.id, aiSuggestions.suggestedCategoryId))
+        .where(eq(aiSuggestions.householdId, auth.householdId))
+        .orderBy(desc(aiSuggestions.createdAt))
+        .limit(1_000),
+      db
+        .select({
+          id: categories.id,
+          name: categories.name,
+          parentId: categories.parentId,
+          kind: categories.kind,
+          slug: categories.slug,
+        })
+        .from(categories)
+        .where(eq(categories.householdId, auth.householdId)),
+    ]);
+    const taxonomyPaths = categoryPathMap(taxonomy);
     return context.json({
       data: rows
         .filter(({ suggestion }) => ["pending", "accepted", "rejected"].includes(suggestion.status))
@@ -529,6 +742,13 @@ export function createIntegrationRoutes(db: BetterWealthDatabase, config: AppCon
             merchant: suggestion.suggestedMerchantName ?? normalizedDescription,
             categoryId: suggestion.suggestedCategoryId ?? "",
             categoryName: categoryName ?? "Uncategorized",
+            categoryPath: suggestion.suggestedCategoryId
+              ? (
+                  taxonomyPaths.get(suggestion.suggestedCategoryId) ??
+                  categoryName ??
+                  "Uncategorized"
+                ).split(" / ")
+              : [],
             confidence: suggestion.confidenceBps / 10_000,
             rationale: suggestion.rationale,
             amount: { minorUnits: amount.toString(), currency },
@@ -538,6 +758,193 @@ export function createIntegrationRoutes(db: BetterWealthDatabase, config: AppCon
           }),
         ),
       page: { cursor: null, hasMore: false },
+    });
+  });
+
+  routes.post("/ai/suggestions/:id/regenerate", requireCsrf(config), async (context) => {
+    const auth = context.get("auth");
+    const input = z
+      .object({
+        feedback: z.string().trim().min(3).max(800),
+        allowWebResearch: z.boolean().optional(),
+      })
+      .strict()
+      .parse(await context.req.json());
+    const row = await db
+      .select({
+        suggestion: aiSuggestions,
+        transaction: transactions,
+        account: accounts,
+        connectionOwnerUserId: connections.ownerUserId,
+      })
+      .from(aiSuggestions)
+      .innerJoin(transactions, eq(transactions.id, aiSuggestions.transactionId))
+      .innerJoin(accounts, eq(accounts.id, transactions.accountId))
+      .leftJoin(connections, eq(connections.id, accounts.connectionId))
+      .where(
+        and(
+          eq(aiSuggestions.householdId, auth.householdId),
+          eq(aiSuggestions.id, context.req.param("id")),
+        ),
+      )
+      .get();
+    if (!row) throw new NotFoundError("AI suggestion");
+    const disclosureOwners = new Set(
+      [row.account.ownerUserId, row.connectionOwnerUserId].filter((owner): owner is string =>
+        Boolean(owner),
+      ),
+    );
+    if (disclosureOwners.size !== 1 || !disclosureOwners.has(auth.user.id)) {
+      // Do not disclose whether another household member owns the underlying transaction.
+      throw new NotFoundError("AI suggestion");
+    }
+    const configured = configuredAiForUser(db, config, auth.householdId, auth.user.id);
+    if (!configured?.enabled) throw new NotFoundError("Enabled AI integration");
+    const categoryRows = await db
+      .select({
+        id: categories.id,
+        name: categories.name,
+        parentId: categories.parentId,
+        kind: categories.kind,
+        slug: categories.slug,
+        isActive: categories.isActive,
+      })
+      .from(categories)
+      .where(eq(categories.householdId, auth.householdId));
+    const activeCategoryRows = categoryRows.filter(({ isActive }) => isActive);
+    const currentPaths = categoryPathMap(categoryRows);
+    const previousCategory = categoryRows.find(
+      ({ id }) => id === row.suggestion.suggestedCategoryId,
+    );
+    const allowWebResearch = input.allowWebResearch ?? configured.webResearchEnabled;
+    const regenerated = await regenerateCategory({
+      apiKey: configured.apiKey,
+      baseUrl: configured.baseUrl,
+      model: configured.model,
+      transaction: {
+        normalizedDescription: row.transaction.normalizedDescription,
+        direction: row.transaction.amount >= 0n ? "inflow" : "outflow",
+        amountBand: coarseAmountBand(row.transaction.amount),
+        currency: row.transaction.currency,
+        accountType: row.account.type,
+      },
+      categories: categoryDisclosures(activeCategoryRows),
+      userFeedback: input.feedback,
+      allowWebResearch,
+      previousSuggestion: {
+        merchant: row.suggestion.suggestedMerchantName ?? row.transaction.normalizedDescription,
+        ...(row.suggestion.suggestedCategoryId
+          ? { categoryId: row.suggestion.suggestedCategoryId }
+          : {}),
+        ...(previousCategory
+          ? {
+              categoryPath: currentPaths.get(previousCategory.id) ?? previousCategory.name,
+            }
+          : {}),
+        confidence: row.suggestion.confidenceBps / 10_000,
+        rationale: row.suggestion.rationale,
+        ...(row.suggestion.proposedRule
+          ? {
+              proposedRule: row.suggestion.proposedRule as typeof regenerated.proposedRule,
+            }
+          : {}),
+      },
+    });
+
+    let categoryResolution: {
+      categoryId: string;
+      categoryName: string;
+      categoryPath: string;
+      createdCategoryIds: string[];
+    };
+    if ("proposedCategory" in regenerated && regenerated.proposedCategory) {
+      categoryResolution = materializeCategoryProposal(
+        db,
+        auth.householdId,
+        regenerated.proposedCategory,
+      );
+    } else {
+      const categoryId = regenerated.categoryId;
+      const category = activeCategoryRows.find(({ id }) => id === categoryId);
+      if (!category) {
+        throw new AppError(
+          "The AI provider returned an unsafe categorization",
+          502,
+          "ai_invalid_response",
+        );
+      }
+      categoryResolution = {
+        categoryId: category.id,
+        categoryName: category.name,
+        categoryPath: currentPaths.get(category.id) ?? category.name,
+        createdCategoryIds: [],
+      };
+    }
+    const confidenceBps = Math.round(regenerated.confidence * 10_000);
+    const auditMetadata = {
+      feedbackLength: input.feedback.length,
+      feedbackHash: sha256(input.feedback),
+      previousCategoryId: row.suggestion.suggestedCategoryId,
+      regeneratedCategoryId: categoryResolution.categoryId,
+      createdCategoryIds: categoryResolution.createdCategoryIds,
+      webResearchRequested: regenerated.research.requested,
+      webCitationCount: regenerated.research.citationCount,
+      webCitationHosts: regenerated.research.citationHosts,
+      model: configured.model,
+    };
+    db.transaction((transaction) => {
+      transaction
+        .update(aiSuggestions)
+        .set({
+          suggestedMerchantName: regenerated.merchant,
+          suggestedCategoryId: categoryResolution.categoryId,
+          proposedRule: regenerated.proposedRule,
+          confidenceBps,
+          rationale: regenerated.rationale,
+          model: configured.model,
+          status: "pending",
+          reviewedByUserId: null,
+          reviewedAt: null,
+        })
+        .where(
+          and(
+            eq(aiSuggestions.householdId, auth.householdId),
+            eq(aiSuggestions.id, row.suggestion.id),
+          ),
+        )
+        .run();
+      transaction
+        .insert(auditEvents)
+        .values({
+          id: ulid(),
+          householdId: auth.householdId,
+          actorUserId: auth.user.id,
+          actorType: "user",
+          action: "ai.suggestion_regenerated",
+          entityType: "ai_suggestion",
+          entityId: row.suggestion.id,
+          requestId: context.get("requestId"),
+          metadata: auditMetadata,
+        })
+        .run();
+    });
+    return context.json({
+      id: row.suggestion.id,
+      transactionId: row.transaction.id,
+      merchant: regenerated.merchant,
+      categoryId: categoryResolution.categoryId,
+      categoryName: categoryResolution.categoryName,
+      categoryPath: categoryResolution.categoryPath.split(" / "),
+      confidence: regenerated.confidence,
+      rationale: regenerated.rationale,
+      amount: {
+        minorUnits: row.transaction.amount.toString(),
+        currency: row.transaction.currency,
+      },
+      rawDescription: row.transaction.rawDescription,
+      proposedRule: regenerated.proposedRule,
+      status: "pending" as const,
+      research: regenerated.research,
     });
   });
 
@@ -600,31 +1007,58 @@ export function createIntegrationRoutes(db: BetterWealthDatabase, config: AppCon
           ),
         );
       if (input.createRule) {
-        const normalizedDescription = normalizeDescription(row.transaction.normalizedDescription);
-        const pattern = normalizedDescription.includes(normalizedMerchant)
-          ? merchantName
-          : row.transaction.normalizedDescription;
-        const condition: RuleCondition = normalizedDescription.includes(normalizedMerchant)
-          ? {
-              field: "normalizedDescription",
-              operator: "contains",
-              value: pattern,
-              caseSensitive: false,
-            }
-          : {
-              field: "normalizedDescription",
-              operator: "exact",
-              value: pattern,
-              caseSensitive: false,
-            };
-        const name = `${merchantName} → ${row.suggestion.suggestedCategoryId}`;
+        const category = await db
+          .select({ name: categories.name, kind: categories.kind })
+          .from(categories)
+          .where(
+            and(
+              eq(categories.householdId, auth.householdId),
+              eq(categories.id, row.suggestion.suggestedCategoryId),
+            ),
+          )
+          .get();
+        if (!category) throw new NotFoundError("Suggested category");
+        const draft = buildAiRule({
+          id: ulid(),
+          transaction: {
+            id: row.transaction.id,
+            rawDescription: row.transaction.rawDescription,
+            normalizedDescription: row.transaction.normalizedDescription,
+            accountId: row.transaction.accountId,
+            amount: money(row.transaction.amount, row.transaction.currency),
+            date: row.transaction.transactedOn.slice(0, 10),
+            status: row.transaction.status === "pending" ? "pending" : "posted",
+            importSource: row.transaction.source,
+            ...(row.transaction.recurringSeriesId
+              ? { recurringSeriesId: row.transaction.recurringSeriesId }
+              : {}),
+            ...(row.transaction.note ? { note: row.transaction.note } : {}),
+            tagIds: [],
+          },
+          suggestion: {
+            merchant: merchantName,
+            categoryId: row.suggestion.suggestedCategoryId,
+            confidence: row.suggestion.confidenceBps / 10_000,
+            rationale: row.suggestion.rationale,
+            ...(row.suggestion.proposedRule
+              ? {
+                  proposedRule: row.suggestion.proposedRule as NonNullable<
+                    Parameters<typeof buildAiRule>[0]["suggestion"]["proposedRule"]
+                  >,
+                }
+              : {}),
+          },
+          categoryName: category.name,
+          categoryKind: category.kind,
+          updatedAt: reviewedAt,
+        });
         const existing = await db
           .select({ id: rules.id })
           .from(rules)
           .where(
             and(
               eq(rules.householdId, auth.householdId),
-              eq(rules.name, name),
+              eq(rules.name, draft.name),
               eq(rules.origin, "ai"),
             ),
           )
@@ -633,17 +1067,12 @@ export function createIntegrationRoutes(db: BetterWealthDatabase, config: AppCon
           await db.insert(rules).values({
             id: ulid(),
             householdId: auth.householdId,
-            name,
-            priority: 100,
+            name: draft.name,
+            priority: draft.priority,
             origin: "ai",
-            conditions: JSON.parse(JSON.stringify(condition)) as Record<string, unknown>,
-            actions: JSON.parse(
-              JSON.stringify([
-                { type: "setCategory", categoryId: row.suggestion.suggestedCategoryId },
-                { type: "normalizeMerchant", merchant: merchantName },
-              ]),
-            ) as Record<string, unknown>,
-            specificityScore: ruleSpecificity(condition),
+            conditions: JSON.parse(JSON.stringify(draft.condition)) as Record<string, unknown>,
+            actions: JSON.parse(JSON.stringify(draft.actions)) as Record<string, unknown>,
+            specificityScore: ruleSpecificity(draft.condition),
             createdByUserId: auth.user.id,
           });
         }

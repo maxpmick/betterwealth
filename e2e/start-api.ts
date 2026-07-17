@@ -6,8 +6,8 @@ import { closeDatabase, openDatabase, runMigrations } from "../packages/db/src/i
 Object.assign(process.env, {
   APP_ENV: "test",
   API_HOST: "127.0.0.1",
-  API_PORT: "3001",
-  WEB_ORIGIN: "http://127.0.0.1:5173",
+  API_PORT: process.env.E2E_API_PORT ?? "3001",
+  WEB_ORIGIN: `http://127.0.0.1:${process.env.E2E_WEB_PORT ?? "5173"}`,
   DATABASE_URL: "./data/e2e.sqlite",
   ENCRYPTION_KEY: "e2e0000000000000000000000000000000000000000000000000000000000000",
   COOKIE_SECURE: "false",

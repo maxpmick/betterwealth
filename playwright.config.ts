@@ -1,6 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const webOrigin = "http://127.0.0.1:5173";
+const apiPort = process.env.E2E_API_PORT ?? "3001";
+const webPort = process.env.E2E_WEB_PORT ?? "5173";
+const webOrigin = `http://127.0.0.1:${webPort}`;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -34,7 +36,7 @@ export default defineConfig({
   webServer: [
     {
       command: "bun e2e/start-api.ts",
-      url: "http://127.0.0.1:3001/health",
+      url: `http://127.0.0.1:${apiPort}/health`,
       timeout: 60_000,
       reuseExistingServer: false,
       stdout: "pipe",

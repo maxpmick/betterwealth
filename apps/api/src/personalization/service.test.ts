@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   accounts,
+  assets,
+  assetValuations,
   auditEvents,
   balanceSnapshots,
   bills,
@@ -8,6 +10,8 @@ import {
   categories,
   closeDatabase,
   envelopeAllocations,
+  envelopeCategoryLinks,
+  envelopeRuleLinks,
   envelopes,
   goals,
   householdMembers,
@@ -20,6 +24,7 @@ import {
   rules,
   runMigrations,
   settings,
+  transactionSplits,
   transactions,
   transfers,
   users,
@@ -140,6 +145,30 @@ test("analysis identifies payroll, recurring obligations, duplicates, and exact 
       transactedOn: "2026-06-06",
       normalizedDescription: "EXAMPLE SHOP CREDIT",
     },
+    {
+      ...base,
+      id: "dividend-reinvestment",
+      accountId: "brokerage",
+      accountGroup: "investment",
+      accountType: "brokerage",
+      merchantId: "brokerage-merchant",
+      merchantName: "Example Brokerage",
+      amount: -13n,
+      transactedOn: "2026-06-07",
+      normalizedDescription: "DIVIDEND REINVESTMENT",
+    },
+    {
+      ...base,
+      id: "dividend-credit",
+      accountId: "brokerage",
+      accountGroup: "investment",
+      accountType: "brokerage",
+      merchantId: "brokerage-merchant",
+      merchantName: "Example Brokerage",
+      amount: 13n,
+      transactedOn: "2026-06-08",
+      normalizedDescription: "DIVIDEND",
+    },
   ];
   const analysis = analyzePersonalizationLedger(rows, { employerHint: "Example Employer" });
   expect(analysis.payroll?.cadence?.cadence).toBe("biweekly");
@@ -149,6 +178,9 @@ test("analysis identifies payroll, recurring obligations, duplicates, and exact 
   expect(analysis.refundCandidatePairs).toHaveLength(1);
   expect(
     analysis.refundCandidatePairs.some(({ refundId }) => refundId === "cross-account-refund"),
+  ).toBeFalse();
+  expect(
+    analysis.refundCandidatePairs.some(({ refundId }) => refundId === "dividend-credit"),
   ).toBeFalse();
   expect(analysis.refundCandidatePairs[0]?.amount).toBe(2_500n);
   expect(
@@ -169,6 +201,41 @@ test("analysis identifies payroll, recurring obligations, duplicates, and exact 
       currency: "EUR",
     }).payroll,
   ).toBeNull();
+
+  const changedPayroll = analyzePersonalizationLedger(
+    [
+      ...["2026-05-01", "2026-05-15", "2026-05-29"].map((transactedOn, index) => ({
+        ...base,
+        id: `old-pay-${index}`,
+        merchantId: "employer-old-description",
+        merchantName: "XX6486 Park Place Techn Payroll",
+        amount: 132_046n,
+        transactedOn,
+        normalizedDescription: "XX6486 PARK PLACE TECHN PAYROLL",
+      })),
+      {
+        ...base,
+        id: "new-pay-1",
+        merchantId: "employer-old-description",
+        merchantName: "XX6486 Park Place Techn Payroll",
+        amount: 311_453n,
+        transactedOn: "2026-06-12",
+        normalizedDescription: "XX6486 PARK PLACE TECHN PAYROLL",
+      },
+      {
+        ...base,
+        id: "new-pay-2",
+        merchantId: "employer-new-description",
+        merchantName: "XX6486 Park Place Techn Payroll Paychecks",
+        amount: 310_784n,
+        transactedOn: "2026-06-26",
+        normalizedDescription: "XX6486 PARK PLACE TECHN PAYROLL PAYCHECKS",
+      },
+    ],
+    { employerHint: "Park Place Tech" },
+  );
+  expect(changedPayroll.payroll?.cadence?.cadence).toBe("biweekly");
+  expect(changedPayroll.payroll?.typicalAmount).toBe(311_118n);
 });
 
 describe("idempotent household personalization", () => {
@@ -200,6 +267,11 @@ describe("idempotent household personalization", () => {
     const checkingId = ulid();
     const savingsId = ulid();
     const secondSavingsId = ulid();
+    const taxableInvestmentId = ulid();
+    const retirementId = ulid();
+    const cryptoId = ulid();
+    const creditId = ulid();
+    const loanId = ulid();
     await db.insert(accounts).values([
       {
         id: checkingId,
@@ -232,6 +304,61 @@ describe("idempotent household personalization", () => {
         type: "savings",
         currency: "USD",
         isLiability: false,
+        isManual: true,
+      },
+      {
+        id: taxableInvestmentId,
+        householdId: registered.householdId,
+        ownerUserId: registered.userId,
+        name: "Taxable brokerage",
+        group: "investment",
+        type: "brokerage",
+        currency: "USD",
+        isLiability: false,
+        isManual: true,
+      },
+      {
+        id: retirementId,
+        householdId: registered.householdId,
+        ownerUserId: registered.userId,
+        name: "Roth IRA",
+        group: "investment",
+        type: "ira",
+        currency: "USD",
+        isLiability: false,
+        isManual: true,
+      },
+      {
+        id: cryptoId,
+        householdId: registered.householdId,
+        ownerUserId: registered.userId,
+        name: "Crypto",
+        group: "crypto",
+        type: "wallet",
+        currency: "USD",
+        isLiability: false,
+        isManual: true,
+      },
+      {
+        id: creditId,
+        householdId: registered.householdId,
+        ownerUserId: registered.userId,
+        name: "Credit card",
+        group: "credit",
+        type: "credit_card",
+        currency: "USD",
+        isLiability: true,
+        isManual: true,
+      },
+      {
+        id: loanId,
+        householdId: registered.householdId,
+        ownerUserId: registered.userId,
+        name: "Student loan",
+        group: "loan",
+        type: "student_loan",
+        currency: "USD",
+        isLiability: true,
         isManual: true,
       },
     ]);
@@ -269,7 +396,81 @@ describe("idempotent household personalization", () => {
         asOf: "2026-07-16T12:00:00.000Z",
         source: "manual",
       },
+      {
+        id: ulid(),
+        householdId: registered.householdId,
+        accountId: taxableInvestmentId,
+        ledgerBalance: 123_400n,
+        currentBalance: 123_400n,
+        availableBalance: 123_400n,
+        currency: "USD",
+        asOf: "2026-07-16T12:00:00.000Z",
+        source: "manual",
+      },
+      {
+        id: ulid(),
+        householdId: registered.householdId,
+        accountId: retirementId,
+        ledgerBalance: 4_831_300n,
+        currentBalance: 4_831_300n,
+        availableBalance: 4_831_300n,
+        currency: "USD",
+        asOf: "2026-07-16T12:00:00.000Z",
+        source: "manual",
+      },
+      {
+        id: ulid(),
+        householdId: registered.householdId,
+        accountId: cryptoId,
+        ledgerBalance: 10_000n,
+        currentBalance: 10_000n,
+        availableBalance: 10_000n,
+        currency: "USD",
+        asOf: "2026-07-16T12:00:00.000Z",
+        source: "manual",
+      },
+      {
+        id: ulid(),
+        householdId: registered.householdId,
+        accountId: creditId,
+        ledgerBalance: 20_000n,
+        currentBalance: 20_000n,
+        availableBalance: 20_000n,
+        currency: "USD",
+        asOf: "2026-07-16T12:00:00.000Z",
+        source: "manual",
+      },
+      {
+        id: ulid(),
+        householdId: registered.householdId,
+        accountId: loanId,
+        ledgerBalance: 70_000n,
+        currentBalance: 70_000n,
+        availableBalance: 70_000n,
+        currency: "USD",
+        asOf: "2026-07-16T12:00:00.000Z",
+        source: "manual",
+      },
     ]);
+    const liquidAssetId = ulid();
+    await db.insert(assets).values({
+      id: liquidAssetId,
+      householdId: registered.householdId,
+      ownerUserId: registered.userId,
+      name: "Liquid manual asset",
+      type: "custom",
+      liquidityClass: "liquid",
+      currency: "USD",
+    });
+    await db.insert(assetValuations).values({
+      id: ulid(),
+      householdId: registered.householdId,
+      assetId: liquidAssetId,
+      amount: 45_000n,
+      currency: "USD",
+      valuedOn: "2026-07-16",
+      source: "manual",
+    });
     const employerId = ulid();
     const utilityId = ulid();
     const grocerId = ulid();
@@ -376,9 +577,81 @@ describe("idempotent household personalization", () => {
       amount: 2_500n,
       date: "2026-06-05",
       description: "EXAMPLE STORE CREDIT",
+      categoryId: categoryBySlug.get("personal")!.id,
     });
+    const suggestedTransferCategoryId = ulid();
+    const userExcludedTransferCategoryId = ulid();
+    await db.insert(transactions).values([
+      {
+        id: suggestedTransferCategoryId,
+        householdId: registered.householdId,
+        accountId: checkingId,
+        amount: -4_321n,
+        currency: "USD",
+        transactedOn: "2026-06-08",
+        rawDescription: "POSSIBLE ACCOUNT MOVEMENT",
+        normalizedDescription: "POSSIBLE ACCOUNT MOVEMENT",
+        categoryId: categoryBySlug.get("transfers")!.id,
+        categoryOrigin: "ai",
+        status: "posted",
+        source: "manual",
+        isTransfer: true,
+        isExcluded: true,
+        reviewState: "none",
+      },
+      {
+        id: userExcludedTransferCategoryId,
+        householdId: registered.householdId,
+        accountId: checkingId,
+        amount: -5_432n,
+        currency: "USD",
+        transactedOn: "2026-06-09",
+        rawDescription: "USER EXCLUDED MOVEMENT",
+        normalizedDescription: "USER EXCLUDED MOVEMENT",
+        categoryId: categoryBySlug.get("transfers")!.id,
+        categoryOrigin: "user",
+        status: "posted",
+        source: "manual",
+        isTransfer: true,
+        isExcluded: true,
+        reviewState: "reviewed",
+        userOverrideAt: "2026-06-09T12:00:00.000Z",
+      },
+    ]);
+    const unsafeActions = [
+      { type: "setCategory", categoryId: categoryBySlug.get("transfers")!.id },
+      { type: "setFlag", flag: "transfer", value: true },
+      { type: "setFlag", flag: "reportingExcluded", value: true },
+    ];
+    await db.insert(rules).values([
+      {
+        id: "legacy-ai-movement-rule",
+        householdId: registered.householdId,
+        name: "Legacy AI movement",
+        priority: 25,
+        origin: "ai",
+        conditions: {
+          all: [{ field: "description", operator: "contains", value: "MOVEMENT" }],
+        },
+        actions: unsafeActions as unknown as Record<string, unknown>,
+        specificityScore: 10,
+      },
+      {
+        id: "user-movement-rule",
+        householdId: registered.householdId,
+        name: "User movement",
+        priority: 20,
+        origin: "user",
+        conditions: {
+          all: [{ field: "description", operator: "contains", value: "MOVEMENT" }],
+        },
+        actions: unsafeActions as unknown as Record<string, unknown>,
+        specificityScore: 10,
+        createdByUserId: registered.userId,
+      },
+    ]);
 
-    const run = () =>
+    const run = (rebaseManagedBudget = false) =>
       personalizeHousehold({
         db,
         config,
@@ -388,6 +661,7 @@ describe("idempotent household personalization", () => {
         aiBatches: 0,
         employerHint: "Example Works",
         starterProfile: true,
+        rebaseManagedBudget,
         now: new Date("2026-07-16T12:00:00.000Z"),
       });
     const first = await run();
@@ -414,6 +688,57 @@ describe("idempotent household personalization", () => {
     expect(first.planSurplusMinorUnits).toBe(
       (firstBudget.expectedIncome - firstPlanned).toString(),
     );
+    const rewrittenAiRule = await db
+      .select({ actions: rules.actions })
+      .from(rules)
+      .where(eq(rules.id, "legacy-ai-movement-rule"))
+      .get();
+    if (!rewrittenAiRule) throw new Error("Rewritten AI rule is missing");
+    const rewrittenAiActions = Array.isArray(rewrittenAiRule.actions)
+      ? rewrittenAiRule.actions
+      : [];
+    expect(
+      rewrittenAiActions.some(
+        (action) =>
+          action &&
+          typeof action === "object" &&
+          (action as Record<string, unknown>).type === "setFlag" &&
+          (action as Record<string, unknown>).value === true &&
+          ["transfer", "reportingExcluded", "reimbursement"].includes(
+            String((action as Record<string, unknown>).flag),
+          ),
+      ),
+    ).toBeFalse();
+    expect(rewrittenAiActions).toContainEqual({ type: "requestReview", value: true });
+    expect(
+      await db
+        .select({ actions: rules.actions })
+        .from(rules)
+        .where(eq(rules.id, "user-movement-rule"))
+        .get(),
+    ).toEqual({ actions: unsafeActions as unknown as Record<string, unknown> });
+    expect(
+      await db
+        .select({
+          isTransfer: transactions.isTransfer,
+          isExcluded: transactions.isExcluded,
+          reviewState: transactions.reviewState,
+        })
+        .from(transactions)
+        .where(eq(transactions.id, suggestedTransferCategoryId))
+        .get(),
+    ).toEqual({ isTransfer: false, isExcluded: false, reviewState: "needs_review" });
+    expect(
+      await db
+        .select({
+          isTransfer: transactions.isTransfer,
+          isExcluded: transactions.isExcluded,
+          reviewState: transactions.reviewState,
+        })
+        .from(transactions)
+        .where(eq(transactions.id, userExcludedTransferCategoryId))
+        .get(),
+    ).toEqual({ isTransfer: true, isExcluded: true, reviewState: "reviewed" });
     expect(
       await db
         .select({ fundedAmount: goals.fundedAmount })
@@ -421,6 +746,26 @@ describe("idempotent household personalization", () => {
         .where(eq(goals.type, "emergency_fund"))
         .get(),
     ).toEqual({ fundedAmount: 150_000n });
+    const liquidWealthGoal = await db
+      .select({
+        id: goals.id,
+        fundedAmount: goals.fundedAmount,
+        fundingAccountId: goals.fundingAccountId,
+      })
+      .from(goals)
+      .where(eq(goals.type, "investment_milestone"))
+      .get();
+    // Shared with the reports definition: cash + taxable investment + crypto +
+    // liquid manual assets - revolving credit; Roth/loan balances are excluded.
+    expect(liquidWealthGoal).toEqual({
+      id: expect.any(String),
+      fundedAmount: 558_400n,
+      fundingAccountId: taxableInvestmentId,
+    });
+    await db
+      .update(goals)
+      .set({ fundedAmount: 5_389_700n })
+      .where(eq(goals.id, liquidWealthGoal!.id));
     const countsAfterFirst = {
       categories: (await db.select().from(categories)).length,
       rules: (await db.select().from(rules)).length,
@@ -433,7 +778,66 @@ describe("idempotent household personalization", () => {
       goals: (await db.select().from(goals)).length,
       refunds: (await db.select().from(refundLinks)).length,
     };
-    const editedAllocation = firstAllocations[0]!;
+    await db
+      .update(transactions)
+      .set({ amount: 15_000n })
+      .where(
+        and(
+          eq(transactions.householdId, registered.householdId),
+          eq(transactions.merchantId, employerId),
+        ),
+      );
+    const generatedLowerPayroll = await run();
+    expect(generatedLowerPayroll.expectedPaycheckMinorUnits).toBe("15000");
+    expect(
+      await db
+        .select({ fundedAmount: goals.fundedAmount })
+        .from(goals)
+        .where(eq(goals.id, liquidWealthGoal!.id))
+        .get(),
+    ).toEqual({ fundedAmount: 558_400n });
+    const generatedLowerAllocations = await db
+      .select()
+      .from(envelopeAllocations)
+      .where(eq(envelopeAllocations.budgetPeriodId, firstBudget.id));
+    expect(
+      generatedLowerAllocations.reduce((sum, allocation) => sum + allocation.planned, 0n),
+    ).toBeLessThanOrEqual(15_000n);
+    expect(
+      generatedLowerAllocations.some(
+        (allocation) =>
+          allocation.planned !== firstAllocations.find(({ id }) => id === allocation.id)?.planned,
+      ),
+    ).toBeTrue();
+    await db
+      .update(transactions)
+      .set({ amount: 150_002n })
+      .where(
+        and(
+          eq(transactions.householdId, registered.householdId),
+          eq(transactions.merchantId, employerId),
+        ),
+      );
+    expect((await run()).expectedPaycheckMinorUnits).toBe("150002");
+    await db.delete(settings).where(eq(settings.key, "planning.personalization_budget_provenance"));
+    const latestPersonalizationAudit = await db
+      .select({ id: auditEvents.id })
+      .from(auditEvents)
+      .where(eq(auditEvents.action, "planning.personalized"))
+      .orderBy(sql`${auditEvents.occurredAt} desc`, sql`${auditEvents.id} desc`)
+      .get();
+    if (!latestPersonalizationAudit) throw new Error("Personalization audit is missing");
+    await db
+      .update(auditEvents)
+      .set({
+        metadata: {
+          version: "betterwealth-personalization-v1",
+          postedTransactions: 12,
+          categoryCoverageBps: 9_000,
+        },
+      })
+      .where(eq(auditEvents.id, latestPersonalizationAudit.id));
+    const editedAllocation = firstAllocations.find(({ planned }) => planned > 0n)!;
     await db
       .update(envelopeAllocations)
       .set({
@@ -576,11 +980,14 @@ describe("idempotent household personalization", () => {
       .select()
       .from(envelopeAllocations)
       .where(eq(envelopeAllocations.budgetPeriodId, firstBudget.id));
-    expect(
-      repairedAllocations.reduce((sum, allocation) => sum + allocation.planned, 0n),
-    ).toBeLessThanOrEqual(firstBudget.expectedIncome);
+    const repairedPlannedTotal = repairedAllocations.reduce(
+      (sum, allocation) => sum + allocation.planned,
+      0n,
+    );
+    expect(repairedPlannedTotal).toBeGreaterThan(firstBudget.expectedIncome);
     const repairedAllocation = repairedAllocations.find(({ id }) => id === editedAllocation.id)!;
     expect(repairedAllocation).toMatchObject({
+      planned: firstBudget.expectedIncome * 2n,
       funded: 1_234n,
       transferredIn: 500n,
       transferredOut: 200n,
@@ -591,7 +998,122 @@ describe("idempotent household personalization", () => {
         repairedAllocation.transferredIn -
         repairedAllocation.transferredOut,
     );
-    expect(repaired.planOverallocatedMinorUnits).toBe("0");
+    expect(repaired.planOverallocatedMinorUnits).toBe(
+      (repairedPlannedTotal - firstBudget.expectedIncome).toString(),
+    );
+    const userEditedPlanned = repairedAllocation.planned + 7_777n;
+    await db
+      .update(envelopeAllocations)
+      .set({ planned: userEditedPlanned })
+      .where(eq(envelopeAllocations.id, repairedAllocation.id));
+    await db
+      .update(transactions)
+      .set({ amount: 120_000n })
+      .where(
+        and(
+          eq(transactions.householdId, registered.householdId),
+          eq(transactions.merchantId, employerId),
+        ),
+      );
+    const lowerPayrollRun = await run();
+    expect(lowerPayrollRun.expectedPaycheckMinorUnits).toBe("120000");
+    expect(
+      await db
+        .select({ expectedIncome: budgetPeriods.expectedIncome })
+        .from(budgetPeriods)
+        .where(eq(budgetPeriods.id, firstBudget.id))
+        .get(),
+    ).toEqual({ expectedIncome: 120_000n });
+    expect(
+      await db
+        .select({ expectedIncome: payCycles.expectedIncome })
+        .from(payCycles)
+        .where(eq(payCycles.householdId, registered.householdId))
+        .get(),
+    ).toEqual({ expectedIncome: 120_000n });
+    const loweredAllocation = await db
+      .select()
+      .from(envelopeAllocations)
+      .where(eq(envelopeAllocations.id, repairedAllocation.id))
+      .get();
+    expect(loweredAllocation).toMatchObject({
+      planned: userEditedPlanned,
+      funded: 1_234n,
+      transferredIn: 500n,
+      transferredOut: 200n,
+    });
+    const loweredPlannedTotal = (
+      await db
+        .select({ planned: envelopeAllocations.planned })
+        .from(envelopeAllocations)
+        .where(eq(envelopeAllocations.budgetPeriodId, firstBudget.id))
+    ).reduce((sum, allocation) => sum + allocation.planned, 0n);
+    expect(lowerPayrollRun.planOverallocatedMinorUnits).toBe(
+      (loweredPlannedTotal - 120_000n).toString(),
+    );
+    expect(
+      await db
+        .select({ value: settings.value })
+        .from(settings)
+        .where(eq(settings.key, "planning.personalization_budget_provenance"))
+        .get(),
+    ).toEqual({
+      value: expect.objectContaining({
+        expectedIncomeMinorUnits: "120000",
+        preservedAllocationIds: expect.arrayContaining([repairedAllocation.id]),
+      }),
+    });
+    const rebased = await run(true);
+    const rebasedAllocations = await db
+      .select()
+      .from(envelopeAllocations)
+      .where(eq(envelopeAllocations.budgetPeriodId, firstBudget.id));
+    expect(rebasedAllocations.reduce((sum, allocation) => sum + allocation.planned, 0n)).toBe(
+      BigInt(rebased.plannedPerPaycheckMinorUnits!),
+    );
+    expect(BigInt(rebased.plannedPerPaycheckMinorUnits!)).toBeLessThanOrEqual(120_000n);
+    expect(rebasedAllocations.find(({ id }) => id === repairedAllocation.id)).toMatchObject({
+      funded: 1_234n,
+      transferredIn: 500n,
+      transferredOut: 200n,
+    });
+    const rebasedEditedEnvelope = await db
+      .select()
+      .from(envelopes)
+      .where(eq(envelopes.id, editedEnvelope.id))
+      .get();
+    expect(rebasedEditedEnvelope).toMatchObject({
+      name: "My edited envelope",
+      isActive: false,
+    });
+    expect(rebasedEditedEnvelope?.targetAmount).not.toBe(42_424n);
+    expect(
+      await db
+        .select({ value: settings.value })
+        .from(settings)
+        .where(eq(settings.key, "planning.personalization_budget_provenance"))
+        .get(),
+    ).toEqual({
+      value: expect.objectContaining({ preservedAllocationIds: [] }),
+    });
+    await db
+      .update(budgetPeriods)
+      .set({ expectedIncome: 119_999n })
+      .where(eq(budgetPeriods.id, firstBudget.id));
+    await expect(run()).rejects.toThrow(
+      "Managed paycheck income was edited after generation; refusing to overwrite it",
+    );
+    expect(
+      await db
+        .select({ expectedIncome: budgetPeriods.expectedIncome })
+        .from(budgetPeriods)
+        .where(eq(budgetPeriods.id, firstBudget.id))
+        .get(),
+    ).toEqual({ expectedIncome: 119_999n });
+    await db
+      .update(budgetPeriods)
+      .set({ expectedIncome: 120_000n })
+      .where(eq(budgetPeriods.id, firstBudget.id));
     expect(
       await db
         .select({ status: transfers.status })
@@ -619,7 +1141,6 @@ describe("idempotent household personalization", () => {
       await db.select().from(envelopes).where(eq(envelopes.id, editedEnvelope.id)).get(),
     ).toMatchObject({
       name: "My edited envelope",
-      targetAmount: 42_424n,
       isActive: false,
     });
     expect(
@@ -752,10 +1273,28 @@ describe("idempotent household personalization", () => {
       .where(eq(transactions.id, refundId))
       .get();
     expect(refund).toEqual({
-      isIncome: true,
+      isIncome: false,
       isReimbursement: false,
-      reviewState: "none",
+      reviewState: "needs_review",
     });
+    expect(
+      await db
+        .select({
+          isTransfer: transactions.isTransfer,
+          isExcluded: transactions.isExcluded,
+          reviewState: transactions.reviewState,
+        })
+        .from(transactions)
+        .where(eq(transactions.id, suggestedTransferCategoryId))
+        .get(),
+    ).toEqual({ isTransfer: false, isExcluded: false, reviewState: "needs_review" });
+    expect(
+      await db
+        .select({ actions: rules.actions })
+        .from(rules)
+        .where(eq(rules.id, "legacy-ai-movement-rule"))
+        .get(),
+    ).toEqual({ actions: rewrittenAiRule.actions });
     expect(
       await db
         .select()
@@ -779,7 +1318,409 @@ describe("idempotent household personalization", () => {
         .from(auditEvents)
         .where(eq(auditEvents.action, "planning.personalized"))
         .get(),
-    ).toEqual({ count: 3 });
+    ).toEqual({ count: 7 });
+  });
+
+  test("only confirmed refund amounts offset the purchase envelopes and splits", async () => {
+    const db = openDatabase(":memory:", { wal: false });
+    databases.push(db);
+    runMigrations(db);
+    const config = loadConfig({
+      APP_ENV: "test",
+      DATABASE_URL: ":memory:",
+      ENCRYPTION_KEY: "9".repeat(64),
+      WEB_ORIGIN: "http://localhost:5173",
+      REGISTRATION_MODE: "open",
+    });
+    const registered = await registerUser(
+      db,
+      {
+        email: "refund-budget@example.com",
+        password: "RefundBudget!2026",
+        householdName: "Refund budget test",
+      },
+      config,
+    );
+    const categoryRows = await db
+      .select()
+      .from(categories)
+      .where(eq(categories.householdId, registered.householdId));
+    const categoryBySlug = new Map(categoryRows.map((category) => [category.slug, category]));
+    const checkingId = ulid();
+    const investmentId = ulid();
+    const employerId = ulid();
+    const storeId = ulid();
+    const brokerId = ulid();
+    await db.insert(accounts).values([
+      {
+        id: checkingId,
+        householdId: registered.householdId,
+        ownerUserId: registered.userId,
+        name: "Checking",
+        group: "cash",
+        type: "checking",
+        currency: "USD",
+        isLiability: false,
+        isManual: true,
+      },
+      {
+        id: investmentId,
+        householdId: registered.householdId,
+        ownerUserId: registered.userId,
+        name: "Brokerage",
+        group: "investment",
+        type: "brokerage",
+        currency: "USD",
+        isLiability: false,
+        isManual: true,
+      },
+    ]);
+    await db.insert(merchants).values([
+      {
+        id: employerId,
+        householdId: registered.householdId,
+        name: "Refund Employer",
+        normalizedName: "REFUND EMPLOYER",
+      },
+      {
+        id: storeId,
+        householdId: registered.householdId,
+        name: "Split Store",
+        normalizedName: "SPLIT STORE",
+      },
+      {
+        id: brokerId,
+        householdId: registered.householdId,
+        name: "Brokerage Activity",
+        normalizedName: "BROKERAGE ACTIVITY",
+      },
+    ]);
+    const payrollRows = ["2026-06-01", "2026-06-15", "2026-06-29"].map((transactedOn) => ({
+      id: ulid(),
+      householdId: registered.householdId,
+      accountId: checkingId,
+      merchantId: employerId,
+      amount: 100_000n,
+      currency: "USD",
+      transactedOn,
+      rawDescription: "REFUND EMPLOYER PAYROLL",
+      normalizedDescription: "REFUND EMPLOYER PAYROLL",
+      categoryId: categoryBySlug.get("income")!.id,
+      categoryOrigin: "provider" as const,
+      status: "posted" as const,
+      source: "manual" as const,
+      reviewState: "none" as const,
+      isIncome: true,
+    }));
+    const purchaseId = ulid();
+    const refundId = ulid();
+    const reinvestmentId = ulid();
+    const dividendId = ulid();
+    await db.insert(transactions).values([
+      ...payrollRows,
+      {
+        id: purchaseId,
+        householdId: registered.householdId,
+        accountId: checkingId,
+        merchantId: storeId,
+        amount: -6_000n,
+        currency: "USD",
+        transactedOn: "2026-06-30",
+        rawDescription: "SPLIT STORE PURCHASE",
+        normalizedDescription: "SPLIT STORE PURCHASE",
+        status: "posted",
+        source: "manual",
+        reviewState: "none",
+      },
+      {
+        id: refundId,
+        householdId: registered.householdId,
+        accountId: checkingId,
+        merchantId: storeId,
+        amount: 5_000n,
+        currency: "USD",
+        transactedOn: "2026-07-01",
+        rawDescription: "SPLIT STORE CREDIT",
+        normalizedDescription: "SPLIT STORE CREDIT",
+        categoryId: categoryBySlug.get("utilities")!.id,
+        categoryOrigin: "provider",
+        status: "posted",
+        source: "manual",
+        reviewState: "none",
+      },
+      {
+        id: reinvestmentId,
+        householdId: registered.householdId,
+        accountId: investmentId,
+        merchantId: brokerId,
+        amount: -13n,
+        currency: "USD",
+        transactedOn: "2026-06-25",
+        rawDescription: "BROKERAGE DIVIDEND REINVESTMENT",
+        normalizedDescription: "BROKERAGE DIVIDEND REINVESTMENT",
+        status: "posted",
+        source: "manual",
+        reviewState: "none",
+      },
+      {
+        id: dividendId,
+        householdId: registered.householdId,
+        accountId: investmentId,
+        merchantId: brokerId,
+        amount: 13n,
+        currency: "USD",
+        transactedOn: "2026-06-26",
+        rawDescription: "BROKERAGE DIVIDEND",
+        normalizedDescription: "BROKERAGE DIVIDEND",
+        status: "posted",
+        source: "manual",
+        reviewState: "none",
+      },
+    ]);
+    await db.insert(transactionSplits).values([
+      {
+        id: ulid(),
+        householdId: registered.householdId,
+        transactionId: purchaseId,
+        sequence: 0,
+        amount: -4_000n,
+        categoryId: categoryBySlug.get("food")!.id,
+      },
+      {
+        id: ulid(),
+        householdId: registered.householdId,
+        transactionId: purchaseId,
+        sequence: 1,
+        amount: -2_000n,
+        categoryId: categoryBySlug.get("personal")!.id,
+      },
+    ]);
+    const linkId = ulid();
+    const obsoleteInvestmentLinkId = "autoplan_refund_obsolete_investment";
+    await db.insert(refundLinks).values([
+      {
+        id: linkId,
+        householdId: registered.householdId,
+        refundTransactionId: refundId,
+        purchaseTransactionId: purchaseId,
+        amount: 3_000n,
+        confidenceBps: 10_000,
+        status: "suggested",
+      },
+      {
+        id: obsoleteInvestmentLinkId,
+        householdId: registered.householdId,
+        refundTransactionId: dividendId,
+        purchaseTransactionId: reinvestmentId,
+        amount: 13n,
+        confidenceBps: 9_000,
+        status: "suggested",
+      },
+    ]);
+    const run = () =>
+      personalizeHousehold({
+        db,
+        config,
+        householdId: registered.householdId,
+        userId: registered.userId,
+        apply: true,
+        aiBatches: 0,
+        employerHint: "Refund Employer",
+        starterProfile: false,
+        now: new Date("2026-07-01T12:00:00.000Z"),
+      });
+    const activityByName = async () => {
+      const envelopeRows = await db
+        .select({ id: envelopes.id, name: envelopes.name })
+        .from(envelopes)
+        .where(eq(envelopes.householdId, registered.householdId));
+      const nameById = new Map(envelopeRows.map(({ id, name }) => [id, name]));
+      const allocationRows = await db
+        .select({
+          envelopeId: envelopeAllocations.envelopeId,
+          activity: envelopeAllocations.activity,
+        })
+        .from(envelopeAllocations)
+        .where(eq(envelopeAllocations.householdId, registered.householdId));
+      return new Map(
+        allocationRows.flatMap(({ envelopeId, activity }) => {
+          const name = nameById.get(envelopeId);
+          return name ? [[name, activity] as const] : [];
+        }),
+      );
+    };
+
+    await run();
+    expect(
+      await db
+        .select({ id: refundLinks.id })
+        .from(refundLinks)
+        .where(eq(refundLinks.id, obsoleteInvestmentLinkId))
+        .get(),
+    ).toBeUndefined();
+    expect(
+      await db
+        .select({ status: refundLinks.status })
+        .from(refundLinks)
+        .where(eq(refundLinks.id, linkId))
+        .get(),
+    ).toEqual({ status: "suggested" });
+    let activities = await activityByName();
+    expect(activities.get("Groceries")).toBe(-4_000n);
+    expect(activities.get("Personal & shopping")).toBe(-2_000n);
+    expect(activities.get("Utilities & connectivity")).toBe(0n);
+    await run();
+    activities = await activityByName();
+    expect(activities.get("Groceries")).toBe(-4_000n);
+    expect(activities.get("Personal & shopping")).toBe(-2_000n);
+
+    await db.update(refundLinks).set({ status: "confirmed" }).where(eq(refundLinks.id, linkId));
+    await run();
+    activities = await activityByName();
+    expect(activities.get("Groceries")).toBe(-2_000n);
+    expect(activities.get("Personal & shopping")).toBe(-1_000n);
+    expect(activities.get("Utilities & connectivity")).toBe(0n);
+    expect(
+      await db
+        .select({ isReimbursement: transactions.isReimbursement })
+        .from(transactions)
+        .where(eq(transactions.id, refundId))
+        .get(),
+    ).toEqual({ isReimbursement: true });
+  });
+
+  test("rolls back every local domain write after a deterministic late failure", async () => {
+    const db = openDatabase(":memory:", { wal: false });
+    databases.push(db);
+    runMigrations(db);
+    const config = loadConfig({
+      APP_ENV: "test",
+      DATABASE_URL: ":memory:",
+      ENCRYPTION_KEY: "d".repeat(64),
+      WEB_ORIGIN: "http://localhost:5173",
+      REGISTRATION_MODE: "open",
+    });
+    const registered = await registerUser(
+      db,
+      {
+        email: "atomic-personalization@example.com",
+        password: "AtomicPersonalization!2026",
+        householdName: "Atomic personalization test",
+      },
+      config,
+    );
+    const checkingId = ulid();
+    const employerId = ulid();
+    await db.insert(accounts).values({
+      id: checkingId,
+      householdId: registered.householdId,
+      ownerUserId: registered.userId,
+      name: "Checking",
+      group: "cash",
+      type: "checking",
+      currency: "USD",
+      isLiability: false,
+      isManual: true,
+    });
+    await db.insert(merchants).values({
+      id: employerId,
+      householdId: registered.householdId,
+      name: "Atomic Employer",
+      normalizedName: "ATOMIC EMPLOYER",
+    });
+    const incomeCategory = await db
+      .select({ id: categories.id })
+      .from(categories)
+      .where(and(eq(categories.householdId, registered.householdId), eq(categories.slug, "income")))
+      .get();
+    if (!incomeCategory) throw new Error("Income category is missing");
+    await db.insert(transactions).values(
+      ["2026-06-01", "2026-06-15", "2026-06-29"].map((transactedOn) => ({
+        id: ulid(),
+        householdId: registered.householdId,
+        accountId: checkingId,
+        merchantId: employerId,
+        amount: 100_000n,
+        currency: "USD",
+        transactedOn,
+        rawDescription: "ATOMIC EMPLOYER PAYROLL",
+        normalizedDescription: "ATOMIC EMPLOYER PAYROLL",
+        categoryId: incomeCategory.id,
+        categoryOrigin: "provider" as const,
+        status: "posted" as const,
+        source: "manual" as const,
+        reviewState: "none" as const,
+        isIncome: true,
+      })),
+    );
+    const domainSnapshot = async () => ({
+      users: await db.select().from(users),
+      categories: await db.select().from(categories),
+      transactions: await db.select().from(transactions),
+      rules: await db.select().from(rules),
+      recurringSeries: await db.select().from(recurringSeries),
+      incomeSources: await db.select().from(incomeSources),
+      bills: await db.select().from(bills),
+      envelopes: await db.select().from(envelopes),
+      envelopeCategoryLinks: await db.select().from(envelopeCategoryLinks),
+      envelopeRuleLinks: await db.select().from(envelopeRuleLinks),
+      payCycles: await db.select().from(payCycles),
+      budgetPeriods: await db.select().from(budgetPeriods),
+      envelopeAllocations: await db.select().from(envelopeAllocations),
+      goals: await db.select().from(goals),
+      refundLinks: await db.select().from(refundLinks),
+      auditEvents: await db.select().from(auditEvents),
+      settings: (await db.select().from(settings)).filter(
+        ({ key }) => key !== "planning.personalization_journal",
+      ),
+    });
+    const before = await domainSnapshot();
+    await expect(
+      personalizeHousehold({
+        db,
+        config,
+        householdId: registered.householdId,
+        userId: registered.userId,
+        apply: true,
+        aiBatches: 0,
+        employerHint: "Atomic Employer",
+        now: new Date("2026-07-01T12:00:00.000Z"),
+        testHooks: {
+          beforeLocalCommit: () => {
+            throw new Error("injected late personalization failure");
+          },
+        },
+      }),
+    ).rejects.toThrow("injected late personalization failure");
+    expect(db.$client.inTransaction).toBeFalse();
+    expect(await domainSnapshot()).toEqual(before);
+    expect(
+      await db
+        .select({ value: settings.value })
+        .from(settings)
+        .where(eq(settings.key, "planning.personalization_journal"))
+        .get(),
+    ).toEqual({ value: expect.objectContaining({ phase: "local_pending" }) });
+
+    const recovered = await personalizeHousehold({
+      db,
+      config,
+      householdId: registered.householdId,
+      userId: registered.userId,
+      apply: true,
+      aiBatches: 0,
+      employerHint: "Atomic Employer",
+      now: new Date("2026-07-01T12:00:00.000Z"),
+    });
+    expect(recovered.mode).toBe("applied");
+    expect(await db.select().from(budgetPeriods)).toHaveLength(1);
+    expect(
+      await db
+        .select({ value: settings.value })
+        .from(settings)
+        .where(eq(settings.key, "planning.personalization_journal"))
+        .get(),
+    ).toEqual({ value: expect.objectContaining({ phase: "local_complete" }) });
   });
 
   test("fails closed before writes when payroll evidence or owner/admin authority is missing", async () => {
@@ -884,6 +1825,12 @@ describe("idempotent household personalization", () => {
           candidates: 0,
           deterministic: 0,
           aiCalls: 0,
+          aiVerificationCalls: 0,
+          aiVerified: 0,
+          aiVerificationFailed: 0,
+          aiResearchCitations: 0,
+          aiResearchHosts: [],
+          aiCreatedCategories: 0,
           aiAccepted: 0,
           aiPending: 0,
           aiFailed: 0,
