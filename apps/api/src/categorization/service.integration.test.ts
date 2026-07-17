@@ -1084,7 +1084,7 @@ describe("AI-first categorization becomes deterministic", () => {
         suggestCategory,
       }),
     ).toMatchObject({ aiCalls: 1, aiAccepted: 1 });
-    await insert(2_000n, "2026-07-02");
+    const firstInflowId = await insert(2_000n, "2026-07-02");
     expect(
       await categorizeHouseholdTransactions({
         db,
@@ -1094,6 +1094,23 @@ describe("AI-first categorization becomes deterministic", () => {
         suggestCategory,
       }),
     ).toMatchObject({ aiCalls: 1, aiAccepted: 1 });
+    expect(
+      await db
+        .select({
+          reviewState: transactions.reviewState,
+          isReimbursement: transactions.isReimbursement,
+          isTransfer: transactions.isTransfer,
+          isExcluded: transactions.isExcluded,
+        })
+        .from(transactions)
+        .where(eq(transactions.id, firstInflowId))
+        .get(),
+    ).toEqual({
+      reviewState: "needs_review",
+      isReimbursement: false,
+      isTransfer: false,
+      isExcluded: false,
+    });
     expect(await db.select().from(rules).where(eq(rules.origin, "ai"))).toHaveLength(2);
     await insert(2_100n, "2026-07-03");
     expect(
@@ -1104,7 +1121,7 @@ describe("AI-first categorization becomes deterministic", () => {
         userId: registered.userId,
         suggestCategory,
       }),
-    ).toMatchObject({ deterministic: 1, aiCalls: 0 });
+    ).toMatchObject({ deterministic: 2, aiCalls: 0 });
     expect(calls).toBe(2);
   });
 

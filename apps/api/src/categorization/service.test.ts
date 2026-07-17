@@ -44,7 +44,7 @@ test("AI suggestions become narrow deterministic rules", () => {
   expect(JSON.stringify(rule.condition)).not.toContain(".*");
 });
 
-test("AI expense inflows become reimbursements instead of income", () => {
+test("AI expense inflows remain reviewable until an exact refund is confirmed", () => {
   const rule = buildAiRule({
     id: "rule-refund",
     transaction: {
@@ -70,7 +70,8 @@ test("AI expense inflows become reimbursements instead of income", () => {
     updatedAt: "2026-07-16T12:00:00.000Z",
   });
   expect(rule.actions).toContainEqual({ type: "setFlag", flag: "income", value: false });
-  expect(rule.actions).toContainEqual({ type: "setFlag", flag: "reimbursement", value: true });
+  expect(rule.actions).toContainEqual({ type: "setFlag", flag: "reimbursement", value: false });
+  expect(rule.actions).toContainEqual({ type: "requestReview", value: true });
 });
 
 test("AI income outflows never inflate income and remain reviewable", () => {
@@ -169,7 +170,7 @@ test("AI-proposed constraints that exclude their source transaction are discarde
   expect(JSON.stringify(rule.condition)).not.toContain('"minimum":"1000"');
 });
 
-test("transfer categories set every classification flag explicitly", () => {
+test("AI transfer categories stay reportable until an exact pair is confirmed", () => {
   const rule = buildAiRule({
     id: "rule-transfer",
     transaction: {
@@ -196,10 +197,11 @@ test("transfer categories set every classification flag explicitly", () => {
 
   expect(rule.actions).toEqual(
     expect.arrayContaining([
-      { type: "setFlag", flag: "transfer", value: true },
-      { type: "setFlag", flag: "reportingExcluded", value: true },
+      { type: "setFlag", flag: "transfer", value: false },
+      { type: "setFlag", flag: "reportingExcluded", value: false },
       { type: "setFlag", flag: "income", value: false },
       { type: "setFlag", flag: "reimbursement", value: false },
+      { type: "requestReview", value: true },
     ]),
   );
 });

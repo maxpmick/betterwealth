@@ -99,14 +99,16 @@ function classificationFlagActions(
       { type: "setFlag", flag: "transfer", value: false },
       { type: "setFlag", flag: "reportingExcluded", value: false },
       { type: "setFlag", flag: "income", value: false },
-      { type: "setFlag", flag: "reimbursement", value: direction === "inflow" },
+      { type: "setFlag", flag: "reimbursement", value: false },
     );
+    if (direction === "inflow") actions.push({ type: "requestReview", value: true });
   } else if (kind === "transfer") {
     actions.push(
       { type: "setFlag", flag: "income", value: false },
-      { type: "setFlag", flag: "transfer", value: true },
-      { type: "setFlag", flag: "reportingExcluded", value: true },
+      { type: "setFlag", flag: "transfer", value: false },
+      { type: "setFlag", flag: "reportingExcluded", value: false },
       { type: "setFlag", flag: "reimbursement", value: false },
+      { type: "requestReview", value: true },
     );
   } else if (kind === "debt" || kind === "investment") {
     actions.push(
@@ -133,14 +135,14 @@ function classificationFlagPatch(kind: CategoryKind | undefined, direction: "inf
       isTransfer: false,
       isExcluded: false,
       isIncome: false,
-      isReimbursement: direction === "inflow",
+      isReimbursement: false,
     };
   }
   if (kind === "transfer") {
     return {
       isIncome: false,
-      isTransfer: true,
-      isExcluded: true,
+      isTransfer: false,
+      isExcluded: false,
       isReimbursement: false,
     };
   }
@@ -153,6 +155,13 @@ function classificationFlagPatch(kind: CategoryKind | undefined, direction: "inf
     };
   }
   return {};
+}
+
+function movementNeedsConfirmation(
+  kind: CategoryKind | undefined,
+  direction: "inflow" | "outflow",
+) {
+  return kind === "transfer" || (kind === "expense" && direction === "inflow");
 }
 
 function configuredAi(
@@ -835,7 +844,11 @@ export async function categorizeHouseholdTransactions(input: {
               row.transaction.amount >= 0n ? "inflow" : "outflow",
             ),
             reviewState:
-              selectedCategory.kind === "income" && row.transaction.amount < 0n
+              (selectedCategory.kind === "income" && row.transaction.amount < 0n) ||
+              movementNeedsConfirmation(
+                selectedCategory.kind,
+                row.transaction.amount >= 0n ? "inflow" : "outflow",
+              )
                 ? "needs_review"
                 : "none",
             updatedAt: now,

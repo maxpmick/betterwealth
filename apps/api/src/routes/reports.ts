@@ -350,6 +350,7 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
         isExcluded: transactions.isExcluded,
         isTransfer: transactions.isTransfer,
         isIncome: transactions.isIncome,
+        isReimbursement: transactions.isReimbursement,
         transactedOn: transactions.transactedOn,
       })
       .from(transactions)
@@ -368,7 +369,7 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
       if (transaction.status !== "posted") continue;
       if (transaction.amount > 0n) {
         if (transaction.isIncome) income += transaction.amount;
-        else expenses -= transaction.amount;
+        else if (transaction.isReimbursement) expenses -= transaction.amount;
       } else {
         expenses += -transaction.amount;
       }
@@ -811,7 +812,7 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
       const value = months.get(key) ?? { income: 0n, expenses: 0n };
       if (transaction.amount > 0n) {
         if (transaction.isIncome) value.income += transaction.amount;
-        else value.expenses -= transaction.amount;
+        else if (transaction.isReimbursement) value.expenses -= transaction.amount;
       } else {
         value.expenses += -transaction.amount;
       }
@@ -839,6 +840,7 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
         amount: transactions.amount,
         currency: transactions.currency,
         isIncome: transactions.isIncome,
+        isReimbursement: transactions.isReimbursement,
         category: categories.name,
       })
       .from(transactions)
@@ -871,20 +873,25 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
       : [];
     const totals = new Map<string, bigint>();
     const splitTransactionIds = new Set(splitRows.map(({ transactionId }) => transactionId));
-    const addActivity = (categoryName: string | null, amount: bigint, isIncome: boolean) => {
-      if (amount > 0n && isIncome) return;
+    const addActivity = (
+      categoryName: string | null,
+      amount: bigint,
+      isIncome: boolean,
+      isReimbursement: boolean,
+    ) => {
+      if (amount > 0n && (isIncome || !isReimbursement)) return;
       const category = categoryName ?? "Uncategorized";
       totals.set(category, (totals.get(category) ?? 0n) - amount);
     };
     for (const row of rows) {
       if (row.currency !== report.currency || splitTransactionIds.has(row.id)) continue;
-      addActivity(row.category, row.amount, row.isIncome);
+      addActivity(row.category, row.amount, row.isIncome, row.isReimbursement);
     }
     const transactionById = new Map(rows.map((row) => [row.id, row]));
     for (const split of splitRows) {
       const parent = transactionById.get(split.transactionId);
       if (parent?.currency !== report.currency) continue;
-      addActivity(split.category, split.amount, parent.isIncome);
+      addActivity(split.category, split.amount, parent.isIncome, parent.isReimbursement);
     }
     return context.json({
       categories: [...totals.entries()]

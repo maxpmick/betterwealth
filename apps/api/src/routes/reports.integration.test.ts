@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { balanceSnapshots } from "@betterwealth/db/schema";
+import { balanceSnapshots, transactions } from "@betterwealth/db/schema";
 import { eq } from "drizzle-orm";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -270,5 +270,64 @@ describe("dashboard planning truth", () => {
         debts: { minorUnits: "0", currency: "USD" },
       },
     ]);
+  });
+
+  test("does not treat an expense-category credit as a refund before confirmation", async () => {
+    const accountResponse = await request("/accounts", {
+      name: "Refund safety checking",
+      group: "cash",
+      type: "checking",
+      currency: "USD",
+      balanceMinorUnits: "100000",
+      includeInBudget: true,
+    });
+    const account = (await accountResponse.json()) as { id: string };
+    const categoryResponse = await request("/categories", {
+      name: "Refund safety groceries",
+      kind: "expense",
+    });
+    const category = (await categoryResponse.json()) as { id: string };
+    const effectiveDate = new Date().toISOString();
+    await request("/transactions", {
+      accountId: account.id,
+      amountMinorUnits: "-10000",
+      currency: "USD",
+      effectiveDate,
+      description: "Refund safety purchase",
+      categoryId: category.id,
+    });
+    const creditResponse = await request("/transactions", {
+      accountId: account.id,
+      amountMinorUnits: "2500",
+      currency: "USD",
+      effectiveDate,
+      description: "Refund safety credit",
+      categoryId: category.id,
+    });
+    const credit = (await creditResponse.json()) as { id: string };
+
+    const beforeSpending = (await (await request("/reports/spending")).json()) as {
+      categories: Array<{ category: string; amount: { minorUnits: string } }>;
+    };
+    expect(
+      beforeSpending.categories.find(({ category: name }) => name === "Refund safety groceries")
+        ?.amount.minorUnits,
+    ).toBe("10000");
+    const beforeCashFlow = (await (await request("/reports/cash-flow")).json()) as {
+      months: Array<{ month: string; expenses: { minorUnits: string } }>;
+    };
+    expect(beforeCashFlow.months.at(-1)?.expenses.minorUnits).toBe("10000");
+
+    await application.db
+      .update(transactions)
+      .set({ isReimbursement: true })
+      .where(eq(transactions.id, credit.id));
+    const afterSpending = (await (await request("/reports/spending")).json()) as {
+      categories: Array<{ category: string; amount: { minorUnits: string } }>;
+    };
+    expect(
+      afterSpending.categories.find(({ category: name }) => name === "Refund safety groceries")
+        ?.amount.minorUnits,
+    ).toBe("7500");
   });
 });
