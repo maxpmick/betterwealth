@@ -73,19 +73,29 @@ bun run typecheck      # every workspace
 bun run lint           # Biome
 bun run format         # Biome auto-fix
 bun run test           # unit/integration + web component tests
+bun run test:unit      # Bun unit/integration suites only
+bun run test:web       # web component suites only
 bun run test:e2e       # Playwright browser journeys
 bun run audit          # dependency vulnerability audit
 bun run test:all       # full release gate, including dependency audit
 bun run db:check       # validate the Drizzle migration journal
+bun run db:generate    # generate a new migration from schema changes
 bun run db:migrate     # apply SQLite migrations
-bun run db:seed        # idempotent canonical age-22 demo fixture
+bun run db:seed        # idempotent canonical age-22 demo fixture (dev/test only)
 bun run db:backup      # timestamped online SQLite backup
 bun run ops:backup     # online backup followed by integrity verification
 bun run ops:verify-backup -- /path/to/backup.sqlite
 bun run ops:health     # local API + web readiness check
+bun run ops:preflight  # validate a production environment file and host posture
 bun run auth:reset-password -- --email user@example.com
 bun run bootstrap      # initial user/integrations/sync
+bun run personalize:dry-run  # preview derived personalization without writing
+bun run personalize:apply    # apply derived personalization
+bun run start:api      # run the built API process
+bun run start:web      # serve the built web app
 ```
+
+`bun run --cwd apps/api recategorize` re-runs categorization for an account or household (see its `--help`).
 
 A pre-commit hook in `.githooks/` runs `biome check` on staged files so lint and format issues
 are caught before they reach CI. `bun install` activates it automatically by setting git

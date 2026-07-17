@@ -30,6 +30,19 @@ jobs:
       - name: Audit dependencies
         run: bun run audit
 
+  secrets:
+    name: Secrets scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_ENABLE_COMMENTS: false
+          GITLEAKS_ENABLE_SUMMARY: false
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -176,7 +189,7 @@ jobs:
   gate:
     name: Release gate
     if: always()
-    needs: [audit, lint, typecheck, migrations, unit, web, build, e2e]
+    needs: [audit, secrets, lint, typecheck, migrations, unit, web, build, e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
