@@ -68,6 +68,7 @@ import {
   type ApiGoalContribution,
   type ApiGoalPatch,
   api,
+  type ComfortablePurchasePlan,
   type CursorPage,
   type NetWorthReport,
 } from "../api";
@@ -1262,6 +1263,44 @@ function goalMoney(value: number) {
   return { minorUnits: String(Math.round(value * 100)), currency: "USD" };
 }
 
+const demoComfortablePurchasePlan: ComfortablePurchasePlan = {
+  status: "comfortable",
+  comfortable: true,
+  comfortableMonth: "2027-04",
+  monthsUntilPurchase: 9,
+  controllingConstraint: "targetNetWorth",
+  limitingConstraints: [
+    {
+      code: "targetNetWorth",
+      label: "Wealth target preserved",
+      satisfied: true,
+      detail:
+        "Projected liquid net worth still reaches the saved age-30 target after a conservative full purchase-price write-off.",
+    },
+  ],
+  constraints: [],
+  missingInputs: [],
+  inputs: {
+    spendableLiquidity: goalMoney(8_750),
+    unreservedLiquidity: goalMoney(2_990),
+    fundingAccountBalance: goalMoney(4_250),
+    verifiedPurchaseSavings: goalMoney(2_400),
+    protectedMinimumBuffer: goalMoney(2_500),
+    requiredMonthlyBills: goalMoney(1_450),
+    requiredObligationShortfall: goalMoney(0),
+    higherPriorityMonthlyFunding: goalMoney(650),
+    monthlySurplus: goalMoney(1_230),
+    monthlySurplusSource: "explicit_budget",
+    currentLiquidNetWorth: goalMoney(24_900),
+    targetLiquidNetWorth: goalMoney(100_000),
+    targetWealthDate: "2034-07-01",
+    projectedLiquidNetWorthAtTarget: goalMoney(101_200),
+  },
+  assumptions: [
+    "A purchase before the wealth milestone is treated as a 100% liquid-net-worth write-off.",
+  ],
+};
+
 type GoalStatus = "active" | "paused" | "completed" | "cancelled";
 type GoalLiquidity = "cash" | "liquid" | "investable" | "any";
 
@@ -1297,6 +1336,7 @@ const demoApiGoals: CursorPage<GoalRecord> = {
     paused: false,
     status: "active",
     liquidityConstraint: index === 3 ? "investable" : "liquid",
+    ...(index === 1 ? { comfortablePurchase: demoComfortablePurchasePlan } : {}),
   })),
   page: { cursor: null, hasMore: false },
 };
@@ -1450,6 +1490,220 @@ function goalStatus(goal: GoalItem): {
   return { label: "Funding", tone: "info" };
 }
 
+export function ComfortablePurchaseSummary({
+  plan,
+  fundingProjectedLabel,
+}: {
+  plan: ComfortablePurchasePlan;
+  fundingProjectedLabel: string;
+}) {
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const status =
+    plan.status === "comfortable"
+      ? ({ label: "Guardrails clear", tone: "positive" } as const)
+      : plan.status === "not_comfortable"
+        ? ({ label: "Guardrails blocked", tone: "risk" } as const)
+        : ({ label: "Needs inputs", tone: "warning" } as const);
+  const title =
+    plan.status === "comfortable"
+      ? plan.comfortableMonth === currentMonth
+        ? "Modeled guardrails clear now"
+        : `Modeled guardrails clear in ${monthLabel(plan.comfortableMonth)}`
+      : plan.status === "not_comfortable"
+        ? "No comfortable date in the 10-year window"
+        : "No honest comfortable-to-buy date yet";
+  const buffer = plan.inputs.protectedMinimumBuffer;
+  const bills = plan.inputs.requiredMonthlyBills;
+  const wealthTarget = plan.inputs.targetLiquidNetWorth;
+  const verifiedSavings = plan.inputs.verifiedPurchaseSavings;
+  const unreserved = plan.inputs.unreservedLiquidity;
+  const monthlySurplus = plan.inputs.monthlySurplus;
+  const projectedAtTarget = plan.inputs.projectedLiquidNetWorthAtTarget;
+  const surplusSource =
+    plan.inputs.monthlySurplusSource === "explicit_budget"
+      ? "backed current budget"
+      : plan.inputs.monthlySurplusSource === "observed_90_day"
+        ? "fresh 60+ day cash-flow history"
+        : "not available";
+  const modeledAmounts = [
+    {
+      label: "Verified purchase savings",
+      value: verifiedSavings ? (
+        <Money
+          value={Number(verifiedSavings.minorUnits) / 100}
+          currency={verifiedSavings.currency}
+        />
+      ) : (
+        "—"
+      ),
+    },
+    {
+      label: "Unreserved cash",
+      value: unreserved ? (
+        <Money value={Number(unreserved.minorUnits) / 100} currency={unreserved.currency} />
+      ) : (
+        "—"
+      ),
+    },
+    {
+      label: "Protected buffer",
+      value: buffer ? (
+        <Money value={Number(buffer.minorUnits) / 100} currency={buffer.currency} />
+      ) : (
+        "—"
+      ),
+    },
+    {
+      label: "Required bills / month",
+      value: bills ? (
+        <Money value={Number(bills.minorUnits) / 100} currency={bills.currency} />
+      ) : (
+        "—"
+      ),
+    },
+    {
+      label: "Modeled monthly surplus",
+      value: monthlySurplus ? (
+        <>
+          <Money
+            value={Number(monthlySurplus.minorUnits) / 100}
+            currency={monthlySurplus.currency}
+          />{" "}
+          · {surplusSource}
+        </>
+      ) : (
+        "—"
+      ),
+    },
+    {
+      label: "Liquid wealth target",
+      value:
+        wealthTarget && plan.inputs.targetWealthDate ? (
+          <>
+            <Money value={Number(wealthTarget.minorUnits) / 100} currency={wealthTarget.currency} />{" "}
+            by {monthLabel(plan.inputs.targetWealthDate.slice(0, 7))}
+          </>
+        ) : (
+          "—"
+        ),
+    },
+    {
+      label: "Projected liquid wealth at target month",
+      value: projectedAtTarget ? (
+        <Money
+          value={Number(projectedAtTarget.minorUnits) / 100}
+          currency={projectedAtTarget.currency}
+        />
+      ) : (
+        "—"
+      ),
+    },
+  ];
+
+  return (
+    <Box
+      sx={{
+        mt: 3,
+        p: 3,
+        borderRadius: 3,
+        border: "1px solid",
+        borderColor:
+          plan.status === "comfortable"
+            ? "success.light"
+            : plan.status === "not_comfortable"
+              ? "error.light"
+              : "warning.light",
+        bgcolor:
+          plan.status === "comfortable"
+            ? (theme) => alpha(theme.palette.success.main, 0.055)
+            : plan.status === "not_comfortable"
+              ? (theme) => alpha(theme.palette.error.main, 0.045)
+              : (theme) => alpha(theme.palette.warning.main, 0.05),
+      }}
+    >
+      <Stack direction="row" justifyContent="space-between" alignItems="center" gap={2}>
+        <Typography variant="caption" color="text.secondary" fontWeight={750}>
+          Comfortable-to-buy check
+        </Typography>
+        <StatusChip label={status.label} tone={status.tone} />
+      </Stack>
+      <Typography variant="body2" fontWeight={800} sx={{ mt: 1 }}>
+        {title}
+      </Typography>
+      {plan.status === "incomplete" ? (
+        <Stack component="ul" gap={0.75} sx={{ pl: 2.5, mt: 1.5, mb: 0 }}>
+          {(plan.missingInputs.length
+            ? plan.missingInputs
+            : ["Complete the planning inputs to calculate this guardrail."]
+          ).map((item) => (
+            <Typography key={item} component="li" variant="caption" color="text.secondary">
+              {item}
+            </Typography>
+          ))}
+        </Stack>
+      ) : (
+        <>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
+            {plan.status === "comfortable"
+              ? "Every modeled guardrail clears in this month. This is a planning estimate, not purchase permission."
+              : "These guardrails still fail in the modeled window:"}
+          </Typography>
+          {plan.limitingConstraints.length ? (
+            <Stack component="ul" gap={1} sx={{ pl: 2.5, mt: 1.25, mb: 0 }}>
+              {plan.limitingConstraints.map((constraint) => (
+                <Typography
+                  key={constraint.code}
+                  component="li"
+                  variant="caption"
+                  color="text.secondary"
+                >
+                  <strong>{constraint.label}:</strong> {constraint.detail}
+                </Typography>
+              ))}
+            </Stack>
+          ) : null}
+          <Box
+            sx={{
+              display: "grid",
+              gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))" },
+              gap: 1,
+              mt: 2,
+            }}
+          >
+            {modeledAmounts.map((item) => (
+              <Box key={item.label}>
+                <Typography variant="caption" color="text.secondary">
+                  {item.label}
+                </Typography>
+                <Typography variant="caption" fontWeight={750} sx={{ display: "block" }}>
+                  {item.value}
+                </Typography>
+              </Box>
+            ))}
+          </Box>
+        </>
+      )}
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
+        Funding projection: {fundingProjectedLabel}. Funding alone is not purchase permission.
+      </Typography>
+      {plan.assumptions.length ? (
+        <Box sx={{ mt: 1.5 }}>
+          <Typography variant="caption" color="text.secondary" fontWeight={750}>
+            Model assumptions
+          </Typography>
+          <Stack component="ul" gap={0.75} sx={{ pl: 2.5, mt: 0.75, mb: 0 }}>
+            {plan.assumptions.map((assumption) => (
+              <Typography key={assumption} component="li" variant="caption" color="text.secondary">
+                {assumption}
+              </Typography>
+            ))}
+          </Stack>
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
 function GoalCard({
   goal,
   busy,
@@ -1544,6 +1798,14 @@ function GoalCard({
               ? `${formatMinor(goal.remainingMinor, goal.record.target.currency)} remains; add ${formatMinor(goal.requiredMonthlyMinor ?? BigInt(goal.record.monthlyContribution.minorUnits), goal.record.target.currency)}/mo to target ${dateLabel(goal.targetDate)}.`
               : `Target ${dateLabel(goal.targetDate)}${goal.status === "completed" ? " reached" : " is covered by this pace"}.`}
           </Typography>
+        ) : null}
+        {goal.record.type === "purchase" && goal.record.comfortablePurchase ? (
+          <ComfortablePurchaseSummary
+            plan={goal.record.comfortablePurchase}
+            fundingProjectedLabel={
+              goal.status === "completed" ? "already fully funded" : goal.projectedLabel
+            }
+          />
         ) : null}
         <Divider sx={{ my: 4 }} />
         <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" gap={2}>

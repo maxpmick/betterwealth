@@ -77,7 +77,10 @@ describe("BetterWealth routing and shell", () => {
     renderApp("/today");
 
     expect(
-      await screen.findByRole("heading", { level: 1, name: /good morning, alex/i }),
+      await screen.findByRole("heading", {
+        level: 1,
+        name: /good (?:morning|afternoon|evening), alex/i,
+      }),
     ).toBeInTheDocument();
     const desktop = await screen.findByRole("navigation", { name: /primary navigation/i });
     await user.click(within(desktop).getByRole("link", { name: /transactions/i }));

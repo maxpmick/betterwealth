@@ -143,6 +143,7 @@ describe("goals and comfortable purchase dates", () => {
     });
     expect(result.comfortableMonth).toBe("2026-12");
     expect(result.monthsUntilPurchase).toBe(5);
+    expect(result.limitingConstraints).toEqual(["purchaseFunding"]);
     expect(result.finalState.constraints.purchaseFunding).toBeTrue();
   });
 
@@ -161,5 +162,138 @@ describe("goals and comfortable purchase dates", () => {
     });
     expect(result.comfortable).toBeFalse();
     expect(result.controllingConstraint).toBe("horizon");
+    expect(result.limitingConstraints).toEqual(["emergencyFloor", "horizon"]);
+  });
+
+  test("delays a funded purchase until the checking buffer recovers", () => {
+    const result = comfortablePurchaseDate({
+      startMonth: "2026-07",
+      purchasePrice: money(1_000_00n, "USD"),
+      currentPurchaseSavings: money(1_000_00n, "USD"),
+      monthlyPurchaseContribution: money(0n, "USD"),
+      emergencyReserve: money(5_000_00n, "USD"),
+      emergencyFloor: money(2_000_00n, "USD"),
+      checkingBalance: money(500_00n, "USD"),
+      checkingBuffer: money(2_000_00n, "USD"),
+      monthlyCheckingChange: money(500_00n, "USD"),
+      lookAheadMonths: 0,
+      horizonMonths: 12,
+    });
+
+    expect(result.comfortable).toBeTrue();
+    expect(result.comfortableMonth).toBe("2026-10");
+    expect(result.monthsUntilPurchase).toBe(3);
+    expect(result.limitingConstraints).toEqual(["checkingBuffer"]);
+  });
+
+  test("delays a funded purchase until after a preserved fixed wealth milestone", () => {
+    const result = comfortablePurchaseDate({
+      startMonth: "2026-07",
+      purchasePrice: money(500_00n, "USD"),
+      currentPurchaseSavings: money(500_00n, "USD"),
+      monthlyPurchaseContribution: money(0n, "USD"),
+      emergencyReserve: money(5_000_00n, "USD"),
+      emergencyFloor: money(2_000_00n, "USD"),
+      checkingBalance: money(3_000_00n, "USD"),
+      checkingBuffer: money(2_000_00n, "USD"),
+      monthlyCheckingChange: money(100_00n, "USD"),
+      currentNetWorth: money(1_000_00n, "USD"),
+      targetNetWorth: money(2_000_00n, "USD"),
+      targetNetWorthMonth: "2027-07",
+      monthlyNetWorthChange: money(100_00n, "USD"),
+      purchaseNetWorthImpact: money(500_00n, "USD"),
+      lookAheadMonths: 0,
+      horizonMonths: 24,
+    });
+
+    expect(result.comfortableMonth).toBe("2027-08");
+    expect(result.monthsUntilPurchase).toBe(13);
+    expect(result.limitingConstraints).toEqual(["targetNetWorth"]);
+    expect(result.finalState.projectedTargetNetWorth).toEqual(money(2_200_00n, "USD"));
+  });
+
+  test("fails when a full purchase write-off makes the wealth target impossible", () => {
+    const result = comfortablePurchaseDate({
+      startMonth: "2026-07",
+      purchasePrice: money(500_00n, "USD"),
+      currentPurchaseSavings: money(500_00n, "USD"),
+      monthlyPurchaseContribution: money(0n, "USD"),
+      emergencyReserve: money(5_000_00n, "USD"),
+      emergencyFloor: money(2_000_00n, "USD"),
+      checkingBalance: money(3_000_00n, "USD"),
+      checkingBuffer: money(2_000_00n, "USD"),
+      monthlyCheckingChange: money(0n, "USD"),
+      currentNetWorth: money(1_000_00n, "USD"),
+      targetNetWorth: money(2_000_00n, "USD"),
+      targetNetWorthMonth: "2027-07",
+      monthlyNetWorthChange: money(0n, "USD"),
+      purchaseNetWorthImpact: money(500_00n, "USD"),
+      lookAheadMonths: 0,
+      horizonMonths: 24,
+    });
+
+    expect(result.comfortable).toBeFalse();
+    expect(result.limitingConstraints).toEqual(["targetNetWorth", "horizon"]);
+    expect(result.finalState.projectedTargetNetWorth).toEqual(money(1_000_00n, "USD"));
+  });
+
+  test("grows a verified emergency reserve with capped transfers and releases cash at target", () => {
+    const result = comfortablePurchaseDate({
+      startMonth: "2026-07",
+      purchasePrice: money(1_000_00n, "USD"),
+      currentPurchaseSavings: money(1_000_00n, "USD"),
+      monthlyPurchaseContribution: money(0n, "USD"),
+      emergencyReserve: money(2_000_00n, "USD"),
+      emergencyFloor: money(3_000_00n, "USD"),
+      checkingBalance: money(4_000_00n, "USD"),
+      checkingBuffer: money(2_000_00n, "USD"),
+      monthlyCheckingChange: money(0n, "USD"),
+      monthlyCashSurplusBeforeGoalContributions: money(20_000n, "USD"),
+      higherPriorityGoals: [
+        {
+          id: "emergency",
+          currentAmount: money(2_000_00n, "USD"),
+          targetAmount: money(3_000_00n, "USD"),
+          monthlyContribution: money(50_000n, "USD"),
+          targetMonth: "2026-09",
+          countsTowardEmergencyReserve: true,
+        },
+      ],
+      lookAheadMonths: 3,
+      horizonMonths: 12,
+    });
+
+    expect(result.comfortableMonth).toBe("2026-09");
+    expect(result.finalState.projectedEmergencyReserve).toEqual(money(3_000_00n, "USD"));
+    // Contributions stop at the target, so the three-month look-ahead does not keep draining cash.
+    expect(result.finalState.projectedCheckingLow).toEqual(money(3_400_00n, "USD"));
+    expect(result.limitingConstraints).toEqual(["emergencyFloor"]);
+  });
+
+  test("blocks an unfinished higher-priority goal with no funding pace", () => {
+    const result = comfortablePurchaseDate({
+      startMonth: "2026-07",
+      purchasePrice: money(1_000_00n, "USD"),
+      currentPurchaseSavings: money(1_000_00n, "USD"),
+      monthlyPurchaseContribution: money(0n, "USD"),
+      emergencyReserve: money(3_000_00n, "USD"),
+      emergencyFloor: money(2_000_00n, "USD"),
+      checkingBalance: money(4_000_00n, "USD"),
+      checkingBuffer: money(2_000_00n, "USD"),
+      monthlyCheckingChange: money(0n, "USD"),
+      monthlyCashSurplusBeforeGoalContributions: money(1_000_00n, "USD"),
+      higherPriorityGoals: [
+        {
+          id: "debt",
+          currentAmount: money(0n, "USD"),
+          targetAmount: money(10_000_00n, "USD"),
+          monthlyContribution: money(0n, "USD"),
+        },
+      ],
+      horizonMonths: 12,
+    });
+
+    expect(result.comfortable).toBeFalse();
+    expect(result.limitingConstraints).toEqual(["higherPriorityGoals", "horizon"]);
   });
 });

@@ -212,6 +212,51 @@ export interface AccountUpdateInput {
   balanceMinorUnits?: string;
 }
 
+export type PurchaseConstraint =
+  | "purchaseFunding"
+  | "emergencyFloor"
+  | "requiredObligations"
+  | "checkingBuffer"
+  | "higherPriorityGoals"
+  | "targetNetWorth"
+  | "horizon"
+  | "incompleteInputs";
+
+export interface ComfortablePurchaseConstraint {
+  code: PurchaseConstraint;
+  label: string;
+  satisfied: boolean | null;
+  detail: string;
+}
+
+export interface ComfortablePurchasePlan {
+  status: "comfortable" | "not_comfortable" | "incomplete";
+  comfortable: boolean | null;
+  comfortableMonth: string | null;
+  monthsUntilPurchase: number | null;
+  controllingConstraint: PurchaseConstraint | null;
+  limitingConstraints: ComfortablePurchaseConstraint[];
+  constraints: ComfortablePurchaseConstraint[];
+  missingInputs: string[];
+  inputs: {
+    spendableLiquidity: Money | null;
+    unreservedLiquidity: Money | null;
+    fundingAccountBalance: Money | null;
+    verifiedPurchaseSavings: Money | null;
+    protectedMinimumBuffer: Money | null;
+    requiredMonthlyBills: Money | null;
+    requiredObligationShortfall: Money | null;
+    higherPriorityMonthlyFunding: Money;
+    monthlySurplus: Money | null;
+    monthlySurplusSource: "explicit_budget" | "observed_90_day" | null;
+    currentLiquidNetWorth: Money | null;
+    targetLiquidNetWorth: Money | null;
+    targetWealthDate: string | null;
+    projectedLiquidNetWorthAtTarget: Money | null;
+  };
+  assumptions: string[];
+}
+
 export interface ApiGoal {
   id: string;
   name: string;
@@ -238,6 +283,7 @@ export interface ApiGoal {
   contributionPolicy?: unknown;
   bufferPolicy?: unknown;
   liquidityConstraint?: "cash" | "liquid" | "investable" | "any";
+  comfortablePurchase?: ComfortablePurchasePlan;
   createdAt?: string;
   updatedAt?: string;
 }
