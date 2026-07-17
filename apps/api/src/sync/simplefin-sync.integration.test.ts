@@ -138,6 +138,87 @@ describe("SimpleFIN ledger sync", () => {
     ]);
   });
 
+  test("matches card payments that settle days later, but not beyond the window", async () => {
+    const db = openDatabase(":memory:", { wal: false });
+    databases.push(db);
+    runMigrations(db);
+    const config = loadConfig({
+      APP_ENV: "test",
+      DATABASE_URL: ":memory:",
+      ENCRYPTION_KEY: "d".repeat(64),
+      WEB_ORIGIN: "http://localhost:5173",
+      REGISTRATION_MODE: "open",
+    });
+    const registered = await registerUser(
+      db,
+      {
+        email: "settlement-lag@example.com",
+        password: "SettlementLag!2026",
+        householdName: "Settlement lag test",
+      },
+      config,
+    );
+    const checkingId = ulid();
+    const cardId = ulid();
+    await db.insert(accounts).values([
+      {
+        id: checkingId,
+        householdId: registered.householdId,
+        ownerUserId: registered.userId,
+        name: "Spend",
+        group: "cash",
+        type: "checking",
+        currency: "USD",
+        isLiability: false,
+        isManual: true,
+      },
+      {
+        id: cardId,
+        householdId: registered.householdId,
+        ownerUserId: registered.userId,
+        name: "Freedom Unlimited",
+        group: "credit",
+        type: "credit_card",
+        currency: "USD",
+        isLiability: true,
+        isManual: true,
+      },
+    ]);
+    const insert = async (description: string, accountId: string, amount: bigint, day: string) => {
+      const id = ulid();
+      await db.insert(transactions).values({
+        id,
+        householdId: registered.householdId,
+        accountId,
+        amount,
+        currency: "USD",
+        transactedOn: day,
+        rawDescription: description,
+        normalizedDescription: description,
+        status: "posted",
+        source: "manual",
+        reviewState: "none",
+      });
+      return id;
+    };
+    // Four-day settlement lag: inside the widened window.
+    const pairOut = await insert("PAYMENT TO CHASE", checkingId, -680_88n, "2026-05-04");
+    const pairIn = await insert("PAYMENT THANK YOU MOBILE", cardId, 680_88n, "2026-04-30");
+    // Eight days apart: outside the window even with a unique exact amount.
+    await insert("PAYMENT TO CHASE", checkingId, -421_00n, "2026-05-20");
+    await insert("PAYMENT THANK YOU MOBILE", cardId, 421_00n, "2026-05-12");
+
+    expect(await reconcileAccountTransfers(db, registered.householdId)).toEqual({ matched: 1 });
+    expect(await db.select().from(transfers)).toEqual([
+      expect.objectContaining({
+        outflowTransactionId: pairOut,
+        inflowTransactionId: pairIn,
+        status: "suggested",
+        matchedBy: "fingerprint",
+      }),
+    ]);
+  });
+
   test("paginates past 2,000 newer rows to find an older exact unique pair", async () => {
     const db = openDatabase(":memory:", { wal: false });
     databases.push(db);
