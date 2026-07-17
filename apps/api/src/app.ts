@@ -220,6 +220,12 @@ export function createApp(
       crossOriginResourcePolicy: "same-site",
       referrerPolicy: "no-referrer",
       strictTransportSecurity: config.isProduction ? "max-age=31536000; includeSubDomains" : false,
+      contentSecurityPolicy: {
+        // JSON-only API: no scripts, no framing, no subresources.
+        defaultSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+        baseUri: ["'none'"],
+      },
     }),
   );
   app.use(

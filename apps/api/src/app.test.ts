@@ -89,6 +89,14 @@ describe("BetterWealth API", () => {
     }
   });
 
+  test("serves a restrictive CSP and referrer policy on API responses", async () => {
+    const response = await application.app.request("/api/v1/health");
+    expect(response.headers.get("content-security-policy")).toBe(
+      "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+    );
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+  });
+
   test("refuses public registration when registration is closed", async () => {
     const closedDirectory = mkdtempSync(join(tmpdir(), "betterwealth-closed-"));
     const closedApplication = createApp(

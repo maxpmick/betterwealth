@@ -470,10 +470,10 @@ packages/testkit deterministic fixtures and provider fakes
 ## 13. Security contract
 
 - Passwords use Bun's Argon2id implementation with explicit production parameters.
-- Sessions use high-entropy opaque tokens; only a hash is stored. Cookies are HttpOnly, Secure in production, SameSite=Lax, host scoped, short idle plus bounded absolute expiry, rotated after authentication and sensitive changes.
+- Sessions use high-entropy opaque tokens; only a hash is stored. Cookies are HttpOnly, Secure in production, SameSite=Lax, host scoped, short idle plus bounded absolute expiry. Logging out revokes the session, and changing the password revokes every other session. Independent sessions are created on each login; the schema reserves rotation lineage for a future hardening pass.
 - CSRF uses origin checks plus a session-bound double-submit token on mutations.
 - Login, registration, claims, imports, AI, and exports are rate-limited.
-- Field encryption uses AES-256-GCM with per-record nonce, authentication tag, key version, and contextual AAD. The master key is supplied only by the host environment and supports rotation.
+- Field encryption uses AES-256-GCM with per-record nonce, authentication tag, key version, and contextual AAD. The master key is supplied only by the host environment. The wire format reserves a key-id for future rotation; today rotating the key means re-encrypting stored records, so back the key up and treat it as rotate-by-rebuild.
 - Secrets and financial payloads are redacted from logs and errors.
 - Setup/Access URLs are restricted to HTTPS; outbound requests enforce timeouts, response-size limits, redirect restrictions, and SSRF protections.
 - All SimpleFIN and AI traffic passes through one egress broker that resolves and pins public IPv4/IPv6 addresses, blocks private/link-local/metadata ranges, revalidates every redirect, prevents DNS rebinding, and enforces host/model allowlists where applicable.
@@ -498,7 +498,7 @@ packages/testkit deterministic fixtures and provider fakes
 - Real temporary SQLite, foreign keys, constraints, indexes, transaction rollbacks, WAL behavior.
 - Empty-to-latest migration and migration from every retained snapshot.
 - Backup while WAL is active, integrity check, restore, and equality of financial aggregates.
-- Field-encryption round trip, wrong AAD/key rejection, and key rotation.
+- Field-encryption round trip, wrong AAD/key rejection, and tampered-ciphertext rejection.
 - Concurrent/expired worker leases, deploy during sync, abrupt termination, disk-full handling, WAL corruption detection, and restart recovery.
 
 ### Provider contract tests
@@ -509,7 +509,7 @@ packages/testkit deterministic fixtures and provider fakes
 
 ### API tests
 
-- Authentication/session rotation/expiry/logout, CSRF, origin, rate limit, validation, authorization, household isolation, role matrix, idempotency, pagination, and safe error shapes.
+- Authentication/session expiry/logout/revocation, CSRF, origin, rate limit, validation, authorization, household isolation, role matrix, idempotency, pagination, and safe error shapes.
 - Every documented route has success and principal failure coverage.
 - OpenAPI contract is generated and checked for drift.
 
