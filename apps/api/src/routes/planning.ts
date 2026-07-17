@@ -235,8 +235,8 @@ function dbJsonOrNull(value: unknown): JsonObject | null {
   return value === null ? null : dbJson(value);
 }
 
-function startOfCurrentMonth() {
-  return new Date().toISOString().slice(0, 7);
+function startOfCurrentMonth(now: Date) {
+  return now.toISOString().slice(0, 7);
 }
 
 function optionalMoney(
@@ -1063,16 +1063,20 @@ type ComfortablePurchasePlanDto = {
   assumptions: string[];
 };
 
-function goalDto(row: typeof goals.$inferSelect, comfortablePurchase?: ComfortablePurchasePlanDto) {
+function goalDto(
+  row: typeof goals.$inferSelect,
+  now: Date,
+  comfortablePurchase?: ComfortablePurchasePlanDto,
+) {
   const monthly = BigInt(goalMonthlyAmount(row.contributionPolicy));
   const projection = projectGoal({
-    startMonth: startOfCurrentMonth(),
+    startMonth: startOfCurrentMonth(now),
     currentAmount: money(row.fundedAmount, row.currency),
     targetAmount: money(row.targetAmount, row.currency),
     monthlyContribution: money(monthly, row.currency),
   });
   const pace = deriveGoalPace({
-    startMonth: startOfCurrentMonth(),
+    startMonth: startOfCurrentMonth(now),
     currentAmount: { minorUnits: row.fundedAmount, currency: row.currency },
     targetAmount: { minorUnits: row.targetAmount, currency: row.currency },
     monthlyContribution: { minorUnits: monthly, currency: row.currency },
@@ -1209,15 +1213,16 @@ async function comfortablePurchasePlans(
   householdId: string,
   userId: string,
   goalRows: readonly (typeof goals.$inferSelect)[],
+  now: Date,
 ): Promise<Map<string, ComfortablePurchasePlanDto>> {
   const purchaseRows = goalRows.filter(
     (goal) => goal.type === "purchase" && goal.status !== "cancelled",
   );
   if (purchaseRows.length === 0) return new Map();
 
-  const today = new Date().toISOString().slice(0, 10);
-  const ninetyDaysAgo = new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10);
-  const sevenDaysAgo = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
+  const today = now.toISOString().slice(0, 10);
+  const ninetyDaysAgo = new Date(now.getTime() - 90 * 86_400_000).toISOString().slice(0, 10);
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 86_400_000).toISOString().slice(0, 10);
   const [
     defaults,
     profile,
@@ -1416,7 +1421,7 @@ async function comfortablePurchasePlans(
     missing.add("Choose a target age for the wealth milestone");
   } else {
     targetWealthMonth = `${Number(birthDateMatch[1]) + targetAge}-${birthDateMatch[2]}`;
-    if (targetWealthMonth <= startOfCurrentMonth()) {
+    if (targetWealthMonth <= startOfCurrentMonth(now)) {
       missing.add("Choose a future target age for the wealth milestone");
     }
   }
@@ -1708,7 +1713,7 @@ async function comfortablePurchasePlans(
       const contribution = BigInt(goalMonthlyAmount(goal.contributionPolicy));
       const verifiedCurrent = verifiedFundingByGoal.get(goal.id) ?? 0n;
       const projection = projectGoal({
-        startMonth: startOfCurrentMonth(),
+        startMonth: startOfCurrentMonth(now),
         currentAmount: money(verifiedCurrent, currency),
         targetAmount: money(goal.targetAmount, currency),
         monthlyContribution: money(contribution, currency),
@@ -1725,7 +1730,7 @@ async function comfortablePurchasePlans(
       };
     });
     const result = comfortablePurchaseDate({
-      startMonth: startOfCurrentMonth(),
+      startMonth: startOfCurrentMonth(now),
       purchasePrice: money(purchase.targetAmount, currency),
       currentPurchaseSavings: money(verifiedPurchaseSavings, currency),
       monthlyPurchaseContribution: money(purchaseMonthly, currency),
@@ -1829,9 +1834,10 @@ async function goalDtos(
   householdId: string,
   userId: string,
   rows: readonly (typeof goals.$inferSelect)[],
+  now: Date,
 ) {
-  const purchasePlans = await comfortablePurchasePlans(db, householdId, userId, rows);
-  return rows.map((row) => goalDto(row, purchasePlans.get(row.id)));
+  const purchasePlans = await comfortablePurchasePlans(db, householdId, userId, rows, now);
+  return rows.map((row) => goalDto(row, now, purchasePlans.get(row.id)));
 }
 
 async function goalDtoWithComfort(
@@ -1839,14 +1845,15 @@ async function goalDtoWithComfort(
   householdId: string,
   userId: string,
   row: typeof goals.$inferSelect,
+  now: Date,
 ) {
   const allRows = await db
     .select()
     .from(goals)
     .where(eq(goals.householdId, householdId))
     .orderBy(asc(goals.priority), asc(goals.name));
-  const purchasePlans = await comfortablePurchasePlans(db, householdId, userId, allRows);
-  return goalDto(row, purchasePlans.get(row.id));
+  const purchasePlans = await comfortablePurchasePlans(db, householdId, userId, allRows, now);
+  return goalDto(row, now, purchasePlans.get(row.id));
 }
 
 const goalContributionSchema = z
@@ -2292,7 +2299,8 @@ async function buildLedgerForecastScenario(
   householdId: string,
   name: string,
   assumptions: z.infer<typeof uiForecastAssumptionsSchema>,
-  horizonMonths = 96,
+  horizonMonths: number,
+  now: Date,
 ) {
   const currency = assumptions.monthlyInvesting.currency;
   const [
@@ -2488,7 +2496,7 @@ async function buildLedgerForecastScenario(
       .map((bill) => {
         const cadence = cadenceFromDueRule(bill.dueRule);
         const oneTime = normalizedCadence(cadence) === "onetimeestimate";
-        const scheduledMonth = bill.nextDueDate?.slice(0, 7) ?? startOfCurrentMonth();
+        const scheduledMonth = bill.nextDueDate?.slice(0, 7) ?? startOfCurrentMonth(now);
         return {
           id: bill.id,
           name: bill.name,
@@ -2601,7 +2609,7 @@ async function buildLedgerForecastScenario(
   });
   return ForecastScenarioSchema.parse({
     name,
-    startMonth: startOfCurrentMonth(),
+    startMonth: startOfCurrentMonth(now),
     horizonMonths,
     baseCurrency: currency,
     primaryCashAccountId: primary.id,
@@ -2912,7 +2920,11 @@ const importTransactionsSchema = z
   })
   .strict();
 
-export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig) {
+export function createPlanningRoutes(
+  db: BetterWealthDatabase,
+  config: AppConfig,
+  now: () => Date = () => new Date(),
+) {
   const routes = new Hono<AppEnv>();
   routes.use("*", requireAuth(db, config));
 
@@ -3968,7 +3980,7 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
       .from(goals)
       .where(eq(goals.householdId, auth.householdId))
       .orderBy(asc(goals.priority), asc(goals.name));
-    return context.json(page(await goalDtos(db, auth.householdId, auth.user.id, rows)));
+    return context.json(page(await goalDtos(db, auth.householdId, auth.user.id, rows, now())));
   });
 
   routes.put("/goals/order", requireCsrf(config), async (context) => {
@@ -4001,7 +4013,7 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
       .from(goals)
       .where(eq(goals.householdId, auth.householdId))
       .orderBy(asc(goals.priority), asc(goals.name));
-    return context.json(page(await goalDtos(db, auth.householdId, auth.user.id, reordered)));
+    return context.json(page(await goalDtos(db, auth.householdId, auth.user.id, reordered, now())));
   });
 
   routes.post("/goals", requireCsrf(config), async (context) => {
@@ -4089,7 +4101,10 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
       .where(and(eq(goals.householdId, auth.householdId), eq(goals.id, id)))
       .get();
     if (!row) throw new NotFoundError("Goal");
-    return context.json(await goalDtoWithComfort(db, auth.householdId, auth.user.id, row), 201);
+    return context.json(
+      await goalDtoWithComfort(db, auth.householdId, auth.user.id, row, now()),
+      201,
+    );
   });
 
   routes.patch("/goals/:id", requireCsrf(config), async (context) => {
@@ -4224,7 +4239,9 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
       .where(and(eq(goals.householdId, auth.householdId), eq(goals.id, current.id)))
       .get();
     if (!updated) throw new NotFoundError("Goal");
-    return context.json(await goalDtoWithComfort(db, auth.householdId, auth.user.id, updated));
+    return context.json(
+      await goalDtoWithComfort(db, auth.householdId, auth.user.id, updated, now()),
+    );
   });
 
   routes.delete("/goals/:id", requireCsrf(config), async (context) => {
@@ -4377,7 +4394,7 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
         allocationEntryId: allocationId,
         amount: moneyJson(amount.minor, amount.currency),
         contributedOn: input.contributedOn,
-        goal: await goalDtoWithComfort(db, auth.householdId, auth.user.id, updated),
+        goal: await goalDtoWithComfort(db, auth.householdId, auth.user.id, updated, now()),
       },
       201,
     );
@@ -4758,13 +4775,14 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
       .strict()
       .parse(await context.req.json());
     const horizonMonths =
-      input.horizonMonths ?? (await defaultForecastHorizonMonths(db, auth.user.id));
+      input.horizonMonths ?? (await defaultForecastHorizonMonths(db, auth.user.id, now()));
     const scenario = await buildLedgerForecastScenario(
       db,
       auth.householdId,
       input.name,
       input.assumptions,
       horizonMonths,
+      now(),
     );
     const id = ulid();
     db.transaction((transaction) => {
@@ -4845,6 +4863,7 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
       input.name ?? current.name,
       uiAssumptions,
       current.horizonMonths,
+      now(),
     );
     db.transaction((transaction) => {
       if (input.isBase) {

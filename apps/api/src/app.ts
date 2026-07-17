@@ -33,6 +33,8 @@ export interface BetterWealthApplication {
 
 export interface BetterWealthApplicationDependencies {
   integrations?: IntegrationRouteDependencies;
+  /** Injectable clock for deterministic tests; defaults to the wall clock. */
+  now?: () => Date;
 }
 
 const documentedOperations = [
@@ -348,7 +350,7 @@ export function createApp(
   app.route("/api/v1/reports", createReportRoutes(db, config));
   app.route("/api/v1", createIntegrationRoutes(db, config, dependencies.integrations));
   app.route("/api/v1", createOperationRoutes(db, config));
-  app.route("/api/v1", createPlanningRoutes(db, config));
+  app.route("/api/v1", createPlanningRoutes(db, config, dependencies.now));
 
   app.notFound((context) =>
     context.json({ error: { code: "not_found", message: "API route not found" } }, 404),
