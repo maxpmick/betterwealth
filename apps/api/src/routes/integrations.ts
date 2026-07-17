@@ -539,13 +539,24 @@ export function createIntegrationRoutes(
       .passthrough()
       .parse(await context.req.json());
     if (input.ai) {
+      if (input.ai.enabled && !input.ai.consentedFields?.length) {
+        // Enabling AI records disclosure consent, so the request must carry the
+        // explicit field list the user agreed to — never imply it server-side.
+        throw new AppError(
+          "Enabling AI requires an explicit consentedFields list",
+          400,
+          "ai_consent_required",
+        );
+      }
       const repositories = createHouseholdRepositories(db, auth.householdId);
       const previousStored = repositories.settings.get("integration.openrouter", auth.user.id);
       const cipher = new FieldCipher(config.ENCRYPTION_KEY);
       const previous = previousStored
         ? decodeAiSettings(cipher, auth.householdId, auth.user.id, previousStored.value)
         : undefined;
-      const apiKey = previous?.apiKey ?? config.BOOTSTRAP_OPENROUTER_API_KEY;
+      // Only a key the user configured themselves (via PUT) may back the toggle —
+      // the server bootstrap key is not per-user consent.
+      const apiKey = previous?.apiKey;
       if (input.ai.enabled && !apiKey) throw new NotFoundError("AI API key");
       if (apiKey) {
         const secret: AiSettingsSecret = {
@@ -611,9 +622,14 @@ export function createIntegrationRoutes(
   routes.post("/ai/suggestions/transactions/:id", requireCsrf(config), async (context) => {
     const auth = context.get("auth");
     const transaction = await db
-      .select({ transaction: transactions, account: accounts })
+      .select({
+        transaction: transactions,
+        account: accounts,
+        connectionOwnerUserId: connections.ownerUserId,
+      })
       .from(transactions)
       .innerJoin(accounts, eq(accounts.id, transactions.accountId))
+      .leftJoin(connections, eq(connections.id, accounts.connectionId))
       .where(
         and(
           eq(transactions.householdId, auth.householdId),
@@ -622,6 +638,16 @@ export function createIntegrationRoutes(
       )
       .get();
     if (!transaction) throw new NotFoundError("Transaction");
+    const disclosureOwners = new Set(
+      [transaction.account.ownerUserId, transaction.connectionOwnerUserId].filter(
+        (owner): owner is string => Boolean(owner),
+      ),
+    );
+    if (disclosureOwners.size !== 1 || !disclosureOwners.has(auth.user.id)) {
+      // Fail closed like the batch and regenerate paths: do not disclose whether
+      // another household member owns the underlying transaction.
+      throw new NotFoundError("Transaction");
+    }
     const categoryRows = await db
       .select({
         id: categories.id,
@@ -632,22 +658,9 @@ export function createIntegrationRoutes(
       })
       .from(categories)
       .where(and(eq(categories.householdId, auth.householdId), eq(categories.isActive, true)));
-    const repositories = createHouseholdRepositories(db, auth.householdId);
-    const stored = repositories.settings.get("integration.openrouter", auth.user.id);
-    const cipher = new FieldCipher(config.ENCRYPTION_KEY);
-    const configured = stored
-      ? decodeAiSettings(cipher, auth.householdId, auth.user.id, stored.value)
-      : config.BOOTSTRAP_OPENROUTER_API_KEY
-        ? {
-            enabled: true,
-            consent: true as const,
-            baseUrl: config.OPENROUTER_BASE_URL,
-            model: config.BOOTSTRAP_OPENROUTER_MODEL,
-            apiKey: config.BOOTSTRAP_OPENROUTER_API_KEY,
-            confidenceThreshold: 0.9,
-            webResearchEnabled: false,
-          }
-        : undefined;
+    // Per-user settings only — a bootstrap server key is not disclosure consent
+    // (same source as the regenerate route).
+    const configured = configuredAiForUser(db, config, auth.householdId, auth.user.id);
     if (!configured?.enabled) throw new NotFoundError("Enabled AI integration");
     const suggestion = await suggestTransactionCategory({
       apiKey: configured.apiKey,
