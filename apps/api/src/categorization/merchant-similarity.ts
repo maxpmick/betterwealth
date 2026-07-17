@@ -93,8 +93,12 @@ export function clusterByMerchantSimilarity<T extends MerchantClusterable>(
   const find = (index: number): number => {
     let current = index;
     while (parent[current] !== current) {
-      parent[current] = parent[parent[current]!]!;
-      current = parent[current]!;
+      const parentOfCurrent = parent[current];
+      if (parentOfCurrent === undefined) break;
+      // Indices always stay within `parent`; the fallback only satisfies the type checker.
+      const grandparent = parent[parentOfCurrent] ?? parentOfCurrent;
+      parent[current] = grandparent;
+      current = grandparent;
     }
     return current;
   };
@@ -104,8 +108,8 @@ export function clusterByMerchantSimilarity<T extends MerchantClusterable>(
     if (rootA !== rootB) parent[rootA] = rootB;
   };
   const byCanonicalKey = new Map<string, number>();
-  rows.forEach((row, index) => {
-    const key = [...tokenSets[index]!].sort().join(" ");
+  tokenSets.forEach((tokenSet, index) => {
+    const key = [...tokenSet].sort().join(" ");
     const existing = byCanonicalKey.get(key);
     if (existing === undefined) byCanonicalKey.set(key, index);
     else union(existing, index);
@@ -113,7 +117,10 @@ export function clusterByMerchantSimilarity<T extends MerchantClusterable>(
   for (let left = 0; left < rows.length; left += 1) {
     for (let right = left + 1; right < rows.length; right += 1) {
       if (find(left) === find(right)) continue;
-      if (jaccardSimilarity(tokenSets[left]!, tokenSets[right]!) >= threshold) {
+      const leftTokens = tokenSets[left];
+      const rightTokens = tokenSets[right];
+      if (leftTokens === undefined || rightTokens === undefined) continue;
+      if (jaccardSimilarity(leftTokens, rightTokens) >= threshold) {
         union(left, right);
       }
     }
