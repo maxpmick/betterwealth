@@ -1,6 +1,6 @@
 import type { BetterWealthDatabase } from "@betterwealth/db";
 import { transactions, transfers } from "@betterwealth/db/schema";
-import { and, asc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { ulid } from "ulid";
 
 type Candidate = {
@@ -9,7 +9,6 @@ type Candidate = {
   amount: bigint;
   currency: string;
   transactedOn: string;
-  description: string;
   providerMetadata: unknown;
 };
 
@@ -17,10 +16,6 @@ function providerPairKey(value: unknown): string | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const key = (value as Record<string, unknown>).transfer_pair;
   return typeof key === "string" && key.trim() ? key.trim().slice(0, 200) : undefined;
-}
-
-function transferLike(description: string): boolean {
-  return /\b(transfer|xfer|internal)\b|credit.?card payment|loan payment/i.test(description);
 }
 
 function daysApart(left: string, right: string): number {
@@ -45,26 +40,19 @@ async function persistMatch(
       outflowTransactionId: outflow.id,
       inflowTransactionId: inflow.id,
       confidenceBps,
-      status: "confirmed",
+      status: "suggested",
       matchedBy,
     })
     .onConflictDoNothing()
     .returning({ id: transfers.id });
   if (inserted.length === 0) return false;
-  await db
-    .update(transactions)
-    .set({ isTransfer: true, reviewState: "none", updatedAt: new Date().toISOString() })
-    .where(and(eq(transactions.householdId, householdId), eq(transactions.id, outflow.id)));
-  await db
-    .update(transactions)
-    .set({ isTransfer: true, reviewState: "none", updatedAt: new Date().toISOString() })
-    .where(and(eq(transactions.householdId, householdId), eq(transactions.id, inflow.id)));
   return true;
 }
 
 /**
- * Confirm only exact, owned-account pairs. Provider pair IDs win; the fallback requires a unique
- * opposite amount, matching currency, a short date window, and transfer-like text.
+ * Suggest only exact, owned-account pairs. Provider pair IDs win; the fallback requires a unique
+ * opposite amount, matching currency, and a short date window. Suggestions do not affect reporting
+ * until a user confirms them through the ledger API.
  */
 export async function reconcileAccountTransfers(db: BetterWealthDatabase, householdId: string) {
   const rows: Candidate[] = await db
@@ -74,7 +62,6 @@ export async function reconcileAccountTransfers(db: BetterWealthDatabase, househ
       amount: transactions.amount,
       currency: transactions.currency,
       transactedOn: transactions.transactedOn,
-      description: transactions.normalizedDescription,
       providerMetadata: transactions.providerMetadata,
     })
     .from(transactions)
@@ -83,9 +70,11 @@ export async function reconcileAccountTransfers(db: BetterWealthDatabase, househ
         eq(transactions.householdId, householdId),
         eq(transactions.status, "posted"),
         eq(transactions.isTransfer, false),
+        eq(transactions.isExcluded, false),
+        isNull(transactions.userOverrideAt),
       ),
     )
-    .orderBy(asc(transactions.transactedOn))
+    .orderBy(desc(transactions.transactedOn), desc(transactions.id))
     .limit(2_000);
   const used = new Set<string>();
   let matched = 0;
@@ -128,8 +117,7 @@ export async function reconcileAccountTransfers(db: BetterWealthDatabase, househ
         outflow.accountId === inflow.accountId ||
         outflow.currency !== inflow.currency ||
         outflow.amount + inflow.amount !== 0n ||
-        daysApart(outflow.transactedOn, inflow.transactedOn) > 3 ||
-        (!transferLike(outflow.description) && !transferLike(inflow.description))
+        daysApart(outflow.transactedOn, inflow.transactedOn) > 3
       ) {
         continue;
       }

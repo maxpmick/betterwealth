@@ -1,6 +1,7 @@
 import type { BetterWealthDatabase } from "@betterwealth/db";
 import {
   accounts,
+  auditEvents,
   balanceSnapshots,
   categories,
   envelopes,
@@ -13,7 +14,7 @@ import {
   transfers,
 } from "@betterwealth/db/schema";
 import { MinorUnitsStringSchema } from "@betterwealth/shared";
-import { and, desc, eq, inArray, like, or } from "drizzle-orm";
+import { and, desc, eq, inArray, like, ne, or } from "drizzle-orm";
 import { Hono } from "hono";
 import { ulid } from "ulid";
 import { z } from "zod";
@@ -135,6 +136,12 @@ const transactionPatchSchema = z
   })
   .strict();
 
+const transactionTagsSchema = z
+  .object({
+    tags: z.array(z.string().trim().min(1).max(40)).max(20),
+  })
+  .strict();
+
 const manualTransactionSchema = z.object({
   accountId: z.string(),
   amountMinorUnits: MinorUnitsStringSchema.refine((value) => value !== "0"),
@@ -183,6 +190,10 @@ const refundWriteSchema = z
 
 function invalidLedgerOperation(message: string) {
   return new AppError(message, 422, "invalid_ledger_operation");
+}
+
+function normalizedTagName(value: string) {
+  return value.normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US");
 }
 
 async function ensureMerchant(db: BetterWealthDatabase, householdId: string, name: string) {
@@ -539,11 +550,14 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
               id: transfers.id,
               outflowTransactionId: transfers.outflowTransactionId,
               inflowTransactionId: transfers.inflowTransactionId,
+              status: transfers.status,
+              matchedBy: transfers.matchedBy,
             })
             .from(transfers)
             .where(
               and(
                 eq(transfers.householdId, auth.householdId),
+                ne(transfers.status, "rejected"),
                 or(
                   inArray(transfers.outflowTransactionId, ids),
                   inArray(transfers.inflowTransactionId, ids),
@@ -555,11 +569,14 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
               id: refundLinks.id,
               refundTransactionId: refundLinks.refundTransactionId,
               purchaseTransactionId: refundLinks.purchaseTransactionId,
+              status: refundLinks.status,
+              amount: refundLinks.amount,
             })
             .from(refundLinks)
             .where(
               and(
                 eq(refundLinks.householdId, auth.householdId),
+                ne(refundLinks.status, "rejected"),
                 or(
                   inArray(refundLinks.refundTransactionId, ids),
                   inArray(refundLinks.purchaseTransactionId, ids),
@@ -576,16 +593,54 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
     }
     const splitTransactionIds = new Set(splitRows.map(({ transactionId }) => transactionId));
     const transferIdByTransaction = new Map<string, string>();
+    const transferByTransaction = new Map<
+      string,
+      {
+        id: string;
+        status: (typeof transferRows)[number]["status"];
+        matchedBy: (typeof transferRows)[number]["matchedBy"];
+        outflowTransactionId: string;
+        inflowTransactionId: string;
+      }
+    >();
     for (const transfer of transferRows) {
       transferIdByTransaction.set(transfer.outflowTransactionId, transfer.id);
       transferIdByTransaction.set(transfer.inflowTransactionId, transfer.id);
+      const summary = {
+        id: transfer.id,
+        status: transfer.status,
+        matchedBy: transfer.matchedBy,
+        outflowTransactionId: transfer.outflowTransactionId,
+        inflowTransactionId: transfer.inflowTransactionId,
+      };
+      transferByTransaction.set(transfer.outflowTransactionId, summary);
+      transferByTransaction.set(transfer.inflowTransactionId, summary);
     }
     const refundLinkIdsByTransaction = new Map<string, string[]>();
+    const refundLinksByTransaction = new Map<
+      string,
+      Array<{
+        id: string;
+        status: (typeof refundRows)[number]["status"];
+        refundTransactionId: string;
+        purchaseTransactionId: string;
+        amount: bigint;
+      }>
+    >();
     for (const link of refundRows) {
       for (const transactionId of [link.refundTransactionId, link.purchaseTransactionId]) {
         const values = refundLinkIdsByTransaction.get(transactionId) ?? [];
         values.push(link.id);
         refundLinkIdsByTransaction.set(transactionId, values);
+        const summaries = refundLinksByTransaction.get(transactionId) ?? [];
+        summaries.push({
+          id: link.id,
+          status: link.status,
+          refundTransactionId: link.refundTransactionId,
+          purchaseTransactionId: link.purchaseTransactionId,
+          amount: link.amount,
+        });
+        refundLinksByTransaction.set(transactionId, summaries);
       }
     }
     return context.json({
@@ -608,7 +663,13 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
         isIncome: transaction.isIncome,
         hasSplits: splitTransactionIds.has(transaction.id),
         transferId: transferIdByTransaction.get(transaction.id),
+        transferMatch: transferByTransaction.get(transaction.id),
+        transfer: transferByTransaction.get(transaction.id),
         refundLinkIds: refundLinkIdsByTransaction.get(transaction.id) ?? [],
+        refundLinks: (refundLinksByTransaction.get(transaction.id) ?? []).map((link) => ({
+          ...link,
+          amount: money(link.amount, transaction.currency),
+        })),
       })),
       page: { cursor: null, hasMore: false },
     });
@@ -660,6 +721,7 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
         .where(
           and(
             eq(transfers.householdId, auth.householdId),
+            ne(transfers.status, "rejected"),
             or(eq(transfers.outflowTransactionId, id), eq(transfers.inflowTransactionId, id)),
           ),
         )
@@ -670,6 +732,7 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
         .where(
           and(
             eq(refundLinks.householdId, auth.householdId),
+            ne(refundLinks.status, "rejected"),
             or(eq(refundLinks.refundTransactionId, id), eq(refundLinks.purchaseTransactionId, id)),
           ),
         ),
@@ -879,35 +942,84 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
     if (outflow.amount + inflow.amount !== 0n) {
       throw invalidLedgerOperation("Transfer amounts must be exact opposites");
     }
-    const existing = await db
-      .select({ id: transfers.id })
-      .from(transfers)
-      .where(
-        and(
-          eq(transfers.householdId, auth.householdId),
-          or(
-            inArray(transfers.outflowTransactionId, [outflow.id, inflow.id]),
-            inArray(transfers.inflowTransactionId, [outflow.id, inflow.id]),
+    const [exactExisting, activeExisting] = await Promise.all([
+      db
+        .select()
+        .from(transfers)
+        .where(
+          and(
+            eq(transfers.householdId, auth.householdId),
+            eq(transfers.outflowTransactionId, outflow.id),
+            eq(transfers.inflowTransactionId, inflow.id),
           ),
-        ),
-      )
-      .get();
-    if (existing) throw new ConflictError("One of these transactions is already matched");
+        )
+        .get(),
+      db
+        .select({ id: transfers.id })
+        .from(transfers)
+        .where(
+          and(
+            eq(transfers.householdId, auth.householdId),
+            ne(transfers.status, "rejected"),
+            or(
+              inArray(transfers.outflowTransactionId, [outflow.id, inflow.id]),
+              inArray(transfers.inflowTransactionId, [outflow.id, inflow.id]),
+            ),
+          ),
+        )
+        .get(),
+    ]);
+    if (exactExisting?.status === "rejected") {
+      throw new ConflictError("This transfer match was permanently rejected");
+    }
+    if (exactExisting?.status === "confirmed") {
+      throw new ConflictError("These transactions are already a confirmed transfer");
+    }
+    if (exactExisting?.status === "unmatched") {
+      throw new ConflictError("This transfer match was previously dismissed");
+    }
+    if (activeExisting && activeExisting.id !== exactExisting?.id) {
+      throw new ConflictError("One of these transactions is already matched");
+    }
 
-    const id = ulid();
+    const id = exactExisting?.id ?? ulid();
     const now = new Date().toISOString();
-    await db.transaction(async (transaction) => {
-      await transaction.insert(transfers).values({
-        id,
-        householdId: auth.householdId,
-        outflowTransactionId: outflow.id,
-        inflowTransactionId: inflow.id,
-        confidenceBps: 10_000,
-        status: "confirmed",
-        matchedBy: "user",
-        confirmedByUserId: auth.user.id,
-      });
-      await transaction
+    db.transaction((transaction) => {
+      if (exactExisting?.status === "suggested") {
+        const updated = transaction
+          .update(transfers)
+          .set({
+            confidenceBps: 10_000,
+            status: "confirmed",
+            confirmedByUserId: auth.user.id,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(transfers.householdId, auth.householdId),
+              eq(transfers.id, exactExisting.id),
+              eq(transfers.status, "suggested"),
+            ),
+          )
+          .returning({ id: transfers.id })
+          .all();
+        if (!updated.length) throw new ConflictError("Transfer match changed while confirming");
+      } else {
+        transaction
+          .insert(transfers)
+          .values({
+            id,
+            householdId: auth.householdId,
+            outflowTransactionId: outflow.id,
+            inflowTransactionId: inflow.id,
+            confidenceBps: 10_000,
+            status: "confirmed",
+            matchedBy: "user",
+            confirmedByUserId: auth.user.id,
+          })
+          .run();
+      }
+      transaction
         .update(transactions)
         .set({
           isTransfer: true,
@@ -921,7 +1033,8 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
             eq(transactions.householdId, auth.householdId),
             inArray(transactions.id, [outflow.id, inflow.id]),
           ),
-        );
+        )
+        .run();
     });
     return context.json({ id, status: "confirmed" }, 201);
   });
@@ -936,26 +1049,33 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
       )
       .get();
     if (!transfer) throw new NotFoundError("Transfer");
+    if (transfer.status === "rejected") return context.body(null, 204);
     const transactionIds = [transfer.outflowTransactionId, transfer.inflowTransactionId];
-    await db.transaction(async (transaction) => {
-      await transaction
-        .delete(transfers)
-        .where(and(eq(transfers.householdId, auth.householdId), eq(transfers.id, transfer.id)));
-      await transaction
-        .update(transactions)
-        .set({
-          isTransfer: false,
-          isExcluded: false,
-          reviewState: "needs_review",
-          userOverrideAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        })
-        .where(
-          and(
-            eq(transactions.householdId, auth.householdId),
-            inArray(transactions.id, transactionIds),
-          ),
-        );
+    const now = new Date().toISOString();
+    db.transaction((transaction) => {
+      transaction
+        .update(transfers)
+        .set({ status: "rejected", updatedAt: now })
+        .where(and(eq(transfers.householdId, auth.householdId), eq(transfers.id, transfer.id)))
+        .run();
+      if (transfer.status === "confirmed") {
+        transaction
+          .update(transactions)
+          .set({
+            isTransfer: false,
+            isExcluded: false,
+            reviewState: "needs_review",
+            userOverrideAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(transactions.householdId, auth.householdId),
+              inArray(transactions.id, transactionIds),
+            ),
+          )
+          .run();
+      }
     });
     return context.body(null, 204);
   });
@@ -978,80 +1098,119 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
     const refund = transactionRows.find(({ id }) => id === input.refundTransactionId);
     const purchase = transactionRows.find(({ id }) => id === input.purchaseTransactionId);
     if (!refund || !purchase) throw new NotFoundError("Transaction");
-    if (refund.currency !== purchase.currency || refund.amount <= 0n || purchase.amount >= 0n) {
-      throw invalidLedgerOperation("A refund requires a same-currency credit and purchase");
+    if (
+      refund.accountId !== purchase.accountId ||
+      refund.currency !== purchase.currency ||
+      refund.amount <= 0n ||
+      purchase.amount >= 0n
+    ) {
+      throw invalidLedgerOperation(
+        "A refund requires a same-account, same-currency credit and purchase",
+      );
     }
 
-    const existingLinks = await db
-      .select()
-      .from(refundLinks)
-      .where(
-        and(
-          eq(refundLinks.householdId, auth.householdId),
-          eq(refundLinks.status, "confirmed"),
-          or(
-            eq(refundLinks.refundTransactionId, refund.id),
-            eq(refundLinks.purchaseTransactionId, purchase.id),
+    const now = new Date().toISOString();
+    const confirmed = db.transaction((transaction) => {
+      const existingLinks = transaction
+        .select()
+        .from(refundLinks)
+        .where(
+          and(
+            eq(refundLinks.householdId, auth.householdId),
+            or(
+              eq(refundLinks.refundTransactionId, refund.id),
+              eq(refundLinks.purchaseTransactionId, purchase.id),
+            ),
           ),
-        ),
-      );
-    if (
-      existingLinks.some(
+        )
+        .all();
+      const exact = existingLinks.find(
         (link) =>
           link.refundTransactionId === refund.id && link.purchaseTransactionId === purchase.id,
-      )
-    ) {
-      throw new ConflictError("This refund and purchase are already linked");
-    }
-    const usedRefund = existingLinks
-      .filter((link) => link.refundTransactionId === refund.id)
-      .reduce((total, link) => total + link.amount, 0n);
-    const usedPurchase = existingLinks
-      .filter((link) => link.purchaseTransactionId === purchase.id)
-      .reduce((total, link) => total + link.amount, 0n);
-    const requested = input.amountMinorUnits
-      ? BigInt(input.amountMinorUnits)
-      : refund.amount - usedRefund < -purchase.amount - usedPurchase
-        ? refund.amount - usedRefund
-        : -purchase.amount - usedPurchase;
-    if (
-      requested <= 0n ||
-      usedRefund + requested > refund.amount ||
-      usedPurchase + requested > -purchase.amount
-    ) {
-      throw invalidLedgerOperation("Refund amount exceeds the unlinked purchase or credit amount");
-    }
+      );
+      if (exact?.status === "rejected") {
+        throw new ConflictError("This refund match was permanently rejected");
+      }
+      if (exact?.status === "confirmed") {
+        throw new ConflictError("This refund and purchase are already linked");
+      }
+      const activeLinks = existingLinks.filter(({ status }) => status === "confirmed");
+      const usedRefund = activeLinks
+        .filter((link) => link.refundTransactionId === refund.id)
+        .reduce((total, link) => total + link.amount, 0n);
+      const usedPurchase = activeLinks
+        .filter((link) => link.purchaseTransactionId === purchase.id)
+        .reduce((total, link) => total + link.amount, 0n);
+      const requested = input.amountMinorUnits
+        ? BigInt(input.amountMinorUnits)
+        : refund.amount - usedRefund < -purchase.amount - usedPurchase
+          ? refund.amount - usedRefund
+          : -purchase.amount - usedPurchase;
+      if (
+        requested <= 0n ||
+        usedRefund + requested > refund.amount ||
+        usedPurchase + requested > -purchase.amount
+      ) {
+        throw invalidLedgerOperation(
+          "Refund amount exceeds the unlinked purchase or credit amount",
+        );
+      }
 
-    const id = ulid();
-    const now = new Date().toISOString();
-    await db.transaction(async (transaction) => {
-      await transaction.insert(refundLinks).values({
-        id,
-        householdId: auth.householdId,
-        refundTransactionId: refund.id,
-        purchaseTransactionId: purchase.id,
-        amount: requested,
-        confidenceBps: 10_000,
-        status: "confirmed",
-      });
-      await transaction
+      const id = exact?.id ?? ulid();
+      if (exact) {
+        const updated = transaction
+          .update(refundLinks)
+          .set({
+            amount: requested,
+            confidenceBps: 10_000,
+            status: "confirmed",
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(refundLinks.householdId, auth.householdId),
+              eq(refundLinks.id, exact.id),
+              eq(refundLinks.status, "suggested"),
+            ),
+          )
+          .returning({ id: refundLinks.id })
+          .all();
+        if (!updated.length) throw new ConflictError("Refund match changed while confirming");
+      } else {
+        transaction
+          .insert(refundLinks)
+          .values({
+            id,
+            householdId: auth.householdId,
+            refundTransactionId: refund.id,
+            purchaseTransactionId: purchase.id,
+            amount: requested,
+            confidenceBps: 10_000,
+            status: "confirmed",
+          })
+          .run();
+      }
+      transaction
         .update(transactions)
         .set({
           categoryId: purchase.categoryId,
           envelopeId: purchase.envelopeId,
           categoryOrigin: "user",
           isIncome: false,
+          isReimbursement: true,
           reviewState: "reviewed",
           userOverrideAt: now,
           updatedAt: now,
         })
-        .where(and(eq(transactions.householdId, auth.householdId), eq(transactions.id, refund.id)));
+        .where(and(eq(transactions.householdId, auth.householdId), eq(transactions.id, refund.id)))
+        .run();
+      return { id, requested };
     });
     return context.json(
       {
-        id,
+        id: confirmed.id,
         status: "confirmed",
-        amount: money(requested, refund.currency),
+        amount: money(confirmed.requested, refund.currency),
       },
       201,
     );
@@ -1059,17 +1218,56 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
 
   routes.delete("/refund-links/:id", requireCsrf(config), async (context) => {
     const auth = context.get("auth");
-    const deleted = await db
-      .delete(refundLinks)
+    const link = await db
+      .select()
+      .from(refundLinks)
       .where(
         and(
           eq(refundLinks.householdId, auth.householdId),
           eq(refundLinks.id, context.req.param("id")),
         ),
       )
-      .returning({ id: refundLinks.id })
       .get();
-    if (!deleted) throw new NotFoundError("Refund link");
+    if (!link) throw new NotFoundError("Refund link");
+    if (link.status === "rejected") return context.body(null, 204);
+    const now = new Date().toISOString();
+    db.transaction((transaction) => {
+      transaction
+        .update(refundLinks)
+        .set({ status: "rejected", updatedAt: now })
+        .where(and(eq(refundLinks.householdId, auth.householdId), eq(refundLinks.id, link.id)))
+        .run();
+      if (link.status === "confirmed") {
+        const remaining = transaction
+          .select({ status: refundLinks.status })
+          .from(refundLinks)
+          .where(
+            and(
+              eq(refundLinks.householdId, auth.householdId),
+              eq(refundLinks.refundTransactionId, link.refundTransactionId),
+              eq(refundLinks.status, "confirmed"),
+            ),
+          )
+          .all();
+        const hasConfirmed = remaining.length > 0;
+        transaction
+          .update(transactions)
+          .set({
+            isIncome: false,
+            isReimbursement: hasConfirmed,
+            reviewState: hasConfirmed ? "reviewed" : "needs_review",
+            userOverrideAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(transactions.householdId, auth.householdId),
+              eq(transactions.id, link.refundTransactionId),
+            ),
+          )
+          .run();
+      }
+    });
     return context.body(null, 204);
   });
 

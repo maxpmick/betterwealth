@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { accounts } from "@betterwealth/db/schema";
-import { eq } from "drizzle-orm";
+import { accounts, refundLinks, transactions, transfers } from "@betterwealth/db/schema";
+import { and, eq, inArray } from "drizzle-orm";
 import type { BetterWealthApplication } from "../app";
 import { createApp } from "../app";
 import { loadConfig } from "../config";
@@ -217,6 +217,41 @@ describe("transaction ledger operations", () => {
     const refund = await transaction(checking.id, "2500", "Grocery order refund");
     const outflow = await transaction(checking.id, "-50000", "Transfer to savings");
     const inflow = await transaction(savings.id, "50000", "Transfer from checking");
+    const checkingRow = await application.db
+      .select({ householdId: accounts.householdId })
+      .from(accounts)
+      .where(eq(accounts.id, checking.id))
+      .get();
+    if (!checkingRow) throw new Error("Checking account is missing");
+    const refundSuggestionId = "refund-suggestion";
+    await application.db.insert(refundLinks).values({
+      id: refundSuggestionId,
+      householdId: checkingRow.householdId,
+      refundTransactionId: refund.id,
+      purchaseTransactionId: purchase.id,
+      amount: 2_500n,
+      confidenceBps: 9_500,
+      status: "suggested",
+    });
+    const transferSuggestionId = "transfer-suggestion";
+    await application.db.insert(transfers).values({
+      id: transferSuggestionId,
+      householdId: checkingRow.householdId,
+      outflowTransactionId: outflow.id,
+      inflowTransactionId: inflow.id,
+      confidenceBps: 9_800,
+      status: "suggested",
+      matchedBy: "fingerprint",
+    });
+    expect(
+      await application.db
+        .select({ isTransfer: transactions.isTransfer, isExcluded: transactions.isExcluded })
+        .from(transactions)
+        .where(inArray(transactions.id, [outflow.id, inflow.id])),
+    ).toEqual([
+      { isTransfer: false, isExcluded: false },
+      { isTransfer: false, isExcluded: false },
+    ]);
 
     const linked = await request("/refund-links", {
       method: "POST",
@@ -227,6 +262,7 @@ describe("transaction ledger operations", () => {
     });
     expect(linked.status).toBe(201);
     const linkedBody = (await linked.json()) as { id: string; status: string };
+    expect(linkedBody.id).toBe(refundSuggestionId);
     expect(linkedBody).toMatchObject({
       status: "confirmed",
       amount: { minorUnits: "2500", currency: "USD" },
@@ -282,12 +318,13 @@ describe("transaction ledger operations", () => {
     });
     expect(transfer.status).toBe(201);
     const transferBody = (await transfer.json()) as { id: string; status: string };
+    expect(transferBody.id).toBe(transferSuggestionId);
     expect(transferBody).toMatchObject({ status: "confirmed" });
     const outflowDetail = await request(`/transactions/${outflow.id}`);
     expect(await outflowDetail.json()).toMatchObject({
       isTransfer: true,
       isExcluded: true,
-      transfer: { inflowTransactionId: inflow.id, matchedBy: "user" },
+      transfer: { inflowTransactionId: inflow.id, matchedBy: "fingerprint" },
     });
     const duplicateTransfer = await request("/transfers", {
       method: "POST",
@@ -300,15 +337,26 @@ describe("transaction ledger operations", () => {
 
     const list = await request("/transactions");
     const listBody = (await list.json()) as {
-      data: Array<{ id: string; hasSplits: boolean; transferId?: string; refundLinkIds: string[] }>;
+      data: Array<{
+        id: string;
+        hasSplits: boolean;
+        transferId?: string;
+        transfer?: { status: string };
+        refundLinkIds: string[];
+        refundLinks: Array<{ status: string }>;
+      }>;
     };
     expect(listBody.data.find(({ id }) => id === purchase.id)).toMatchObject({
       hasSplits: true,
       refundLinkIds: [expect.any(String)],
+      refundLinks: [{ status: "confirmed" }],
     });
     expect(listBody.data.find(({ id }) => id === outflow.id)?.transferId).toEqual(
       expect.any(String),
     );
+    expect(listBody.data.find(({ id }) => id === outflow.id)?.transfer).toMatchObject({
+      status: "confirmed",
+    });
 
     const spending = await request("/reports/spending");
     const spendingBody = (await spending.json()) as {
@@ -365,6 +413,190 @@ describe("transaction ledger operations", () => {
       transfer: null,
       reviewState: "needs_review",
     });
+    expect(
+      await application.db
+        .select({ status: refundLinks.status })
+        .from(refundLinks)
+        .where(eq(refundLinks.id, linkedBody.id))
+        .get(),
+    ).toEqual({ status: "rejected" });
+    expect(
+      await application.db
+        .select({ status: transfers.status })
+        .from(transfers)
+        .where(eq(transfers.id, transferBody.id))
+        .get(),
+    ).toEqual({ status: "rejected" });
+    expect(
+      (
+        await request("/refund-links", {
+          method: "POST",
+          body: JSON.stringify({
+            refundTransactionId: refund.id,
+            purchaseTransactionId: purchase.id,
+          }),
+        })
+      ).status,
+    ).toBe(409);
+    expect(
+      (
+        await request("/transfers", {
+          method: "POST",
+          body: JSON.stringify({
+            outflowTransactionId: outflow.id,
+            inflowTransactionId: inflow.id,
+          }),
+        })
+      ).status,
+    ).toBe(409);
+
+    const suggestedPurchase = await transaction(checking.id, "-4200", "Ordinary merchant");
+    const suggestedRefund = await transaction(checking.id, "4200", "Ordinary merchant");
+    const suggestedRefundLinkId = "suggested-refund-to-reject";
+    await application.db.insert(refundLinks).values({
+      id: suggestedRefundLinkId,
+      householdId: checkingRow.householdId,
+      refundTransactionId: suggestedRefund.id,
+      purchaseTransactionId: suggestedPurchase.id,
+      amount: 4_200n,
+      confidenceBps: 9_500,
+      status: "suggested",
+    });
+    const refundBeforeRejection = await application.db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.id, suggestedRefund.id))
+      .get();
+    expect(
+      (
+        await request(`/refund-links/${suggestedRefundLinkId}`, {
+          method: "DELETE",
+        })
+      ).status,
+    ).toBe(204);
+    expect(
+      await application.db
+        .select()
+        .from(transactions)
+        .where(eq(transactions.id, suggestedRefund.id))
+        .get(),
+    ).toEqual(refundBeforeRejection);
+    expect(
+      await application.db
+        .select({ status: refundLinks.status })
+        .from(refundLinks)
+        .where(eq(refundLinks.id, suggestedRefundLinkId))
+        .get(),
+    ).toEqual({ status: "rejected" });
+
+    const capacityPurchase = await transaction(checking.id, "-5000", "Capacity merchant");
+    const capacityRefundOne = await transaction(checking.id, "4000", "Capacity merchant");
+    const capacityRefundTwo = await transaction(checking.id, "4000", "Capacity merchant");
+    expect(
+      (
+        await request("/refund-links", {
+          method: "POST",
+          body: JSON.stringify({
+            refundTransactionId: capacityRefundOne.id,
+            purchaseTransactionId: capacityPurchase.id,
+          }),
+        })
+      ).status,
+    ).toBe(201);
+    expect(
+      (
+        await request("/refund-links", {
+          method: "POST",
+          body: JSON.stringify({
+            refundTransactionId: capacityRefundTwo.id,
+            purchaseTransactionId: capacityPurchase.id,
+            amountMinorUnits: "2000",
+          }),
+        })
+      ).status,
+    ).toBe(422);
+    const remainingCapacity = await request("/refund-links", {
+      method: "POST",
+      body: JSON.stringify({
+        refundTransactionId: capacityRefundTwo.id,
+        purchaseTransactionId: capacityPurchase.id,
+      }),
+    });
+    expect(remainingCapacity.status).toBe(201);
+    expect(await remainingCapacity.json()).toMatchObject({
+      amount: { minorUnits: "1000", currency: "USD" },
+    });
+    expect(
+      (
+        await application.db
+          .select({ amount: refundLinks.amount })
+          .from(refundLinks)
+          .where(
+            and(
+              eq(refundLinks.purchaseTransactionId, capacityPurchase.id),
+              eq(refundLinks.status, "confirmed"),
+            ),
+          )
+      ).reduce((sum, link) => sum + link.amount, 0n),
+    ).toBe(5_000n);
+    const wrongAccountRefund = await transaction(savings.id, "5000", "Capacity merchant");
+    expect(
+      (
+        await request("/refund-links", {
+          method: "POST",
+          body: JSON.stringify({
+            refundTransactionId: wrongAccountRefund.id,
+            purchaseTransactionId: capacityPurchase.id,
+          }),
+        })
+      ).status,
+    ).toBe(422);
+
+    const suggestedOutflow = await transaction(checking.id, "-7000", "Alpha");
+    const suggestedInflow = await transaction(savings.id, "7000", "Beta");
+    const alternativeInflow = await transaction(savings.id, "7000", "Gamma");
+    const suggestedTransferId = "suggested-transfer-to-reject";
+    await application.db.insert(transfers).values({
+      id: suggestedTransferId,
+      householdId: checkingRow.householdId,
+      outflowTransactionId: suggestedOutflow.id,
+      inflowTransactionId: suggestedInflow.id,
+      confidenceBps: 9_800,
+      status: "suggested",
+      matchedBy: "fingerprint",
+    });
+    const transferSidesBeforeRejection = await application.db
+      .select()
+      .from(transactions)
+      .where(inArray(transactions.id, [suggestedOutflow.id, suggestedInflow.id]));
+    expect(
+      (
+        await request(`/transfers/${suggestedTransferId}`, {
+          method: "DELETE",
+        })
+      ).status,
+    ).toBe(204);
+    expect(
+      await application.db
+        .select()
+        .from(transactions)
+        .where(inArray(transactions.id, [suggestedOutflow.id, suggestedInflow.id])),
+    ).toEqual(transferSidesBeforeRejection);
+    expect(
+      await application.db
+        .select({ status: transfers.status })
+        .from(transfers)
+        .where(eq(transfers.id, suggestedTransferId))
+        .get(),
+    ).toEqual({ status: "rejected" });
+    const alternativeTransfer = await request("/transfers", {
+      method: "POST",
+      body: JSON.stringify({
+        outflowTransactionId: suggestedOutflow.id,
+        inflowTransactionId: alternativeInflow.id,
+      }),
+    });
+    expect(alternativeTransfer.status).toBe(201);
 
     await application.app.request("/api/v1/auth/register", {
       method: "POST",

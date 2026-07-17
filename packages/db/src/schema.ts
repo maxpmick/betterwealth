@@ -1318,8 +1318,13 @@ export const transfers = sqliteTable(
   },
   (t) => [
     uniqueIndex("transfers_household_id_id_uq").on(t.householdId, t.id),
-    uniqueIndex("transfers_outflow_uq").on(t.outflowTransactionId),
-    uniqueIndex("transfers_inflow_uq").on(t.inflowTransactionId),
+    uniqueIndex("transfers_pair_uq").on(t.outflowTransactionId, t.inflowTransactionId),
+    uniqueIndex("transfers_outflow_active_uq")
+      .on(t.outflowTransactionId)
+      .where(sql`${t.status} <> 'rejected'`),
+    uniqueIndex("transfers_inflow_active_uq")
+      .on(t.inflowTransactionId)
+      .where(sql`${t.status} <> 'rejected'`),
     index("transfers_household_status_idx").on(t.householdId, t.status),
     foreignKey({
       columns: [t.householdId, t.outflowTransactionId],

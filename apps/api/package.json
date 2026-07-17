@@ -10,7 +10,8 @@
     "db:migrate": "bun src/cli/migrate.ts",
     "db:seed": "bun src/cli/seed.ts",
     "db:backup": "bun src/cli/backup.ts",
-    "bootstrap": "bun src/cli/bootstrap.ts"
+    "bootstrap": "bun src/cli/bootstrap.ts",
+    "personalize": "bun src/cli/personalize.ts"
   },
   "dependencies": {
     "@betterwealth/db": "workspace:*",

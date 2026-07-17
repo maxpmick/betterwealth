@@ -32,6 +32,8 @@
     "ops:preflight": "bash deploy/preflight.sh",
     "auth:reset-password": "bun deploy/reset-password.ts",
     "bootstrap": "bun run --cwd apps/api bootstrap",
+    "personalize:dry-run": "bun run --cwd apps/api personalize --dry-run",
+    "personalize:apply": "bun run --cwd apps/api personalize --apply",
     "start:api": "bun run --cwd apps/api start",
     "start:web": "bun run --cwd apps/web serve"
   },
