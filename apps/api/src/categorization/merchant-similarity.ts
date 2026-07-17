@@ -29,10 +29,7 @@ export function merchantTokens(value: string): Set<string> {
   return tokens;
 }
 
-export function jaccardSimilarity(
-  left: ReadonlySet<string>,
-  right: ReadonlySet<string>,
-): number {
+export function jaccardSimilarity(left: ReadonlySet<string>, right: ReadonlySet<string>): number {
   if (left.size === 0 || right.size === 0) return 0;
   let intersection = 0;
   for (const token of left) {
@@ -93,8 +90,14 @@ export function clusterByMerchantSimilarity<T extends MerchantClusterable>(
 ): T[][] {
   const tokenSets = rows.map((row) => merchantTokens(row.transaction.normalizedDescription));
   const parent = rows.map((_, index) => index);
-  const find = (index: number): number =>
-    parent[index] === index ? index : (parent[index] = find(parent[index]!));
+  const find = (index: number): number => {
+    let current = index;
+    while (parent[current] !== current) {
+      parent[current] = parent[parent[current]!]!;
+      current = parent[current]!;
+    }
+    return current;
+  };
   const union = (a: number, b: number) => {
     const rootA = find(a);
     const rootB = find(b);

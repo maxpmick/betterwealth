@@ -1244,7 +1244,8 @@ export async function categorizeHouseholdTransactions(input: {
       id: `ai_rule_${sha256(`${input.householdId}\u001f${identity}`).slice(0, 40)}`,
     };
     const shouldInsertRule = !existingAiRuleIdentities.has(identity);
-    const suggestionDirection = row.transaction.amount >= 0n ? ("inflow" as const) : ("outflow" as const);
+    const suggestionDirection =
+      row.transaction.amount >= 0n ? ("inflow" as const) : ("outflow" as const);
     const suggestionMerchantTokens = new Set<string>([
       ...merchantTokens(suggestion.merchant),
       ...ruleMerchantTokens(draftRule.condition),
@@ -1255,11 +1256,7 @@ export async function categorizeHouseholdTransactions(input: {
           // One merchant = one rule. The similarity check runs inside the immediate transaction
           // so a concurrent run in another process re-reads a fresh registry before inserting.
           const similarRule = findSimilarMerchantRule(
-            transaction
-              .select()
-              .from(rules)
-              .where(eq(rules.householdId, input.householdId))
-              .all(),
+            transaction.select().from(rules).where(eq(rules.householdId, input.householdId)).all(),
             suggestionMerchantTokens,
             suggestionDirection,
           );
@@ -1417,10 +1414,7 @@ export async function categorizeHouseholdTransactions(input: {
                 priority: aiRule.priority,
                 isEnabled: true,
                 origin: "ai",
-                conditions: JSON.parse(JSON.stringify(aiRule.condition)) as Record<
-                  string,
-                  unknown
-                >,
+                conditions: JSON.parse(JSON.stringify(aiRule.condition)) as Record<string, unknown>,
                 actions: JSON.parse(JSON.stringify(aiRule.actions)) as Record<string, unknown>,
                 specificityScore: ruleSpecificity(aiRule.condition),
                 createdByUserId: input.userId,
@@ -1456,10 +1450,7 @@ export async function categorizeHouseholdTransactions(input: {
   // the rest of the cluster deterministically. Only clearly-different merchant clusters are
   // allowed to run concurrently.
   const clusters = clusterByMerchantSimilarity(orderedCandidates);
-  const workerCount = Math.max(
-    1,
-    Math.min(input.maxClusterConcurrency ?? 4, clusters.length || 1),
-  );
+  const workerCount = Math.max(1, Math.min(input.maxClusterConcurrency ?? 4, clusters.length || 1));
   let nextClusterIndex = 0;
   await Promise.all(
     Array.from({ length: workerCount }, async () => {

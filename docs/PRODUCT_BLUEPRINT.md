@@ -369,6 +369,8 @@ The model returns a strict validated object:
 
 The app revalidates every ID/operator/value, executes the proposed rule locally against samples, rejects broad/unsafe conditions, and never lets model output execute code or SQL. Every first pass is double-checked by an independent recheck (web-grounded when the model supports OpenRouter's server-side web search, otherwise a second model pass); the recheck may confirm, correct, or propose a missing category path. High-confidence verified categorization applies automatically at the user threshold (default 0.90) and mints a narrow deterministic rule (stable merchant prefix, direction-pinned) so repeat merchants never need the model again; anything lower stays pending with a concrete recommendation for one human decision. Provider errors degrade to local/manual behavior.
 
+One merchant has at most one rule. Candidates are clustered by Jaccard similarity on cleaned merchant names: same-merchant clusters are processed strictly sequentially (the first minted rule resolves the rest deterministically) while only clearly-different merchant clusters run concurrently. Before inserting, the mint re-checks the rule registry inside an immediate transaction — a similar existing rule means "apply through it", and a similar rule with a *different* category parks the transaction as a pending conflict for one human decision instead of creating a twin rule.
+
 Default bootstrap provider is OpenRouter with `minimax/minimax-m3`. Model/base URL/key are encrypted per user and editable without migration. The starting taxonomy is a hardcoded two-level tree (`apps/api/src/categorization/taxonomy.ts`) shared by registration and rebuilds.
 
 ## 9. SimpleFIN and import behavior
