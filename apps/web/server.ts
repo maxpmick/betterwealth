@@ -13,7 +13,11 @@ interface BunRuntime {
 }
 
 const bun = (globalThis as typeof globalThis & { Bun: BunRuntime }).Bun;
-const port = Number(bun.argv[2] ?? 4173);
+// Containers need 0.0.0.0 and a service-name upstream; loopback defaults keep the
+// bare-metal systemd layout unchanged.
+const hostname = process.env.WEB_HOST ?? "127.0.0.1";
+const port = Number(process.env.WEB_PORT ?? bun.argv[2] ?? 4173);
+const apiUpstream = process.env.API_UPSTREAM_ORIGIN ?? "http://127.0.0.1:3001";
 const index = bun.file(new URL("./dist/index.html", import.meta.url));
 
 if (!(await index.exists())) {
@@ -30,12 +34,12 @@ const securityHeaders = {
 };
 
 bun.serve({
-  hostname: "127.0.0.1",
+  hostname,
   port,
   async fetch(request) {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/api/v1")) {
-      const upstream = new URL(`${url.pathname}${url.search}`, "http://127.0.0.1:3001");
+      const upstream = new URL(`${url.pathname}${url.search}`, apiUpstream);
       const headers = new Headers(request.headers);
       headers.delete("host");
       const init: RequestInit = { method: request.method, headers, redirect: "manual" };
@@ -76,4 +80,4 @@ bun.serve({
   },
 });
 
-console.info(`BetterWealth web is listening on http://127.0.0.1:${port}`);
+console.info(`BetterWealth web is listening on http://${hostname}:${port}`);

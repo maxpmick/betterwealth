@@ -1,0 +1,48 @@
+name: betterwealth
+
+# Local/self-hosted stack: the API stays on the internal network and the web
+# process (which proxies /api/v1 to it) is the only published listener, bound
+# to loopback. Put a TLS-terminating proxy such as Caddy in front for a public
+# deployment, then set WEB_ORIGIN, COOKIE_SECURE=true, and TRUST_PROXY=true.
+#
+# Required: ENCRYPTION_KEY in .env or the shell (openssl rand -hex 32).
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    environment:
+      APP_ENV: production
+      API_HOST: 0.0.0.0
+      API_PORT: "3001"
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:4173}
+      DATABASE_URL: ./data/betterwealth.sqlite
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Set ENCRYPTION_KEY in .env or the shell (openssl rand -hex 32)}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      REGISTRATION_MODE: ${REGISTRATION_MODE:-closed}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - betterwealth-data:/app/data
+      - betterwealth-backups:/app/backups
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    environment:
+      WEB_HOST: 0.0.0.0
+      WEB_PORT: "4173"
+      API_UPSTREAM_ORIGIN: http://api:3001
+    ports:
+      - "127.0.0.1:4173:4173"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  betterwealth-data:
+  betterwealth-backups:

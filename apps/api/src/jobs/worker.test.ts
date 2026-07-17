@@ -118,8 +118,18 @@ describe("durable job worker", () => {
       expect(initiallyLeased?.state).toBe("leased");
       expect(initiallyLeased?.leaseOwner).toBe(worker.workerId);
 
-      await Bun.sleep(110);
-      const renewed = await db.select().from(jobs).where(eq(jobs.id, "long-running-job")).get();
+      // Poll for the heartbeat instead of sleeping a fixed duration: on a
+      // loaded CI box a 10ms timer can be delayed past any fixed sleep.
+      let renewed = initiallyLeased;
+      for (
+        let attempt = 0;
+        attempt < 200 &&
+        Date.parse(renewed?.heartbeatAt ?? "") <= Date.parse(initiallyLeased?.heartbeatAt ?? "");
+        attempt += 1
+      ) {
+        await Bun.sleep(5);
+        renewed = await db.select().from(jobs).where(eq(jobs.id, "long-running-job")).get();
+      }
       expect(renewed?.state).toBe("leased");
       expect(renewed?.leaseEpoch).toBe(initiallyLeased?.leaseEpoch);
       expect(Date.parse(renewed?.heartbeatAt ?? "")).toBeGreaterThan(
