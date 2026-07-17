@@ -141,6 +141,45 @@ describe("BetterWealth API", () => {
     expect(document.components.securitySchemes).toHaveProperty("sessionCookie");
   });
 
+  test("rejects malformed JSON with a 400 contract error instead of a 500", async () => {
+    const response = await application.app.request("/api/v1/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://localhost:5173" },
+      body: "{not json",
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: { code: "invalid_json", message: "The request body is not valid JSON" },
+    });
+  });
+
+  test("rejects oversized bodies with a 413 contract error instead of a 500", async () => {
+    const response = await application.app.request("/api/v1/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://localhost:5173" },
+      body: `{"email":"${"a".repeat(3 * 1024 * 1024)}@example.com","password":"irrelevant-123"}`,
+    });
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({
+      error: { code: "payload_too_large", message: "The request body exceeds the size limit" },
+    });
+  });
+
+  test("gives import uploads the larger per-route body budget", async () => {
+    // 3 MB exceeds the default 2 MB cap but is within the import budget, so
+    // the request reaches authentication instead of dying at the body limit.
+    const response = await application.app.request("/api/v1/imports/transactions", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://localhost:5173" },
+      body: JSON.stringify({
+        accountId: "a".repeat(3 * 1024 * 1024),
+        filename: "big.csv",
+        content: "x",
+      }),
+    });
+    expect(response.status).toBe(401);
+  });
+
   test("auth, CSRF, ledger creation, and household isolation work together", async () => {
     const register = await application.app.request("/api/v1/auth/register", {
       method: "POST",

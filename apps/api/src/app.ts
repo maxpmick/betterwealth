@@ -8,6 +8,7 @@ import {
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
+import { HTTPException } from "hono/http-exception";
 import { requestId } from "hono/request-id";
 import { secureHeaders } from "hono/secure-headers";
 import { ZodError } from "zod";
@@ -236,7 +237,16 @@ export function createApp(
     await next();
     context.header("Cache-Control", "no-store");
   });
-  app.use("/api/*", bodyLimit({ maxSize: 2 * 1024 * 1024 }));
+  const defaultBodyLimit = 2 * 1024 * 1024;
+  const importBodyLimit = 12 * 1024 * 1024;
+  app.use("/api/*", async (context, next) => {
+    // Imports carry whole CSV/OFX files inside the JSON body and get a larger
+    // budget; everything else stays at the default cap.
+    const maxSize = context.req.path.startsWith("/api/v1/imports/")
+      ? importBodyLimit
+      : defaultBodyLimit;
+    return bodyLimit({ maxSize })(context, next);
+  });
   app.use(
     "/api/v1/auth/login",
     rateLimit({
@@ -361,6 +371,24 @@ export function createApp(
         },
         422,
       );
+    }
+    if (error instanceof SyntaxError) {
+      // Malformed JSON request bodies surface from context.req.json() as
+      // SyntaxError; they are client errors, not server failures.
+      return context.json(
+        { error: { code: "invalid_json", message: "The request body is not valid JSON" } },
+        400,
+      );
+    }
+    if (error instanceof HTTPException) {
+      // Framework-raised errors (e.g. the body-limit middleware's 413) keep
+      // their real status instead of collapsing into a 500.
+      const code = error.status === 413 ? "payload_too_large" : "request_failed";
+      const message =
+        error.status === 413
+          ? "The request body exceeds the size limit"
+          : error.message || "The request could not be completed";
+      return context.json({ error: { code, message } }, error.status);
     }
     logger.error("request.failed", {
       requestId: context.get("requestId"),
