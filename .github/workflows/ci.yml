@@ -1,37 +1,167 @@
-name: Release gate
+name: CI
 
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-gate-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  BUN_VERSION: "1.3.14"
+
 jobs:
-  test:
+  audit:
+    name: Dependency audit
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/setup-bun-deps
         with:
-          bun-version: 1.3.14
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Audit dependencies
+        run: bun run audit
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bun-deps
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Check formatting and lint rules
+        run: bun run lint
 
-      - name: Install browser runtime
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bun-deps
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Typecheck all workspaces
+        run: bun run typecheck
+
+  migrations:
+    name: Migration journal
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bun-deps
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Validate Drizzle migration journal
+        run: bun run db:check
+
+  unit:
+    name: Unit and integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bun-deps
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Run Bun test suites
+        run: |
+          mkdir -p reports
+          bun test packages apps/api/src --reporter=junit --reporter-outfile=reports/unit.xml
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-unit
+          path: reports/unit.xml
+          if-no-files-found: ignore
+          retention-days: 14
+
+  web:
+    name: Web component tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bun-deps
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Run Vitest suites
+        run: |
+          mkdir -p reports
+          bun run --cwd apps/web test -- \
+            --reporter=default --reporter=junit --outputFile.junit=../../reports/web.xml
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-web
+          path: reports/web.xml
+          if-no-files-found: ignore
+          retention-days: 14
+
+  build:
+    name: Production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bun-deps
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Build all workspaces
+        run: bun run build
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ github.sha }}
+          path: |
+            apps/api/dist
+            apps/web/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  e2e:
+    name: Browser journeys
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bun-deps
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Restore Playwright browser cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+      - name: Install Chromium
         run: bunx playwright install --with-deps chromium
-
-      - name: Run complete release gate
-        run: bun run test:all
-
+      - name: Run Playwright journeys
+        run: |
+          mkdir -p reports
+          bun run test:e2e
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-e2e
+          path: reports/e2e.xml
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Preserve browser diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
@@ -42,3 +172,22 @@ jobs:
             test-results
           if-no-files-found: ignore
           retention-days: 7
+
+  gate:
+    name: Release gate
+    if: always()
+    needs: [audit, lint, typecheck, migrations, unit, web, build, e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify all checks passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq .
+          failed=$(echo "$NEEDS" | jq -r 'to_entries[] | select(.value.result != "success") | .key')
+          if [ -n "$failed" ]; then
+            echo "::error::Release gate failed: $failed"
+            exit 1
+          fi
+          echo "All release-gate checks passed."

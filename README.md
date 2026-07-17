@@ -86,9 +86,12 @@ bun run auth:reset-password -- --email user@example.com
 bun run bootstrap      # initial user/integrations/sync
 ```
 
-The GitHub Actions release gate runs the same audit, migration, lint, type, unit,
-integration, production-build, desktop-browser, mobile-browser, and accessibility checks on every
-pull request and push to `main`. Browser traces, screenshots, and videos are retained when it fails.
+GitHub Actions runs the audit, migration, lint, type, unit, integration, production-build,
+desktop-browser, mobile-browser, and accessibility checks as parallel jobs on every pull request
+and push to `main`; the `Release gate` check passes only when all of them pass. Publishing a
+GitHub release re-runs the full gate, then attaches verified web and API build archives with
+SHA-256 checksums to the release. JUnit test reports are uploaded for every run, and browser
+traces, screenshots, and videos are retained when browser tests fail.
 
 The canonical E2E user is `alex@example.com` with password `WealthBy30!2026`; it is created only by the demo/test seed and must never be used as a production account.
 
