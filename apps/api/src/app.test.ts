@@ -11,7 +11,7 @@ import { loadConfig } from "./config";
 import { sha256 } from "./lib/crypto";
 import { ALEX_DEMO_EMAIL, ALEX_DEMO_PASSWORD, seedCanonicalAlex } from "./seed/canonical-alex";
 
-function testConfig(databasePath: string, registrationMode: "open" | "invite" | "closed" = "open") {
+function testConfig(databasePath: string, registrationMode: "open" | "closed" = "open") {
   return loadConfig({
     APP_ENV: "test",
     API_HOST: "127.0.0.1",
@@ -82,6 +82,31 @@ describe("BetterWealth API", () => {
       expect(closedResponse.status).toBe(200);
       expect(await closedResponse.json()).toEqual({
         registration: { mode: "closed", selfService: false },
+      });
+    } finally {
+      closedApplication.close();
+      rmSync(closedDirectory, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses public registration when registration is closed", async () => {
+    const closedDirectory = mkdtempSync(join(tmpdir(), "betterwealth-closed-"));
+    const closedApplication = createApp(
+      testConfig(join(closedDirectory, "closed.sqlite"), "closed"),
+    );
+    try {
+      const response = await closedApplication.app.request("/api/v1/auth/register", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "http://localhost:5173" },
+        body: JSON.stringify({
+          email: "blocked@example.com",
+          password: "BlockedStrong!2026",
+          householdName: "Blocked plan",
+        }),
+      });
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({
+        error: { code: "forbidden", message: "Public registration is not enabled" },
       });
     } finally {
       closedApplication.close();

@@ -132,7 +132,7 @@ export interface ApiRefundLinkMatch {
 
 export interface ApiCapabilities {
   registration: {
-    mode: "open" | "invite" | "closed";
+    mode: "open" | "closed";
     selfService: boolean;
   };
 }

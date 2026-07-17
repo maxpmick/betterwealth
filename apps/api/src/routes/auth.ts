@@ -15,6 +15,7 @@ import {
 } from "../auth/middleware";
 import { createSession, registerUser, revokeSession, verifyLogin } from "../auth/service";
 import type { AppConfig } from "../config";
+import { ForbiddenError } from "../lib/errors";
 import type { AppEnv } from "../types";
 
 function sessionCookieOptions(config: AppConfig, httpOnly: boolean) {
@@ -31,6 +32,11 @@ export function createAuthRoutes(db: BetterWealthDatabase, config: AppConfig) {
   const routes = new Hono<AppEnv>();
 
   routes.post("/register", requireTrustedOrigin(config), requireJsonBody(), async (context) => {
+    // The public-registration gate is an HTTP exposure policy; operator tooling
+    // (bootstrap CLI) uses the same domain service without it.
+    if (config.REGISTRATION_MODE !== "open") {
+      throw new ForbiddenError("Public registration is not enabled");
+    }
     const result = await registerUser(db, await context.req.json(), config);
     return context.json(result, 201);
   });

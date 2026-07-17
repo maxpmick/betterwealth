@@ -352,11 +352,9 @@ export function LoginPage() {
         </Typography>
       ) : (
         <Alert severity="info" sx={{ mt: 5 }}>
-          {capabilities.data?.registration.mode === "invite"
-            ? "This instance accepts invited accounts only. Ask its operator for access."
-            : capabilities.data?.registration.mode === "closed"
-              ? "This is a private BetterWealth instance. New account creation is closed."
-              : "Account creation availability could not be verified. Existing accounts can still sign in."}
+          {capabilities.data?.registration.mode === "closed"
+            ? "This is a private BetterWealth instance. New account creation is closed."
+            : "Account creation availability could not be verified. Existing accounts can still sign in."}
         </Alert>
       )}
     </AuthLayout>
@@ -417,18 +415,12 @@ export function RegisterPage() {
     return (
       <AuthLayout>
         <Typography component="h1" variant="h1">
-          {mode === "invite"
-            ? "An invitation is required"
-            : mode === "closed"
-              ? "Account creation is closed"
-              : "Account policy is unavailable"}
+          {mode === "closed" ? "Account creation is closed" : "Account policy is unavailable"}
         </Typography>
         <Typography color="text.secondary" sx={{ mt: 2 }}>
-          {mode === "invite"
-            ? "This instance accepts invited accounts only. Ask its operator for access."
-            : mode === "closed"
-              ? "This private instance already has its owner account. New accounts are disabled by its operator."
-              : "BetterWealth could not safely verify that self-registration is enabled."}
+          {mode === "closed"
+            ? "This private instance already has its owner account. New accounts are disabled by its operator."
+            : "BetterWealth could not safely verify that self-registration is enabled."}
         </Typography>
         {capabilities.isError ? (
           <Button variant="outlined" onClick={() => capabilities.refetch()} sx={{ mt: 5 }}>

@@ -31,11 +31,7 @@ function installMatchMedia(width: number) {
   });
 }
 
-function renderApp(
-  path: string,
-  width = 1280,
-  registrationMode: "open" | "invite" | "closed" = "open",
-) {
+function renderApp(path: string, width = 1280, registrationMode: "open" | "closed" = "open") {
   installMatchMedia(width);
   window.sessionStorage.setItem("bw-demo", "true");
   vi.stubGlobal(

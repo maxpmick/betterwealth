@@ -51,7 +51,7 @@ const envSchema = z.object({
   TRUST_PROXY: z
     .preprocess((value) => value === true || value === "true", z.boolean())
     .default(false),
-  REGISTRATION_MODE: z.enum(["open", "invite", "closed"]).default("open"),
+  REGISTRATION_MODE: z.enum(["open", "closed"]).default("open"),
   SESSION_IDLE_DAYS: z.coerce.number().int().min(1).max(90).default(14),
   SESSION_ABSOLUTE_DAYS: z.coerce.number().int().min(1).max(365).default(30),
   SYNC_INTERVAL_MINUTES: z.coerce.number().int().min(15).default(360),

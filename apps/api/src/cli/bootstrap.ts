@@ -40,9 +40,8 @@ try {
   let householdId: string;
   let createdUser = false;
   if (!user) {
-    if (config.REGISTRATION_MODE !== "open") {
-      throw new Error("First-run bootstrap requires REGISTRATION_MODE=open");
-    }
+    // Bootstrap is operator-run tooling with secret inputs, so it is not subject
+    // to the public-registration gate the HTTP register route enforces.
     const registered = await registerUser(
       db,
       {
