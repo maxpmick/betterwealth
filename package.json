@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "dev": "concurrently -k -n api,web -c blue,green \"bun run dev:api\" \"bun run dev:web\"",
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
     "dev:api": "bun run --cwd apps/api dev",
     "dev:web": "bun run --cwd apps/web dev",
     "build": "bun run --filter @betterwealth/shared build && bun run --filter @betterwealth/db build && bun run --filter @betterwealth/api build && bun run --filter @betterwealth/web build",

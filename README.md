@@ -71,6 +71,7 @@ bun run dev            # API + web development servers
 bun run build          # production builds
 bun run typecheck      # every workspace
 bun run lint           # Biome
+bun run format         # Biome auto-fix
 bun run test           # unit/integration + web component tests
 bun run test:e2e       # Playwright browser journeys
 bun run audit          # dependency vulnerability audit
@@ -85,6 +86,11 @@ bun run ops:health     # local API + web readiness check
 bun run auth:reset-password -- --email user@example.com
 bun run bootstrap      # initial user/integrations/sync
 ```
+
+A pre-commit hook in `.githooks/` runs `biome check` on staged files so lint and format issues
+are caught before they reach CI. `bun install` activates it automatically by setting git
+`core.hooksPath`; fix findings with `bun run format`, or bypass in an emergency with
+`git commit --no-verify`.
 
 GitHub Actions runs the audit, migration, lint, type, unit, integration, production-build,
 desktop-browser, mobile-browser, and accessibility checks as parallel jobs on every pull request

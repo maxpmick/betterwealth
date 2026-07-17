@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Pre-commit: run Biome (lint + format check) on staged files, matching the CI lint job.
+# Activated by `bun install` through the root "prepare" script, which sets
+# core.hooksPath to this directory. Bypass in an emergency with `git commit --no-verify`.
+set -euo pipefail
+
+# Nothing staged, nothing to check.
+if git diff --cached --quiet; then
+  exit 0
+fi
+
+echo "pre-commit: checking staged files with Biome..."
+if ! bunx biome check --staged --no-errors-on-unmatched .; then
+  cat >&2 <<'EOF'
+
+Commit blocked by Biome.
+Run `bun run format` to auto-fix safe issues, review the changes, then re-stage and retry.
+EOF
+  exit 1
+fi
