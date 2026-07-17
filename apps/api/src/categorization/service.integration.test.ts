@@ -1732,4 +1732,86 @@ describe("AI-first categorization becomes deterministic", () => {
     expect(calls).toBe(2);
     expect(await db.select().from(aiSuggestions)).toHaveLength(1);
   });
+
+  test("income labels on liability-account inflows always wait for a human decision", async () => {
+    const db = openDatabase(":memory:", { wal: false });
+    databases.push(db);
+    runMigrations(db);
+    const config = loadConfig({
+      APP_ENV: "test",
+      DATABASE_URL: ":memory:",
+      ENCRYPTION_KEY: "b".repeat(64),
+      WEB_ORIGIN: "http://localhost:5173",
+      REGISTRATION_MODE: "open",
+    });
+    const registered = await registerUser(
+      db,
+      {
+        email: "liability@example.com",
+        password: "LiabilityIncome!2026",
+        householdName: "Liability test",
+      },
+      config,
+    );
+    await configureAiForUser(db, config, registered.householdId, registered.userId);
+    const income = await db
+      .select({ id: categories.id })
+      .from(categories)
+      .where(and(eq(categories.householdId, registered.householdId), eq(categories.name, "Income")))
+      .get();
+    if (!income) throw new Error("Default Income category was not created");
+    const accountId = ulid();
+    await db.insert(accounts).values({
+      id: accountId,
+      householdId: registered.householdId,
+      ownerUserId: registered.userId,
+      name: "Visa",
+      group: "credit",
+      type: "credit_card",
+      currency: "USD",
+      isLiability: true,
+      isManual: true,
+    });
+    const transactionId = ulid();
+    await db.insert(transactions).values({
+      id: transactionId,
+      householdId: registered.householdId,
+      accountId,
+      amount: 89_231n,
+      currency: "USD",
+      transactedOn: "2026-07-15",
+      rawDescription: "PAYMENT THANK YOU MOBILE",
+      normalizedDescription: "PAYMENT THANK YOU MOBILE",
+      status: "posted",
+      source: "manual",
+      reviewState: "needs_review",
+    });
+
+    expect(
+      await categorizeHouseholdTransactions({
+        db,
+        config,
+        householdId: registered.householdId,
+        userId: registered.userId,
+        suggestCategory: async () => ({
+          merchant: "Payment Thank You",
+          categoryId: income.id,
+          confidence: 0.99,
+          rationale: "Looks like inbound money.",
+        }),
+      }),
+    ).toMatchObject({ aiCalls: 1, aiAccepted: 0, aiPending: 1 });
+    expect(
+      await db
+        .select({
+          categoryId: transactions.categoryId,
+          isIncome: transactions.isIncome,
+          reviewState: transactions.reviewState,
+        })
+        .from(transactions)
+        .where(eq(transactions.id, transactionId))
+        .get(),
+    ).toEqual({ categoryId: null, isIncome: false, reviewState: "needs_review" });
+    expect(await db.select().from(rules)).toHaveLength(0);
+  });
 });

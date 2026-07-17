@@ -21,7 +21,7 @@ const validSuggestion = Object.freeze({
 });
 
 export const openRouterStructuredRequestFixture = Object.freeze({
-  model: "tencent/hy3:free",
+  model: "minimax/minimax-m3",
   messages: Object.freeze([
     Object.freeze({
       role: "system",
@@ -77,7 +77,7 @@ function completion(content: string) {
     id: "gen-alex-categorization-001",
     object: "chat.completion",
     created: 1_775_304_000,
-    model: "tencent/hy3:free",
+    model: "minimax/minimax-m3",
     choices: Object.freeze([
       Object.freeze({
         index: 0,

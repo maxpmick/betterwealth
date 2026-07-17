@@ -65,7 +65,7 @@ const envSchema = z.object({
       return url.protocol === "https:" && !url.username && !url.password;
     }, "must be an HTTPS URL without embedded credentials")
     .default("https://openrouter.ai/api/v1"),
-  BOOTSTRAP_OPENROUTER_MODEL: z.string().default("tencent/hy3:free"),
+  BOOTSTRAP_OPENROUTER_MODEL: z.string().default("minimax/minimax-m3"),
   BOOTSTRAP_OPENROUTER_API_KEY: z.string().optional(),
   BOOTSTRAP_SIMPLEFIN_SETUP_TOKEN: z.string().optional(),
   BOOTSTRAP_USER_EMAIL: z.string().email().optional(),

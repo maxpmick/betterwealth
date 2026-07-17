@@ -56,7 +56,7 @@ describe("Integration settings", () => {
       "https://openrouter.ai/api/v1",
     );
     expect(within(dialog).getByRole("textbox", { name: /^model$/i })).toHaveValue(
-      "tencent/hy3:free",
+      "minimax/minimax-m3",
     );
     expect(
       within(dialog).getByRole("switch", {
@@ -81,7 +81,7 @@ describe("Integration settings", () => {
       ai: {
         enabled: true,
         provider: "openrouter",
-        model: "tencent/hy3:free",
+        model: "minimax/minimax-m3",
         consentedFields: ["normalized_description"],
       },
       exchangeRates: { provider: "manual", enabled: false },
@@ -95,7 +95,7 @@ describe("Integration settings", () => {
       configured: true,
       enabled: true,
       baseUrl: "https://openrouter.ai/api/v1",
-      model: "tencent/hy3:free",
+      model: "minimax/minimax-m3",
       confidenceThreshold: 0.9,
       webResearchEnabled: true,
     });
@@ -103,7 +103,7 @@ describe("Integration settings", () => {
       configured: true,
       enabled: true,
       baseUrl: "https://openrouter.ai/api/v1",
-      model: "tencent/hy3:free",
+      model: "minimax/minimax-m3",
       confidenceThreshold: 0.9,
       webResearchEnabled: false,
     });

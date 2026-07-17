@@ -216,15 +216,7 @@ const providerCategorizationSchema = z
     rationale: z.string().trim().min(1).max(280),
     proposedRule: categorizationSuggestionSchema.shape.proposedRule,
   })
-  .strict()
-  .superRefine((value, context) => {
-    if ((value.categoryId === null) === (value.proposedCategory == null)) {
-      context.addIssue({
-        code: "custom",
-        message: "Return exactly one of categoryId or proposedCategory",
-      });
-    }
-  });
+  .strict();
 
 const webSearchTool = {
   type: "openrouter:web_search",
@@ -236,6 +228,104 @@ const webSearchTool = {
     excluded_domains: ["facebook.com", "instagram.com", "tiktok.com", "x.com"],
   },
 } as const;
+
+const assistantMessageSchema = z
+  .object({
+    content: z
+      .union([
+        z.string(),
+        z.null(),
+        z.array(z.object({ text: z.string().optional() }).passthrough()),
+      ])
+      .optional(),
+    reasoning: z.union([z.string(), z.null()]).optional(),
+    reasoning_details: z.array(z.object({ text: z.string().optional() }).passthrough()).optional(),
+    refusal: z.union([z.string(), z.null()]).optional(),
+  })
+  .passthrough();
+
+/**
+ * Returns the assistant's answer text. Reasoning models such as MiniMax M3 (as served by
+ * OpenRouter providers) emit the final answer in the reasoning channel with `content: null`,
+ * so the reasoning fields are honored as a fallback when no content text is present.
+ */
+export function extractAssistantText(message: unknown): string | undefined {
+  const parsed = assistantMessageSchema.safeParse(message);
+  if (!parsed.success) return undefined;
+  const { content, reasoning, reasoning_details: reasoningDetails } = parsed.data;
+  const contentText =
+    typeof content === "string"
+      ? content.trim()
+      : Array.isArray(content)
+        ? content
+            .map((part) => part.text ?? "")
+            .join("")
+            .trim()
+        : "";
+  if (contentText) return contentText;
+  const reasoningText =
+    (typeof reasoning === "string" ? reasoning.trim() : "") ||
+    (reasoningDetails ?? [])
+      .map((detail) => detail.text ?? "")
+      .join("")
+      .trim();
+  return reasoningText || undefined;
+}
+
+/**
+ * Parses a JSON object from model output, tolerating prose or whitespace around it by scanning
+ * for balanced `{...}` candidates. Throws `ai_invalid_response` when no object parses.
+ */
+export function parseJsonObjectText(text: string): unknown {
+  try {
+    const decoded: unknown = JSON.parse(text);
+    if (decoded && typeof decoded === "object" && !Array.isArray(decoded)) return decoded;
+  } catch {
+    // Fall through to balanced-brace extraction.
+  }
+  for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index += 1) {
+      const char = text[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') {
+        inString = true;
+      } else if (char === "{") {
+        depth += 1;
+      } else if (char === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          const candidate = text.slice(start, index + 1);
+          try {
+            const decoded: unknown = JSON.parse(candidate);
+            if (decoded && typeof decoded === "object" && !Array.isArray(decoded)) return decoded;
+          } catch {
+            // Not valid JSON; keep scanning for the next candidate.
+          }
+          break;
+        }
+      }
+    }
+  }
+  throw new AppError(
+    "The AI provider returned invalid categorization JSON",
+    502,
+    "ai_invalid_response",
+  );
+}
+
+function isWebResearchUnsupported(errorBody: string): boolean {
+  return (
+    /server tool request failed/i.test(errorBody) || /web_search.*not supported/i.test(errorBody)
+  );
+}
 
 function boundedText(value: unknown, maximum: number): unknown {
   return typeof value === "string" ? value.trim().slice(0, maximum) : value;
@@ -300,32 +390,66 @@ export function validateCategorizationProviderOutput(
       ? allowlistedProviderFields(decoded as Record<string, unknown>)
       : decoded;
   const suggestion = providerCategorizationSchema.safeParse(candidate);
-  if (
-    !suggestion.success ||
-    (suggestion.data.categoryId !== null && !allowedCategoryIds.has(suggestion.data.categoryId)) ||
-    (suggestion.data.proposedCategory != null && !allowCategoryProposal)
-  ) {
-    const validationReason = !suggestion.success
-      ? suggestion.error.issues
-          .slice(0, 8)
-          .map((issue) => `${issue.path.join(".") || "root"}:${issue.code}`)
-      : suggestion.data.categoryId !== null && !allowedCategoryIds.has(suggestion.data.categoryId)
-        ? ["categoryId:not_allowlisted"]
-        : ["proposedCategory:not_allowed"];
+  if (!suggestion.success) {
     throw new AppError(
       "The AI provider returned an unsafe categorization",
       502,
       "ai_invalid_response",
-      { validationReason },
+      {
+        validationReason: suggestion.error.issues
+          .slice(0, 8)
+          .map((issue) => `${issue.path.join(".") || "root"}:${issue.code}`),
+      },
     );
   }
-  if (suggestion.data.proposedRule) {
-    const proposed = suggestion.data.proposedRule;
+  const data = suggestion.data;
+  const hasAllowlistedId = data.categoryId !== null && allowedCategoryIds.has(data.categoryId);
+  // Models occasionally return both categoryId and proposedCategory (or neither). Resolution is
+  // deterministic and safe: an allowlisted id always wins; otherwise a permitted proposal is
+  // used; anything else is rejected.
+  if (hasAllowlistedId) {
+    data.proposedCategory = null;
+  } else if (data.categoryId !== null) {
+    if (data.proposedCategory != null && allowCategoryProposal) {
+      data.categoryId = null;
+    } else {
+      throw new AppError(
+        "The AI provider returned an unsafe categorization",
+        502,
+        "ai_invalid_response",
+        {
+          validationReason: ["categoryId:not_allowlisted"],
+        },
+      );
+    }
+  } else if (data.proposedCategory != null) {
+    if (!allowCategoryProposal) {
+      throw new AppError(
+        "The AI provider returned an unsafe categorization",
+        502,
+        "ai_invalid_response",
+        {
+          validationReason: ["proposedCategory:not_allowed"],
+        },
+      );
+    }
+  } else {
+    throw new AppError(
+      "The AI provider returned an unsafe categorization",
+      502,
+      "ai_invalid_response",
+      {
+        validationReason: ["categoryId:missing"],
+      },
+    );
+  }
+  if (data.proposedRule) {
+    const proposed = data.proposedRule;
     if (!proposed.descriptionContains && !proposed.merchantEquals) {
-      suggestion.data.proposedRule = undefined;
+      data.proposedRule = undefined;
     }
   }
-  return suggestion.data;
+  return data;
 }
 
 function systemPrompt(options: { allowCategoryProposal: boolean; verification: boolean }) {
@@ -338,7 +462,9 @@ function systemPrompt(options: { allowCategoryProposal: boolean; verification: b
     options.allowCategoryProposal
       ? "Choose exactly one supplied categoryId when a category path reasonably fits. Only when none fits, set categoryId to null and propose a concise top-level or top-level/child category path."
       : "Choose exactly one categoryId from the supplied category list and set proposedCategory to null.",
-    "Propose only a narrow reusable rule when a stable merchant pattern is obvious.",
+    "Return the merchant as a clean human-readable brand or payee name without store numbers, order IDs, terminal or location codes, dates, or masked fragments: 'Amazon Marketplace', never 'AMAZON MKTPL BS8HH6UF0'.",
+    "On credit card and loan accounts, inflows are almost always payments, refunds, or transfers between the user's own accounts, never income: choose a Transfers or Debt payments category for payments and an expense category only for refunds.",
+    "For proposedRule.descriptionContains, return only the stable merchant prefix that would match future statements from the same merchant ('AMAZON MKTPL', 'CVS PHARMACY'), never order IDs, store numbers, or one-time tokens. Omit the rule when no stable pattern exists.",
     "Web search, when available, is only for public merchant or business identity context. Never search for amounts, account types, account or customer identifiers, balances, or prior examples.",
     "Return JSON only, matching the requested schema.",
   ].join(" ");
@@ -455,7 +581,7 @@ async function requestCategorization(
   const endpoint = new URL("chat/completions", `${baseUrl.toString().replace(/\/$/, "")}/`);
   const allowedHosts = TRUSTED_AI_PROVIDER_HOSTS;
   const categoryIds = new Set(input.categories.map(({ id }) => id));
-  const send = (structured: boolean) =>
+  const send = (structured: boolean, webResearch: boolean) =>
     safeFetch(endpoint, {
       method: "POST",
       allowedHosts,
@@ -469,14 +595,24 @@ async function requestCategorization(
       body: JSON.stringify(
         buildCategorizationRequestPayload(input, {
           structured,
-          webResearch: options.webResearch,
+          webResearch,
           allowCategoryProposal: options.allowCategoryProposal,
           ...(options.verification === undefined ? {} : { verification: options.verification }),
         }),
       ),
     });
-  let response = await send(true);
-  if ([400, 404, 422].includes(response.status)) response = await send(false);
+  let webResearchUsed = options.webResearch;
+  let response = await send(true, webResearchUsed);
+  if (webResearchUsed && [400, 404, 422].includes(response.status)) {
+    // Some models (e.g. MiniMax M3) cannot run the server-side web-search tool. Retry the same
+    // request without it so verification still happens as an independent recheck.
+    const errorBody = await readLimitedText(response, 100_000, 10_000).catch(() => "");
+    if (isWebResearchUnsupported(errorBody)) {
+      webResearchUsed = false;
+      response = await send(true, false);
+    }
+  }
+  if ([400, 404, 422].includes(response.status)) response = await send(false, webResearchUsed);
   if (response.status === 401 || response.status === 403) {
     throw new AppError("The AI provider rejected the configured API key", 409, "ai_auth_failed");
   }
@@ -497,9 +633,7 @@ async function requestCategorization(
   }
   const providerResponse = z
     .object({
-      choices: z
-        .array(z.object({ message: z.object({ content: z.string() }).passthrough() }).passthrough())
-        .min(1),
+      choices: z.array(z.object({ message: z.unknown() }).passthrough()).min(1),
     })
     .passthrough()
     .safeParse(outer);
@@ -507,23 +641,21 @@ async function requestCategorization(
     throw new AppError("The AI provider returned malformed data", 502, "ai_invalid_response");
   }
   const message = providerResponse.data.choices[0]?.message;
-  const content = message?.content;
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(content ?? "");
-  } catch {
+  const assistantText = message ? extractAssistantText(message) : undefined;
+  if (!assistantText) {
     throw new AppError(
       "The AI provider returned invalid categorization JSON",
       502,
       "ai_invalid_response",
     );
   }
+  const decoded = parseJsonObjectText(assistantText);
   const suggestion = validateCategorizationProviderOutput(
     decoded,
     categoryIds,
     options.allowCategoryProposal,
   );
-  const research = extractCategorizationResearch(message, options.webResearch);
+  const research = extractCategorizationResearch(message, webResearchUsed);
   if (suggestion.categoryId !== null) {
     return {
       merchant: suggestion.merchant,
@@ -581,16 +713,20 @@ export async function regenerateTransactionCategory(
 
 /**
  * Double-checks a fresh result with independent public merchant evidence. It returns a proposal
- * only; callers must keep it pending until a person explicitly approves it.
+ * only; callers must keep it pending until a person explicitly approves it. When the configured
+ * model cannot run the server-side web-search tool (e.g. MiniMax M3), pass
+ * `allowWebResearch: false` to skip the doomed tool attempt; the recheck still runs as an
+ * independent second pass.
  */
 export async function verifyTransactionCategorization(
   input: CategorizationProviderInput & {
     previousSuggestion: PreviousCategorizationProposal;
     allowCategoryProposal?: boolean;
+    allowWebResearch?: boolean;
   },
 ): Promise<RegeneratedCategorizationSuggestion> {
   return requestCategorization(input, {
-    webResearch: true,
+    webResearch: input.allowWebResearch ?? true,
     allowCategoryProposal: input.allowCategoryProposal ?? true,
     verification: true,
   });

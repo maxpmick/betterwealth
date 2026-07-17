@@ -24,7 +24,7 @@ import {
   ruleSpecificity,
   transactionRulePatchToJson,
 } from "@betterwealth/shared";
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { ulid } from "ulid";
 import { z } from "zod";
 import type { AppConfig } from "../config";
@@ -493,6 +493,25 @@ function exactDescriptionFallback(transaction: RuleTransaction): RuleCondition {
   };
 }
 
+/**
+ * Generalizes a normalized description into a reusable `contains` pattern by dropping the first
+ * order-ID-like token (letters+digits, 6+ chars, e.g. "BS8HH6UF0", "XXXXXXX6104") and everything
+ * after it, plus trailing store numbers. Returns undefined when nothing can be generalized, so
+ * callers can keep the exact description.
+ */
+function stableDescriptionPattern(normalized: string): string | undefined {
+  const tokens = normalized.split(" ").filter(Boolean);
+  const kept: string[] = [];
+  for (const token of tokens) {
+    if (token.length >= 6 && /[A-Z]/.test(token) && /\d/.test(token)) break;
+    kept.push(token);
+  }
+  while (kept.length > 0 && /^\d+$/.test(kept[kept.length - 1] ?? "")) kept.pop();
+  if (kept.length === tokens.length) return undefined;
+  const pattern = kept.join(" ");
+  return pattern.length >= 4 && /[A-Z]{2,}/.test(pattern) ? pattern : undefined;
+}
+
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (value && typeof value === "object") {
@@ -588,11 +607,13 @@ export function buildAiRule(input: {
   const normalizedMerchant = merchantPattern ? normalizeDescription(merchantPattern) : undefined;
   const usableDescriptionPattern = descriptionPattern
     ? normalizedTransaction.includes(normalizeDescription(descriptionPattern))
-      ? descriptionPattern
+      ? (stableDescriptionPattern(normalizeDescription(descriptionPattern)) ?? descriptionPattern)
       : undefined
     : normalizedMerchant && normalizedTransaction.includes(normalizedMerchant)
       ? merchantPattern
       : undefined;
+  const generalizedFallback = stableDescriptionPattern(normalizedTransaction);
+  let usedExactFallback = false;
   const baseCondition: RuleCondition =
     merchantPattern && currentMerchant === normalizedMerchant
       ? { field: "merchant", operator: "exact", value: merchantPattern, caseSensitive: false }
@@ -603,10 +624,30 @@ export function buildAiRule(input: {
             value: usableDescriptionPattern,
             caseSensitive: false,
           }
-        : exactDescriptionFallback(input.transaction);
+        : generalizedFallback
+          ? {
+              field: "normalizedDescription",
+              operator: "contains",
+              value: generalizedFallback,
+              caseSensitive: false,
+            }
+          : (() => {
+              usedExactFallback = true;
+              return exactDescriptionFallback(input.transaction);
+            })();
   const conditions: RuleCondition[] = [baseCondition];
   if (proposed?.direction && proposed.direction === actualDirection(input.transaction)) {
     conditions.push({ field: "direction", operator: "exact", value: proposed.direction });
+  }
+  // Prefix/merchant patterns cross the purchase/refund boundary (e.g. "AMAZON MKTPL" charges and
+  // refunds share the prefix), so auto-minted rules always pin the direction they learned from —
+  // unless the rule is already direction-bound or matches the full description exactly.
+  const hasDirectionCondition = conditions.some(
+    (condition) => "field" in condition && condition.field === "direction",
+  );
+  const direction = actualDirection(input.transaction);
+  if (!usedExactFallback && !hasDirectionCondition && direction !== "zero") {
+    conditions.push({ field: "direction", operator: "exact", value: direction });
   }
   if (proposed?.accountId === input.transaction.accountId) {
     conditions.push({
@@ -671,7 +712,7 @@ export async function categorizeHouseholdTransactions(input: {
   attemptedFingerprints?: Set<string>;
   retryInvalidSuggestions?: boolean;
 }) {
-  const [ruleRows, categoryRows, candidates, confirmedRefundRows] = await Promise.all([
+  const [ruleRows, categoryRows, candidates, confirmedRefundRows, exampleRows] = await Promise.all([
     input.db
       .select()
       .from(rules)
@@ -721,6 +762,24 @@ export async function categorizeHouseholdTransactions(input: {
       .where(
         and(eq(refundLinks.householdId, input.householdId), eq(refundLinks.status, "confirmed")),
       ),
+    input.db
+      .select({
+        merchantName: merchants.name,
+        categoryId: transactions.categoryId,
+        categoryOrigin: transactions.categoryOrigin,
+        transactedOn: transactions.transactedOn,
+      })
+      .from(transactions)
+      .innerJoin(merchants, eq(merchants.id, transactions.merchantId))
+      .where(
+        and(
+          eq(transactions.householdId, input.householdId),
+          inArray(transactions.categoryOrigin, ["user", "rule", "ai"]),
+          sql`${transactions.categoryId} is not null`,
+        ),
+      )
+      .orderBy(desc(transactions.transactedOn))
+      .limit(200),
   ]);
   const confirmedRefundTransactionIds = new Set(
     confirmedRefundRows.map(({ transactionId }) => transactionId),
@@ -790,6 +849,31 @@ export async function categorizeHouseholdTransactions(input: {
       .filter(({ origin }) => origin === "approvedAi")
       .map((rule) => deterministicRuleIdentity(rule)),
   );
+  // Few-shot grounding: the model sees how this household already categorizes familiar
+  // merchants (user-confirmed first, then rule/AI-applied), which keeps labels consistent
+  // with local convention. Only merchant name + category id are disclosed.
+  const exampleOriginRank = (origin: string) => (origin === "user" ? 0 : origin === "rule" ? 1 : 2);
+  const merchantExamples: Array<{ merchant: string; categoryId: string }> = [];
+  const exampleMerchantsSeen = new Set<string>();
+  for (const row of [...exampleRows].sort(
+    (left, right) =>
+      exampleOriginRank(left.categoryOrigin) - exampleOriginRank(right.categoryOrigin) ||
+      right.transactedOn.localeCompare(left.transactedOn),
+  )) {
+    if (!row.categoryId || !categoryById.has(row.categoryId)) continue;
+    const key = normalizeDescription(row.merchantName);
+    if (!key || exampleMerchantsSeen.has(key)) continue;
+    exampleMerchantsSeen.add(key);
+    merchantExamples.push({ merchant: row.merchantName.slice(0, 120), categoryId: row.categoryId });
+    if (merchantExamples.length >= 12) break;
+  }
+  // Production runs always double-check the first pass with an independent recheck; unit tests
+  // that inject only a first-pass double keep skipping verification.
+  const verificationPlanned = !input.suggestCategory || Boolean(input.verifyCategory);
+  // Learned per run: models that cannot execute the server-side web-search tool (MiniMax M3)
+  // fail the tool attempt before the provider layer retries without it. Skipping the doomed
+  // attempt for the rest of the run halves verification traffic and avoids the slow failure.
+  let webResearchUsable = ai?.webResearchEnabled ?? false;
   let deterministic = 0;
   let aiAccepted = 0;
   let aiPending = 0;
@@ -851,9 +935,14 @@ export async function categorizeHouseholdTransactions(input: {
       canonicalJson({
         disclosureScope,
         model: ai.model,
-        verification: ai.webResearchEnabled ? "openrouter-web-v1" : "none",
+        verification: verificationPlanned
+          ? ai.webResearchEnabled
+            ? "openrouter-web-v2"
+            : "self-recheck-v2"
+          : "none",
         transaction: providerTransaction,
         categories: categoryPromptRows,
+        examples: merchantExamples,
       }),
     );
     if (attemptedFingerprints.has(fingerprint)) {
@@ -872,6 +961,7 @@ export async function categorizeHouseholdTransactions(input: {
         model: ai.model,
         transaction: providerTransaction,
         categories: categoryPromptRows,
+        examples: merchantExamples,
       });
       consecutiveProviderFailures = 0;
     } catch (error) {
@@ -900,9 +990,7 @@ export async function categorizeHouseholdTransactions(input: {
       continue;
     }
     let selectedCategory = categoryById.get(suggestion.categoryId);
-    const shouldVerify =
-      Boolean(input.verifyCategory) || (ai.webResearchEnabled && !input.suggestCategory);
-    if (shouldVerify) {
+    if (verificationPlanned) {
       aiVerificationCalls += 1;
       try {
         const selectedPath = selectedCategory?.parentId
@@ -914,6 +1002,7 @@ export async function categorizeHouseholdTransactions(input: {
           model: ai.model,
           transaction: providerTransaction,
           categories: categoryPromptRows,
+          examples: merchantExamples,
           previousSuggestion: {
             merchant: suggestion.merchant,
             categoryId: suggestion.categoryId,
@@ -923,13 +1012,18 @@ export async function categorizeHouseholdTransactions(input: {
             ...(suggestion.proposedRule ? { proposedRule: suggestion.proposedRule } : {}),
           },
           allowCategoryProposal: true,
+          allowWebResearch: webResearchUsable,
         });
+        // A verification that fell back to a plain recheck proves the model cannot run the
+        // web-search tool; stop attempting it for the rest of this run.
+        if (webResearchUsable && !verified.research.requested) webResearchUsable = false;
         aiResearchCitations += verified.research.citationCount;
         for (const host of verified.research.citationHosts) aiResearchHosts.add(host);
-        const verifiedRationale = `Independent web-enabled recheck: ${verified.rationale}`.slice(
-          0,
-          280,
-        );
+        const verifiedRationale =
+          `${verified.research.requested ? "Independent web-enabled recheck" : "Independent recheck"}: ${verified.rationale}`.slice(
+            0,
+            280,
+          );
         if ("proposedCategory" in verified && verified.proposedCategory) {
           const proposedCategory = verified.proposedCategory;
           const materialized = await ensureVerifiedCategoryPath({
@@ -1012,7 +1106,13 @@ export async function categorizeHouseholdTransactions(input: {
       continue;
     }
     const suggestionId = ulid();
-    const accepted = suggestion.confidence >= ai.confidenceThreshold;
+    // Domain invariant the model cannot override: inflows into credit card/loan accounts are
+    // payments, refunds, or transfers between the user's own accounts — never income. An
+    // income label here (e.g. "PAYMENT THANK YOU") would silently inflate income reports, so
+    // it always waits for a human decision regardless of confidence.
+    const liabilityIncomeInflow =
+      selectedCategory.kind === "income" && row.transaction.amount >= 0n && row.account.isLiability;
+    const accepted = suggestion.confidence >= ai.confidenceThreshold && !liabilityIncomeInflow;
     if (!accepted) {
       await input.db
         .insert(aiSuggestions)
@@ -1201,7 +1301,7 @@ export async function categorizeHouseholdTransactions(input: {
       householdId: input.householdId,
       actorUserId: input.userId,
       actorType: "system",
-      action: "ai.categorization_web_verified",
+      action: "ai.categorization_verified",
       entityType: "household",
       entityId: input.householdId,
       metadata: {
@@ -1214,6 +1314,7 @@ export async function categorizeHouseholdTransactions(input: {
         createdCategories: aiCreatedCategories,
         accepted: aiAccepted,
         pending: aiPending,
+        examplesProvided: merchantExamples.length,
       },
     });
   }

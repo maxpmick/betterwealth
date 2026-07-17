@@ -367,9 +367,9 @@ The model returns a strict validated object:
 - short rationale;
 - optional condition/action proposal using only the supported DSL.
 
-The app revalidates every ID/operator/value, executes the proposed rule locally against samples, rejects broad/unsafe conditions, and never lets model output execute code or SQL. High-confidence categorization may apply automatically at the user threshold (default 0.90); reusable rules require approval. Provider errors degrade to local/manual behavior.
+The app revalidates every ID/operator/value, executes the proposed rule locally against samples, rejects broad/unsafe conditions, and never lets model output execute code or SQL. Every first pass is double-checked by an independent recheck (web-grounded when the model supports OpenRouter's server-side web search, otherwise a second model pass); the recheck may confirm, correct, or propose a missing category path. High-confidence verified categorization applies automatically at the user threshold (default 0.90) and mints a narrow deterministic rule (stable merchant prefix, direction-pinned) so repeat merchants never need the model again; anything lower stays pending with a concrete recommendation for one human decision. Provider errors degrade to local/manual behavior.
 
-Default bootstrap provider is OpenRouter with `tencent/hy3:free`, but the model is scheduled to be removed July 21, 2026. Model/base URL/key are encrypted per user and editable without migration.
+Default bootstrap provider is OpenRouter with `minimax/minimax-m3`. Model/base URL/key are encrypted per user and editable without migration. The starting taxonomy is a hardcoded two-level tree (`apps/api/src/categorization/taxonomy.ts`) shared by registration and rebuilds.
 
 ## 9. SimpleFIN and import behavior
 
@@ -588,7 +588,7 @@ BetterWealth is ready when a new user can install it on bare metal, register, co
 - Sure project and current releases: <https://github.com/we-promise/sure>
 - SimpleFIN protocol 2 draft and compatibility rules: <https://www.simplefin.org/protocol.html>
 - OpenRouter structured outputs: <https://openrouter.ai/docs/guides/features/structured-outputs>
-- OpenRouter Hy3 model status: <https://openrouter.ai/tencent/hy3:free>
+- OpenRouter MiniMax M3 model status: <https://openrouter.ai/minimax/minimax-m3>
 - Bun SQLite: <https://bun.com/reference/bun/sqlite>
 - Bun Argon2 password hashing: <https://bun.sh/docs/runtime/hashing>
 - Hono OpenAPI validation: <https://hono.dev/examples/zod-openapi>

@@ -187,7 +187,7 @@ describe("API boundary", () => {
       configured: true,
       enabled: true,
       baseUrl: "https://openrouter.ai/api/v1",
-      model: "tencent/hy3:free",
+      model: "minimax/minimax-m3",
       confidenceThreshold: 0.92,
       webResearchEnabled: false,
     };

@@ -516,7 +516,7 @@ function IntegrationsSettings() {
     configured: false,
     enabled: false,
     baseUrl: "https://openrouter.ai/api/v1",
-    model: "tencent/hy3:free",
+    model: "minimax/minimax-m3",
     confidenceThreshold: 0.9,
     webResearchEnabled: false,
   };
@@ -792,7 +792,7 @@ function IntegrationsSettings() {
               label="Model"
               value={aiModel}
               onChange={(event) => setAiModel(event.target.value)}
-              placeholder="tencent/hy3:free"
+              placeholder="minimax/minimax-m3"
               fullWidth
             />
             <TextField
