@@ -6,10 +6,30 @@ describe("API boundary", () => {
     expect(API_BASE).toBe("/api/v1");
   });
 
-  it("keeps financial JSON amounts as base-10 strings", () => {
-    const transport = { minorUnits: "-4816", currency: "USD" };
-    expect(typeof transport.minorUnits).toBe("string");
-    expect(Number(transport.minorUnits) / 100).toBe(-48.16);
+  it("sends financial amounts as exact base-10 strings without float conversion", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: "txn-1" }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    // Larger than 2^53: a float64 would truncate this value.
+    const amountMinorUnits = "9007199254740993";
+    await api.createTransaction({
+      accountId: "acct-1",
+      amountMinorUnits,
+      currency: "USD",
+      effectiveDate: "2026-07-17",
+      description: "Exact amount check",
+    });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as {
+      amountMinorUnits: unknown;
+    };
+    expect(body.amountMinorUnits).toBe(amountMinorUnits);
+    expect(typeof body.amountMinorUnits).toBe("string");
   });
 
   it("uses the implemented profile password route", async () => {
