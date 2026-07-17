@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { alexFixture } from "@betterwealth/testkit";
 import type { BetterWealthApplication } from "./app";
 import { createApp } from "./app";
+import { registerUser } from "./auth/service";
 import { loadConfig } from "./config";
 import { sha256 } from "./lib/crypto";
 import { ALEX_DEMO_EMAIL, ALEX_DEMO_PASSWORD, seedCanonicalAlex } from "./seed/canonical-alex";
@@ -86,6 +87,40 @@ describe("BetterWealth API", () => {
       closedApplication.close();
       rmSync(closedDirectory, { recursive: true, force: true });
     }
+  });
+
+  test("rolls back every registration write when household creation fails", async () => {
+    application.db.$client.exec(`
+      CREATE TRIGGER fail_registration_household
+      BEFORE INSERT ON households
+      BEGIN
+        SELECT RAISE(ABORT, 'synthetic registration failure');
+      END
+    `);
+
+    await expect(
+      registerUser(
+        application.db,
+        {
+          email: "rollback@example.com",
+          password: "RollbackStrong!2026",
+          householdName: "Must not persist",
+        },
+        testConfig(join(directory, "test.sqlite")),
+      ),
+    ).rejects.toThrow("synthetic registration failure");
+
+    expect(
+      application.db.$client
+        .query<{ users: number; households: number; members: number; categories: number }, []>(`
+          SELECT
+            (SELECT count(*) FROM users) AS users,
+            (SELECT count(*) FROM households) AS households,
+            (SELECT count(*) FROM household_members) AS members,
+            (SELECT count(*) FROM categories) AS categories
+        `)
+        .get(),
+    ).toEqual({ users: 0, households: 0, members: 0, categories: 0 });
   });
 
   test("publishes a mobile-client-ready OpenAPI surface", async () => {

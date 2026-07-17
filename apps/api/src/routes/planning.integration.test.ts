@@ -89,6 +89,39 @@ describe("planning routes", () => {
     });
   }
 
+  test("rolls back envelope creation when its category link fails", async () => {
+    const category = await db
+      .select({ id: categories.id })
+      .from(categories)
+      .where(eq(categories.householdId, householdId))
+      .get();
+    expect(category).toBeDefined();
+    db.$client.exec(`
+      CREATE TRIGGER fail_envelope_category_link
+      BEFORE INSERT ON envelope_category_links
+      BEGIN
+        SELECT RAISE(ABORT, 'synthetic envelope link failure');
+      END
+    `);
+
+    await expect(
+      request("/api/v1/envelopes", {
+        name: "Atomic envelope",
+        categoryId: category!.id,
+        planned: { minorUnits: "120000", currency: "USD" },
+        cadence: "monthly",
+        rolloverPolicy: "monthly_reset",
+      }),
+    ).rejects.toThrow("synthetic envelope link failure");
+    expect(
+      await db
+        .select({ id: envelopes.id })
+        .from(envelopes)
+        .where(and(eq(envelopes.householdId, householdId), eq(envelopes.name, "Atomic envelope"))),
+    ).toHaveLength(0);
+    expect(await db.select().from(envelopeCategoryLinks)).toHaveLength(0);
+  });
+
   test("supports the web budget, goal, asset, scenario, forecast, and import flows", async () => {
     const accountId = ulid();
     await db.insert(accounts).values({
@@ -502,6 +535,17 @@ describe("planning routes", () => {
         rawDescription: "BIG BOX REFUND",
         normalizedDescription: "BIG BOX REFUND",
         isReimbursement: true,
+      },
+      {
+        ...baseTransaction,
+        id: ulid(),
+        amount: 4_000n,
+        postedAt: "2026-07-16T12:00:00.000Z",
+        transactedOn: "2026-07-16",
+        rawDescription: "UNCONFIRMED EXPENSE CREDIT",
+        normalizedDescription: "UNCONFIRMED EXPENSE CREDIT",
+        categoryId: food!.id,
+        isReimbursement: false,
       },
       {
         ...baseTransaction,

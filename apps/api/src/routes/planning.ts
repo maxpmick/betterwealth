@@ -766,6 +766,7 @@ async function calculateBudgetActivity(
     }
   }
   for (const transaction of currentTransactions) {
+    if (transaction.amount > 0n && !transaction.isReimbursement) continue;
     const pieces = piecesFor(transaction);
     const directlyMapped = pieces
       .map((piece) => ({ piece, envelopeId: resolveEnvelope(piece.envelopeId, piece.categoryId) }))
@@ -1260,6 +1261,7 @@ async function comfortablePurchasePlans(
         currency: transactions.currency,
         transactedOn: transactions.transactedOn,
         isIncome: transactions.isIncome,
+        isReimbursement: transactions.isReimbursement,
         isExcluded: transactions.isExcluded,
         isTransfer: transactions.isTransfer,
         status: transactions.status,
@@ -1490,7 +1492,7 @@ async function comfortablePurchasePlans(
     for (const transaction of posted) {
       if (transaction.amount > 0n) {
         if (transaction.isIncome) income += transaction.amount;
-        else expenses -= transaction.amount;
+        else if (transaction.isReimbursement) expenses -= transaction.amount;
       } else {
         expenses += -transaction.amount;
       }
@@ -2925,38 +2927,44 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
     ];
     await requireCategories(db, auth.householdId, categoryIds);
     const id = ulid();
-    await db.transaction(async (transaction) => {
-      await transaction.insert(envelopes).values({
-        id,
-        householdId: auth.householdId,
-        ...(input.parentId ? { parentId: input.parentId } : {}),
-        ...(input.categoryId ? { categoryId: input.categoryId } : {}),
-        name: input.name,
-        cadence: input.cadence,
-        ...(input.cadenceConfig === undefined
-          ? {}
-          : { cadenceConfig: dbJsonOrNull(input.cadenceConfig) }),
-        rolloverPolicy: dbRolloverPolicy(input.rolloverPolicy),
-        ...(input.rolloverCapMinorUnits === undefined
-          ? {}
-          : { rolloverCap: BigInt(input.rolloverCapMinorUnits) }),
-        priority: input.priority,
-        minimumAmount: BigInt(input.minimumAmountMinorUnits),
-        targetAmount: input.planned
-          ? BigInt(input.planned.minorUnits)
-          : BigInt(input.targetAmountMinorUnits),
-        currency: input.currency,
-        isRequired: input.isRequired,
-        isActive: input.isActive,
-      });
+    db.transaction((transaction) => {
+      transaction
+        .insert(envelopes)
+        .values({
+          id,
+          householdId: auth.householdId,
+          ...(input.parentId ? { parentId: input.parentId } : {}),
+          ...(input.categoryId ? { categoryId: input.categoryId } : {}),
+          name: input.name,
+          cadence: input.cadence,
+          ...(input.cadenceConfig === undefined
+            ? {}
+            : { cadenceConfig: dbJsonOrNull(input.cadenceConfig) }),
+          rolloverPolicy: dbRolloverPolicy(input.rolloverPolicy),
+          ...(input.rolloverCapMinorUnits === undefined
+            ? {}
+            : { rolloverCap: BigInt(input.rolloverCapMinorUnits) }),
+          priority: input.priority,
+          minimumAmount: BigInt(input.minimumAmountMinorUnits),
+          targetAmount: input.planned
+            ? BigInt(input.planned.minorUnits)
+            : BigInt(input.targetAmountMinorUnits),
+          currency: input.currency,
+          isRequired: input.isRequired,
+          isActive: input.isActive,
+        })
+        .run();
       if (categoryIds.length) {
-        await transaction.insert(envelopeCategoryLinks).values(
-          [...new Set(categoryIds)].map((categoryId) => ({
-            householdId: auth.householdId,
-            envelopeId: id,
-            categoryId,
-          })),
-        );
+        transaction
+          .insert(envelopeCategoryLinks)
+          .values(
+            [...new Set(categoryIds)].map((categoryId) => ({
+              householdId: auth.householdId,
+              envelopeId: id,
+              categoryId,
+            })),
+          )
+          .run();
       }
     });
     const row = await db
@@ -2989,8 +2997,8 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
         ? undefined
         : [...(input.categoryId ? [input.categoryId] : []), ...(input.categoryIds ?? [])];
     if (categoryIds) await requireCategories(db, auth.householdId, categoryIds);
-    await db.transaction(async (transaction) => {
-      await transaction
+    db.transaction((transaction) => {
+      transaction
         .update(envelopes)
         .set({
           ...(input.name === undefined ? {} : { name: input.name }),
@@ -3020,31 +3028,36 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
           ...(input.isActive === undefined ? {} : { isActive: input.isActive }),
           updatedAt: nowIso(),
         })
-        .where(and(eq(envelopes.householdId, auth.householdId), eq(envelopes.id, current.id)));
+        .where(and(eq(envelopes.householdId, auth.householdId), eq(envelopes.id, current.id)))
+        .run();
       if (categoryIds) {
-        await transaction
+        transaction
           .delete(envelopeCategoryLinks)
           .where(
             and(
               eq(envelopeCategoryLinks.householdId, auth.householdId),
               eq(envelopeCategoryLinks.envelopeId, current.id),
             ),
-          );
+          )
+          .run();
         if (categoryIds.length) {
-          await transaction.insert(envelopeCategoryLinks).values(
-            [...new Set(categoryIds)].map((categoryId) => ({
-              householdId: auth.householdId,
-              envelopeId: current.id,
-              categoryId,
-            })),
-          );
+          transaction
+            .insert(envelopeCategoryLinks)
+            .values(
+              [...new Set(categoryIds)].map((categoryId) => ({
+                householdId: auth.householdId,
+                envelopeId: current.id,
+                categoryId,
+              })),
+            )
+            .run();
         }
       }
       if (input.planned || input.targetAmountMinorUnits !== undefined) {
         const planned = input.planned
           ? BigInt(input.planned.minorUnits)
           : BigInt(input.targetAmountMinorUnits!);
-        await transaction
+        transaction
           .update(envelopeAllocations)
           .set({ planned, updatedAt: nowIso() })
           .where(
@@ -3052,7 +3065,8 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
               eq(envelopeAllocations.householdId, auth.householdId),
               eq(envelopeAllocations.envelopeId, current.id),
             ),
-          );
+          )
+          .run();
       }
     });
     const updated = await requireEnvelope(db, auth.householdId, current.id);
@@ -3303,11 +3317,11 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
         return { ...item, fundedAmount };
       });
       const batchId = ulid();
-      await db.transaction(async (transaction) => {
+      db.transaction((transaction) => {
         let sequence = 0;
         for (const { allocation, envelope, fundedAmount } of desired) {
           const liveActivity = activityByEnvelope.get(envelope.id) ?? 0n;
-          await transaction
+          transaction
             .update(envelopeAllocations)
             .set({
               funded: fundedAmount,
@@ -3322,26 +3336,30 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
                 eq(envelopeAllocations.householdId, auth.householdId),
                 eq(envelopeAllocations.id, allocation.id),
               ),
-            );
+            )
+            .run();
           const delta = fundedAmount - allocation.funded;
           if (delta === 0n) continue;
-          await transaction.insert(allocationEntries).values({
-            id: ulid(),
-            householdId: auth.householdId,
-            budgetPeriodId: fundingPeriod.id,
-            batchId,
-            sequence: sequence++,
-            fromBucketType: delta > 0n ? "unassigned" : "envelope",
-            fromBucketId: delta > 0n ? "cash" : envelope.id,
-            toBucketType: delta > 0n ? "envelope" : "unassigned",
-            toBucketId: delta > 0n ? envelope.id : "cash",
-            amount: delta > 0n ? delta : -delta,
-            currency: fundingPeriod.currency,
-            kind: delta > 0n ? "fund" : "release",
-            sourceType: "paycheck_plan",
-            memo: `Fund ${envelope.name} by priority`,
-            createdByUserId: auth.user.id,
-          });
+          transaction
+            .insert(allocationEntries)
+            .values({
+              id: ulid(),
+              householdId: auth.householdId,
+              budgetPeriodId: fundingPeriod.id,
+              batchId,
+              sequence: sequence++,
+              fromBucketType: delta > 0n ? "unassigned" : "envelope",
+              fromBucketId: delta > 0n ? "cash" : envelope.id,
+              toBucketType: delta > 0n ? "envelope" : "unassigned",
+              toBucketId: delta > 0n ? envelope.id : "cash",
+              amount: delta > 0n ? delta : -delta,
+              currency: fundingPeriod.currency,
+              kind: delta > 0n ? "fund" : "release",
+              sourceType: "paycheck_plan",
+              memo: `Fund ${envelope.name} by priority`,
+              createdByUserId: auth.user.id,
+            })
+            .run();
         }
       });
     }
@@ -3405,9 +3423,9 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
       monthlyAmount: MoneyJson;
       perPaycheckAmount: MoneyJson;
     }> = [];
-    await db.transaction(async (transaction) => {
+    db.transaction((transaction) => {
       if (input.monthlyIncome) {
-        await transaction
+        transaction
           .update(budgetPeriods)
           .set({
             expectedIncome: monthlyToPaycheck(
@@ -3418,7 +3436,8 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
           })
           .where(
             and(eq(budgetPeriods.householdId, auth.householdId), eq(budgetPeriods.id, period.id)),
-          );
+          )
+          .run();
       }
       for (const item of input.items) {
         const target = monthlyToPaycheck(
@@ -3428,7 +3447,7 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
         const existing = envelopeByName.get(item.name.toLocaleLowerCase());
         const envelopeId = existing?.id ?? ulid();
         if (existing) {
-          await transaction
+          transaction
             .update(envelopes)
             .set({
               name: item.name,
@@ -3447,46 +3466,54 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
               isActive: true,
               updatedAt: nowIso(),
             })
-            .where(and(eq(envelopes.householdId, auth.householdId), eq(envelopes.id, envelopeId)));
+            .where(and(eq(envelopes.householdId, auth.householdId), eq(envelopes.id, envelopeId)))
+            .run();
         } else {
-          await transaction.insert(envelopes).values({
-            id: envelopeId,
-            householdId: auth.householdId,
-            name: item.name,
-            categoryId: item.categoryId ?? null,
-            cadence: "paycheck",
-            cadenceConfig: {
-              source: "monthly_spend_builder",
-              monthlyAmountMinorUnits: item.monthlyAmount.minorUnits,
-              paychecksPerYear: input.paychecksPerYear,
-            },
-            rolloverPolicy: item.rolloverPolicy,
-            priority: item.priority,
-            minimumAmount: item.isRequired ? target : 0n,
-            targetAmount: target,
-            currency: period.currency,
-            isRequired: item.isRequired,
-            isActive: true,
-          });
+          transaction
+            .insert(envelopes)
+            .values({
+              id: envelopeId,
+              householdId: auth.householdId,
+              name: item.name,
+              categoryId: item.categoryId ?? null,
+              cadence: "paycheck",
+              cadenceConfig: {
+                source: "monthly_spend_builder",
+                monthlyAmountMinorUnits: item.monthlyAmount.minorUnits,
+                paychecksPerYear: input.paychecksPerYear,
+              },
+              rolloverPolicy: item.rolloverPolicy,
+              priority: item.priority,
+              minimumAmount: item.isRequired ? target : 0n,
+              targetAmount: target,
+              currency: period.currency,
+              isRequired: item.isRequired,
+              isActive: true,
+            })
+            .run();
         }
-        await transaction
+        transaction
           .delete(envelopeCategoryLinks)
           .where(
             and(
               eq(envelopeCategoryLinks.householdId, auth.householdId),
               eq(envelopeCategoryLinks.envelopeId, envelopeId),
             ),
-          );
+          )
+          .run();
         if (item.categoryId) {
-          await transaction.insert(envelopeCategoryLinks).values({
-            householdId: auth.householdId,
-            envelopeId,
-            categoryId: item.categoryId,
-          });
+          transaction
+            .insert(envelopeCategoryLinks)
+            .values({
+              householdId: auth.householdId,
+              envelopeId,
+              categoryId: item.categoryId,
+            })
+            .run();
         }
         const allocation = allocationByEnvelope.get(envelopeId);
         if (allocation) {
-          await transaction
+          transaction
             .update(envelopeAllocations)
             .set({ planned: target, updatedAt: nowIso() })
             .where(
@@ -3494,22 +3521,26 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
                 eq(envelopeAllocations.householdId, auth.householdId),
                 eq(envelopeAllocations.id, allocation.id),
               ),
-            );
+            )
+            .run();
         } else {
-          await transaction.insert(envelopeAllocations).values({
-            id: ulid(),
-            householdId: auth.householdId,
-            budgetPeriodId: period.id,
-            envelopeId,
-            planned: target,
-            funded: 0n,
-            activity: 0n,
-            transferredIn: 0n,
-            transferredOut: 0n,
-            availableSnapshot: 0n,
-            currency: period.currency,
-            calculatedAt: nowIso(),
-          });
+          transaction
+            .insert(envelopeAllocations)
+            .values({
+              id: ulid(),
+              householdId: auth.householdId,
+              budgetPeriodId: period.id,
+              envelopeId,
+              planned: target,
+              funded: 0n,
+              activity: 0n,
+              transferredIn: 0n,
+              transferredOut: 0n,
+              availableSnapshot: 0n,
+              currency: period.currency,
+              calculatedAt: nowIso(),
+            })
+            .run();
         }
         conversions.push({
           envelopeId,
@@ -3704,26 +3735,29 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
     }
     const entryId = ulid();
     const batchId = ulid();
-    await db.transaction(async (transaction) => {
-      await transaction.insert(allocationEntries).values({
-        id: entryId,
-        householdId: auth.householdId,
-        budgetPeriodId: period.id,
-        batchId,
-        sequence: 0,
-        fromBucketType: fromEnvelope ? "envelope" : "unassigned",
-        fromBucketId: fromEnvelope?.id ?? "cash",
-        toBucketType: "envelope",
-        toBucketId: toEnvelope.id,
-        amount,
-        currency: period.currency,
-        kind: fromEnvelope ? "transfer" : "fund",
-        sourceType: "user_allocation",
-        memo: input.reason,
-        createdByUserId: auth.user.id,
-      });
+    db.transaction((transaction) => {
+      transaction
+        .insert(allocationEntries)
+        .values({
+          id: entryId,
+          householdId: auth.householdId,
+          budgetPeriodId: period.id,
+          batchId,
+          sequence: 0,
+          fromBucketType: fromEnvelope ? "envelope" : "unassigned",
+          fromBucketId: fromEnvelope?.id ?? "cash",
+          toBucketType: "envelope",
+          toBucketId: toEnvelope.id,
+          amount,
+          currency: period.currency,
+          kind: fromEnvelope ? "transfer" : "fund",
+          sourceType: "user_allocation",
+          memo: input.reason,
+          createdByUserId: auth.user.id,
+        })
+        .run();
       if (fromEnvelope && fromAllocation) {
-        await transaction
+        transaction
           .update(envelopeAllocations)
           .set({
             transferredOut: fromAllocation.transferredOut + amount,
@@ -3737,11 +3771,12 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
               eq(envelopeAllocations.householdId, auth.householdId),
               eq(envelopeAllocations.id, fromAllocation.id),
             ),
-          );
+          )
+          .run();
       }
       if (toAllocation) {
         const currentToAvailable = BigInt(toLive?.available.minorUnits ?? "0");
-        await transaction
+        transaction
           .update(envelopeAllocations)
           .set({
             ...(fromEnvelope
@@ -3757,24 +3792,28 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
               eq(envelopeAllocations.householdId, auth.householdId),
               eq(envelopeAllocations.id, toAllocation.id),
             ),
-          );
+          )
+          .run();
       } else {
         const liveActivity = BigInt(toLive?.activity.minorUnits ?? "0");
         const liveAvailable = BigInt(toLive?.available.minorUnits ?? "0");
-        await transaction.insert(envelopeAllocations).values({
-          id: ulid(),
-          householdId: auth.householdId,
-          budgetPeriodId: period.id,
-          envelopeId: toEnvelope.id,
-          planned: toEnvelope.targetAmount,
-          funded: fromEnvelope ? 0n : amount,
-          activity: liveActivity,
-          transferredIn: fromEnvelope ? amount : 0n,
-          transferredOut: 0n,
-          availableSnapshot: liveAvailable + amount,
-          currency: period.currency,
-          calculatedAt: nowIso(),
-        });
+        transaction
+          .insert(envelopeAllocations)
+          .values({
+            id: ulid(),
+            householdId: auth.householdId,
+            budgetPeriodId: period.id,
+            envelopeId: toEnvelope.id,
+            planned: toEnvelope.targetAmount,
+            funded: fromEnvelope ? 0n : amount,
+            activity: liveActivity,
+            transferredIn: fromEnvelope ? amount : 0n,
+            transferredOut: 0n,
+            availableSnapshot: liveAvailable + amount,
+            currency: period.currency,
+            calculatedAt: nowIso(),
+          })
+          .run();
       }
     });
     return context.json(
@@ -3923,12 +3962,13 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
       ...rows.filter((goal) => !requestedIds.has(goal.id)).map((goal) => goal.id),
     ];
     const updatedAt = nowIso();
-    await db.transaction(async (transaction) => {
+    db.transaction((transaction) => {
       for (const [index, id] of orderedIds.entries()) {
-        await transaction
+        transaction
           .update(goals)
           .set({ priority: index + 1, updatedAt })
-          .where(and(eq(goals.householdId, auth.householdId), eq(goals.id, id)));
+          .where(and(eq(goals.householdId, auth.householdId), eq(goals.id, id)))
+          .run();
       }
     });
     const reordered = await db
@@ -4235,8 +4275,8 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
     const contributionId = ulid();
     const allocationId = ulid();
     const batchId = ulid();
-    await db.transaction(async (transaction) => {
-      const latestGoal = await transaction
+    db.transaction((transaction) => {
+      const latestGoal = transaction
         .select()
         .from(goals)
         .where(and(eq(goals.householdId, auth.householdId), eq(goals.id, goal.id)))
@@ -4254,43 +4294,50 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
           "contribution_exceeds_remaining",
         );
       }
-      await transaction.insert(allocationEntries).values({
-        id: allocationId,
-        householdId: auth.householdId,
-        batchId,
-        sequence: 0,
-        fromBucketType: "unassigned",
-        fromBucketId: "cash",
-        toBucketType: "goal",
-        toBucketId: goal.id,
-        amount: amount.minor,
-        currency: goal.currency,
-        kind: "contribution",
-        sourceType: "manual_goal_contribution",
-        sourceId: contributionId,
-        ...(input.note ? { memo: input.note } : {}),
-        createdByUserId: auth.user.id,
-      });
-      await transaction.insert(goalContributions).values({
-        id: contributionId,
-        householdId: auth.householdId,
-        goalId: goal.id,
-        allocationEntryId: allocationId,
-        amount: amount.minor,
-        currency: goal.currency,
-        contributedOn: input.contributedOn,
-        ...(input.note ? { note: input.note } : {}),
-      });
+      transaction
+        .insert(allocationEntries)
+        .values({
+          id: allocationId,
+          householdId: auth.householdId,
+          batchId,
+          sequence: 0,
+          fromBucketType: "unassigned",
+          fromBucketId: "cash",
+          toBucketType: "goal",
+          toBucketId: goal.id,
+          amount: amount.minor,
+          currency: goal.currency,
+          kind: "contribution",
+          sourceType: "manual_goal_contribution",
+          sourceId: contributionId,
+          ...(input.note ? { memo: input.note } : {}),
+          createdByUserId: auth.user.id,
+        })
+        .run();
+      transaction
+        .insert(goalContributions)
+        .values({
+          id: contributionId,
+          householdId: auth.householdId,
+          goalId: goal.id,
+          allocationEntryId: allocationId,
+          amount: amount.minor,
+          currency: goal.currency,
+          contributedOn: input.contributedOn,
+          ...(input.note ? { note: input.note } : {}),
+        })
+        .run();
       const fundedAmount = latestGoal.fundedAmount + amount.minor;
       const completed = fundedAmount === latestGoal.targetAmount;
-      await transaction
+      transaction
         .update(goals)
         .set({
           fundedAmount,
           ...(completed ? { status: "completed" as const, completedAt: nowIso() } : {}),
           updatedAt: nowIso(),
         })
-        .where(and(eq(goals.householdId, auth.householdId), eq(goals.id, goal.id)));
+        .where(and(eq(goals.householdId, auth.householdId), eq(goals.id, goal.id)))
+        .run();
     });
     const updated = await db
       .select()
@@ -4405,16 +4452,18 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
         "system_rule_read_only",
       );
     }
-    await db.transaction(async (transaction) => {
-      await transaction
+    db.transaction((transaction) => {
+      transaction
         .update(ruleRuns)
         .set({ winningRuleId: null })
         .where(
           and(eq(ruleRuns.householdId, auth.householdId), eq(ruleRuns.winningRuleId, selected.id)),
-        );
-      await transaction
+        )
+        .run();
+      transaction
         .delete(rules)
-        .where(and(eq(rules.householdId, auth.householdId), eq(rules.id, selected.id)));
+        .where(and(eq(rules.householdId, auth.householdId), eq(rules.id, selected.id)))
+        .run();
     });
     return context.body(null, 204);
   });
@@ -4537,11 +4586,11 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
       }
     }
     const batchId = ulid();
-    await db.transaction(async (transaction) => {
+    db.transaction((transaction) => {
       for (const { record, evaluation } of matches) {
         const patch = evaluation.patch;
         const merchantId = patch.merchant ? merchantIds.get(patch.merchant) : undefined;
-        await transaction
+        transaction
           .update(transactions)
           .set({
             ...(patch.categoryId
@@ -4569,73 +4618,86 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
               eq(transactions.householdId, auth.householdId),
               eq(transactions.id, record.transaction.id),
             ),
-          );
-        await transaction
+          )
+          .run();
+        transaction
           .delete(transactionTags)
           .where(
             and(
               eq(transactionTags.householdId, auth.householdId),
               eq(transactionTags.transactionId, record.transaction.id),
             ),
-          );
+          )
+          .run();
         if (patch.tagIds.length) {
-          await transaction.insert(transactionTags).values(
-            patch.tagIds.map((tagId) => ({
-              householdId: auth.householdId,
-              transactionId: record.transaction.id,
-              tagId,
-            })),
-          );
+          transaction
+            .insert(transactionTags)
+            .values(
+              patch.tagIds.map((tagId) => ({
+                householdId: auth.householdId,
+                transactionId: record.transaction.id,
+                tagId,
+              })),
+            )
+            .run();
         }
         if (patch.splits) {
-          await transaction
+          transaction
             .delete(transactionSplits)
             .where(
               and(
                 eq(transactionSplits.householdId, auth.householdId),
                 eq(transactionSplits.transactionId, record.transaction.id),
               ),
-            );
-          await transaction.insert(transactionSplits).values(
-            patch.splits.map((split, sequence) => ({
-              id: ulid(),
-              householdId: auth.householdId,
-              transactionId: record.transaction.id,
-              sequence,
-              amount: split.amount.minorUnits,
-              categoryId: split.categoryId,
-              ...(split.envelopeId ? { envelopeId: split.envelopeId } : {}),
-              ...(split.memo ? { memo: split.memo } : {}),
-            })),
-          );
+            )
+            .run();
+          transaction
+            .insert(transactionSplits)
+            .values(
+              patch.splits.map((split, sequence) => ({
+                id: ulid(),
+                householdId: auth.householdId,
+                transactionId: record.transaction.id,
+                sequence,
+                amount: split.amount.minorUnits,
+                categoryId: split.categoryId,
+                ...(split.envelopeId ? { envelopeId: split.envelopeId } : {}),
+                ...(split.memo ? { memo: split.memo } : {}),
+              })),
+            )
+            .run();
         }
-        await transaction.insert(ruleRuns).values({
-          id: ulid(),
-          householdId: auth.householdId,
-          transactionId: record.transaction.id,
-          winningRuleId: selected.id,
-          competingRuleIds: [],
-          beforeSnapshot: dbJson({
-            categoryId: record.transaction.categoryId,
-            envelopeId: record.transaction.envelopeId,
-            merchantId: record.transaction.merchantId,
-            amountMinorUnits: record.transaction.amount.toString(),
-            tagIds: record.tagIds,
-          }),
-          afterSnapshot: dbJson(transactionRulePatchToJson(patch)),
-          explanation: evaluation.explanation,
-          reversibleBatchId: batchId,
-        });
+        transaction
+          .insert(ruleRuns)
+          .values({
+            id: ulid(),
+            householdId: auth.householdId,
+            transactionId: record.transaction.id,
+            winningRuleId: selected.id,
+            competingRuleIds: [],
+            beforeSnapshot: dbJson({
+              categoryId: record.transaction.categoryId,
+              envelopeId: record.transaction.envelopeId,
+              merchantId: record.transaction.merchantId,
+              amountMinorUnits: record.transaction.amount.toString(),
+              tagIds: record.tagIds,
+            }),
+            afterSnapshot: dbJson(transactionRulePatchToJson(patch)),
+            explanation: evaluation.explanation,
+            reversibleBatchId: batchId,
+          })
+          .run();
       }
       if (matches.length) {
-        await transaction
+        transaction
           .update(rules)
           .set({
             matchCount: selected.matchCount + matches.length,
             lastMatchedAt: nowIso(),
             updatedAt: nowIso(),
           })
-          .where(and(eq(rules.householdId, auth.householdId), eq(rules.id, selected.id)));
+          .where(and(eq(rules.householdId, auth.householdId), eq(rules.id, selected.id)))
+          .run();
       }
     });
     return context.json({
@@ -4680,38 +4742,42 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
       horizonMonths,
     );
     const id = ulid();
-    await db.transaction(async (transaction) => {
+    db.transaction((transaction) => {
       if (input.isBase) {
-        await transaction
+        transaction
           .update(forecastScenarios)
           .set({ isBase: false, updatedAt: nowIso() })
-          .where(eq(forecastScenarios.householdId, auth.householdId));
+          .where(eq(forecastScenarios.householdId, auth.householdId))
+          .run();
       }
-      await transaction.insert(forecastScenarios).values({
-        id,
-        householdId: auth.householdId,
-        name: input.name,
-        preset: input.preset,
-        assumptions: dbJson({
-          scenario,
-          uiAssumptions: input.assumptions,
-          monteCarlo: {
-            assumptions: [
-              {
-                assetClass: "growth",
-                meanAnnualReturnBps: Math.round(input.assumptions.investmentReturn * 100),
-                annualVolatilityBps: 1_800,
-              },
-            ],
-          },
-        }),
-        seed: String(input.seed),
-        horizonMonths: scenario.horizonMonths,
-        reportingCurrency: scenario.baseCurrency,
-        isBase: input.isBase,
-        isActive: true,
-        createdByUserId: auth.user.id,
-      });
+      transaction
+        .insert(forecastScenarios)
+        .values({
+          id,
+          householdId: auth.householdId,
+          name: input.name,
+          preset: input.preset,
+          assumptions: dbJson({
+            scenario,
+            uiAssumptions: input.assumptions,
+            monteCarlo: {
+              assumptions: [
+                {
+                  assetClass: "growth",
+                  meanAnnualReturnBps: Math.round(input.assumptions.investmentReturn * 100),
+                  annualVolatilityBps: 1_800,
+                },
+              ],
+            },
+          }),
+          seed: String(input.seed),
+          horizonMonths: scenario.horizonMonths,
+          reportingCurrency: scenario.baseCurrency,
+          isBase: input.isBase,
+          isActive: true,
+          createdByUserId: auth.user.id,
+        })
+        .run();
     });
     const row = await db
       .select()
@@ -4755,14 +4821,15 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
       uiAssumptions,
       current.horizonMonths,
     );
-    await db.transaction(async (transaction) => {
+    db.transaction((transaction) => {
       if (input.isBase) {
-        await transaction
+        transaction
           .update(forecastScenarios)
           .set({ isBase: false, updatedAt: nowIso() })
-          .where(eq(forecastScenarios.householdId, auth.householdId));
+          .where(eq(forecastScenarios.householdId, auth.householdId))
+          .run();
       }
-      await transaction
+      transaction
         .update(forecastScenarios)
         .set({
           ...(input.name === undefined ? {} : { name: input.name }),
@@ -4792,7 +4859,8 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
             eq(forecastScenarios.householdId, auth.householdId),
             eq(forecastScenarios.id, current.id),
           ),
-        );
+        )
+        .run();
     });
     const row = await db
       .select()
@@ -4845,29 +4913,33 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
       throw new ConflictError("Scenario currencies must match", "currency_mismatch");
     }
     const id = ulid();
-    await db.transaction(async (transaction) => {
+    db.transaction((transaction) => {
       if (input.isBase) {
-        await transaction
+        transaction
           .update(forecastScenarios)
           .set({ isBase: false, updatedAt: nowIso() })
-          .where(eq(forecastScenarios.householdId, auth.householdId));
+          .where(eq(forecastScenarios.householdId, auth.householdId))
+          .run();
       }
-      await transaction.insert(forecastScenarios).values({
-        id,
-        householdId: auth.householdId,
-        name: input.name,
-        preset: input.preset,
-        assumptions: dbJson({
-          scenario: input.scenario,
-          ...(input.monteCarlo ? { monteCarlo: input.monteCarlo } : {}),
-        }),
-        seed: String(input.seed),
-        horizonMonths: input.scenario.horizonMonths,
-        reportingCurrency: input.scenario.baseCurrency,
-        isBase: input.isBase,
-        isActive: input.isActive,
-        createdByUserId: auth.user.id,
-      });
+      transaction
+        .insert(forecastScenarios)
+        .values({
+          id,
+          householdId: auth.householdId,
+          name: input.name,
+          preset: input.preset,
+          assumptions: dbJson({
+            scenario: input.scenario,
+            ...(input.monteCarlo ? { monteCarlo: input.monteCarlo } : {}),
+          }),
+          seed: String(input.seed),
+          horizonMonths: input.scenario.horizonMonths,
+          reportingCurrency: input.scenario.baseCurrency,
+          isBase: input.isBase,
+          isActive: input.isActive,
+          createdByUserId: auth.user.id,
+        })
+        .run();
     });
     const row = await db
       .select()
@@ -4893,14 +4965,15 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
     const input = forecastScenarioPatchSchema.parse(await context.req.json());
     const stored = parseStoredForecastAssumptions(current.assumptions);
     const scenario = input.scenario ?? stored.scenario;
-    await db.transaction(async (transaction) => {
+    db.transaction((transaction) => {
       if (input.isBase) {
-        await transaction
+        transaction
           .update(forecastScenarios)
           .set({ isBase: false, updatedAt: nowIso() })
-          .where(eq(forecastScenarios.householdId, auth.householdId));
+          .where(eq(forecastScenarios.householdId, auth.householdId))
+          .run();
       }
-      await transaction
+      transaction
         .update(forecastScenarios)
         .set({
           ...(input.name === undefined ? {} : { name: input.name }),
@@ -4923,7 +4996,8 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
             eq(forecastScenarios.householdId, auth.householdId),
             eq(forecastScenarios.id, current.id),
           ),
-        );
+        )
+        .run();
     });
     const updated = await db
       .select()
@@ -5153,32 +5227,40 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
     }
     const id = ulid();
     const valuationId = input.value ? ulid() : undefined;
-    await db.transaction(async (transaction) => {
-      await transaction.insert(assets).values({
-        id,
-        householdId: auth.householdId,
-        name: input.name,
-        type: input.type,
-        liquidityClass: input.liquidityClass,
-        currency: input.currency,
-        ...(linkedLiabilityAccountId ? { linkedLiabilityAccountId } : {}),
-        ownerUserId: auth.user.id,
-        ...(input.metadata === undefined ? {} : { metadata: dbJsonOrNull(input.metadata) }),
-        isActive: input.isActive,
-      });
-      if (input.value && valuationId) {
-        await transaction.insert(assetValuations).values({
-          id: valuationId,
+    db.transaction((transaction) => {
+      transaction
+        .insert(assets)
+        .values({
+          id,
           householdId: auth.householdId,
-          assetId: id,
-          amount: BigInt(input.value.minorUnits),
+          name: input.name,
+          type: input.type,
+          liquidityClass: input.liquidityClass,
           currency: input.currency,
-          valuedOn:
-            input.valuedOn ?? input.valuedAt?.slice(0, 10) ?? new Date().toISOString().slice(0, 10),
-          source: input.valuationSource,
-          confidenceBps:
-            input.confidence === "low" ? 4_000 : input.confidence === "medium" ? 7_500 : 10_000,
-        });
+          ...(linkedLiabilityAccountId ? { linkedLiabilityAccountId } : {}),
+          ownerUserId: auth.user.id,
+          ...(input.metadata === undefined ? {} : { metadata: dbJsonOrNull(input.metadata) }),
+          isActive: input.isActive,
+        })
+        .run();
+      if (input.value && valuationId) {
+        transaction
+          .insert(assetValuations)
+          .values({
+            id: valuationId,
+            householdId: auth.householdId,
+            assetId: id,
+            amount: BigInt(input.value.minorUnits),
+            currency: input.currency,
+            valuedOn:
+              input.valuedOn ??
+              input.valuedAt?.slice(0, 10) ??
+              new Date().toISOString().slice(0, 10),
+            source: input.valuationSource,
+            confidenceBps:
+              input.confidence === "low" ? 4_000 : input.confidence === "medium" ? 7_500 : 10_000,
+          })
+          .run();
       }
     });
     return context.json(
@@ -5600,17 +5682,20 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
     const cipher = new FieldCipher(config.ENCRYPTION_KEY);
     let imported = 0;
     let duplicates = 0;
-    await db.transaction(async (transaction) => {
-      await transaction.insert(importRuns).values({
-        id: runId,
-        householdId: auth.householdId,
-        createdByUserId: auth.user.id,
-        format,
-        fileHash,
-        originalFilename: input.filename,
-        state: "running",
-        totalRecords: parsed.length,
-      });
+    db.transaction((transaction) => {
+      transaction
+        .insert(importRuns)
+        .values({
+          id: runId,
+          householdId: auth.householdId,
+          createdByUserId: auth.user.id,
+          format,
+          fileHash,
+          originalFilename: input.filename,
+          state: "running",
+          totalRecords: parsed.length,
+        })
+        .run();
       for (const [index, record] of parsed.entries()) {
         const amount = parseDecimalToMinorUnits(record.amount, 2, "reject");
         const fingerprint = transactionFingerprint({
@@ -5639,48 +5724,54 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
             payloadAad,
           ),
         );
-        await transaction.insert(rawImportRecords).values({
-          id: rawRecordId,
-          householdId: auth.householdId,
-          importRunId: runId,
-          rowNumber: index + 1,
-          ...(record.externalId ? { externalId: record.externalId } : {}),
-          payloadCiphertext: encryptedPayload.ciphertext,
-          payloadNonce: encryptedPayload.nonce,
-          payloadAuthTag: encryptedPayload.authTag,
-          payloadKeyVersion: encryptedPayload.keyId,
-          payloadAad,
-          recordHash,
-          status: duplicate ? "duplicate" : "accepted",
-        });
+        transaction
+          .insert(rawImportRecords)
+          .values({
+            id: rawRecordId,
+            householdId: auth.householdId,
+            importRunId: runId,
+            rowNumber: index + 1,
+            ...(record.externalId ? { externalId: record.externalId } : {}),
+            payloadCiphertext: encryptedPayload.ciphertext,
+            payloadNonce: encryptedPayload.nonce,
+            payloadAuthTag: encryptedPayload.authTag,
+            payloadKeyVersion: encryptedPayload.keyId,
+            payloadAad,
+            recordHash,
+            status: duplicate ? "duplicate" : "accepted",
+          })
+          .run();
         if (duplicate) {
           duplicates += 1;
           continue;
         }
         const transactionId = ulid();
-        await transaction.insert(transactions).values({
-          id: transactionId,
-          householdId: auth.householdId,
-          accountId: account.id,
-          importRunId: runId,
-          ...(record.externalId ? { externalId: record.externalId } : {}),
-          amount,
-          currency,
-          postedAt: record.postedAt,
-          transactedOn: record.postedAt,
-          rawDescription: record.description,
-          normalizedDescription: normalizeDescription(record.description),
-          status: record.pending ? "pending" : "posted",
-          source: "import",
-          reviewState: "needs_review",
-          ...(record.memo ? { note: record.memo } : {}),
-          fingerprint,
-        });
+        transaction
+          .insert(transactions)
+          .values({
+            id: transactionId,
+            householdId: auth.householdId,
+            accountId: account.id,
+            importRunId: runId,
+            ...(record.externalId ? { externalId: record.externalId } : {}),
+            amount,
+            currency,
+            postedAt: record.postedAt,
+            transactedOn: record.postedAt,
+            rawDescription: record.description,
+            normalizedDescription: normalizeDescription(record.description),
+            status: record.pending ? "pending" : "posted",
+            source: "import",
+            reviewState: "needs_review",
+            ...(record.memo ? { note: record.memo } : {}),
+            fingerprint,
+          })
+          .run();
         imported += 1;
         if (record.externalId) externalIds.add(record.externalId);
         fingerprints.add(fingerprint);
       }
-      await transaction
+      transaction
         .update(importRuns)
         .set({
           state: "succeeded",
@@ -5689,7 +5780,8 @@ export function createPlanningRoutes(db: BetterWealthDatabase, config: AppConfig
           committedAt: nowIso(),
           updatedAt: nowIso(),
         })
-        .where(and(eq(importRuns.householdId, auth.householdId), eq(importRuns.id, runId)));
+        .where(and(eq(importRuns.householdId, auth.householdId), eq(importRuns.id, runId)))
+        .run();
     });
     const deterministicCategorization = await categorizeHouseholdTransactions({
       db,

@@ -93,41 +93,53 @@ export async function registerUser(
   });
   const displayName = input.displayName ?? displayNameFromEmail(normalizedEmail);
 
-  await db.transaction(async (transaction) => {
-    await transaction.insert(users).values({
-      id: userId,
-      email: input.email.trim(),
-      normalizedEmail,
-      passwordHash,
-      displayName,
-    });
-    await transaction.insert(households).values({
-      id: householdId,
-      name: input.householdName,
-      baseCurrency: "USD",
-      locale: "en-US",
-      timezone: "America/New_York",
-      registrationPolicy: "open",
-    });
-    await transaction.insert(householdMembers).values({
-      householdId,
-      userId,
-      role: "owner",
-      status: "active",
-    });
-    await transaction.insert(categories).values(
-      DEFAULT_CATEGORIES.map(([slug, name, kind, color, icon], sortOrder) => ({
-        id: ulid(),
+  db.transaction((transaction) => {
+    transaction
+      .insert(users)
+      .values({
+        id: userId,
+        email: input.email.trim(),
+        normalizedEmail,
+        passwordHash,
+        displayName,
+      })
+      .run();
+    transaction
+      .insert(households)
+      .values({
+        id: householdId,
+        name: input.householdName,
+        baseCurrency: "USD",
+        locale: "en-US",
+        timezone: "America/New_York",
+        registrationPolicy: "open",
+      })
+      .run();
+    transaction
+      .insert(householdMembers)
+      .values({
         householdId,
-        slug,
-        name,
-        kind,
-        color,
-        icon,
-        isSystem: true,
-        sortOrder,
-      })),
-    );
+        userId,
+        role: "owner",
+        status: "active",
+      })
+      .run();
+    transaction
+      .insert(categories)
+      .values(
+        DEFAULT_CATEGORIES.map(([slug, name, kind, color, icon], sortOrder) => ({
+          id: ulid(),
+          householdId,
+          slug,
+          name,
+          kind,
+          color,
+          icon,
+          isSystem: true,
+          sortOrder,
+        })),
+      )
+      .run();
   });
   return { userId, householdId };
 }

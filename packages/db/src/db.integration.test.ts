@@ -1,15 +1,22 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import type { BetterWealthDatabase } from "./client.ts";
 import { closeDatabase, foreignKeysEnabled, getJournalMode, openDatabase } from "./client.ts";
 import { joinEncryptedPayload } from "./encrypted-payload.ts";
-import { runMigrations } from "./migrations.ts";
+import { DEFAULT_MIGRATIONS_FOLDER, runMigrations } from "./migrations.ts";
 import { MAX_MINOR_UNITS, MIN_MINOR_UNITS, parseMinorUnits } from "./money.ts";
 import { createHouseholdRepositories } from "./repositories.ts";
-import { categories, householdMembers, households, transactionSplits, users } from "./schema.ts";
+import {
+  categories,
+  householdMembers,
+  households,
+  transactionSplits,
+  transfers,
+  users,
+} from "./schema.ts";
 import { withTransaction } from "./transactions.ts";
 
 let directory: string;
@@ -100,6 +107,44 @@ describe("database connection and migrations", () => {
       .map((row) => row.detail)
       .join(" ");
     expect(queryPlan).toContain("transactions_household_date_id_idx");
+  });
+
+  test("upgrades a database at migration 0000 through the transfer guards", () => {
+    const legacyMigrations = join(directory, "legacy-migrations");
+    mkdirSync(join(legacyMigrations, "meta"), { recursive: true });
+    copyFileSync(
+      join(DEFAULT_MIGRATIONS_FOLDER, "0000_initial.sql"),
+      join(legacyMigrations, "0000_initial.sql"),
+    );
+    const journal = JSON.parse(
+      readFileSync(join(DEFAULT_MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+    ) as { entries: unknown[] };
+    writeFileSync(
+      join(legacyMigrations, "meta", "_journal.json"),
+      JSON.stringify({ ...journal, entries: journal.entries.slice(0, 1) }),
+    );
+
+    const upgradeDb = openDatabase(join(directory, "upgrade.sqlite"), { wal: false });
+    try {
+      runMigrations(upgradeDb, { migrationsFolder: legacyMigrations });
+      expect(
+        upgradeDb.$client
+          .query<{ count: number }, []>(
+            "SELECT count(*) AS count FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'transfers_active_transaction_%_guard'",
+          )
+          .get()?.count,
+      ).toBe(0);
+      runMigrations(upgradeDb);
+      expect(
+        upgradeDb.$client
+          .query<{ count: number }, []>(
+            "SELECT count(*) AS count FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'transfers_active_transaction_%_guard'",
+          )
+          .get()?.count,
+      ).toBe(2);
+    } finally {
+      closeDatabase(upgradeDb);
+    }
   });
 });
 
@@ -206,6 +251,95 @@ describe("constraints and household isolation", () => {
     expect(alex.transactions.findById("txn_blair")).toBeUndefined();
     expect(alex.transactions.list()).toEqual([]);
     expect(blair.transactions.list().map((transaction) => transaction.id)).toEqual(["txn_blair"]);
+  });
+
+  test("prevents active transfers from reusing a transaction on the opposite side", () => {
+    const alex = createHouseholdRepositories(db, "hh_alex");
+    alex.accounts.create({
+      id: "acct_transfer_guard",
+      name: "Transfer guard checking",
+      group: "cash",
+      type: "checking",
+      currency: "USD",
+    });
+    for (const [id, amount] of [
+      ["txn_transfer_a", -1_000n],
+      ["txn_transfer_b", 1_000n],
+      ["txn_transfer_c", 1_000n],
+    ] as const) {
+      alex.transactions.create({
+        id,
+        accountId: "acct_transfer_guard",
+        amount,
+        currency: "USD",
+        transactedOn: "2026-07-08",
+        rawDescription: id,
+        normalizedDescription: id,
+        status: "posted",
+        source: "manual",
+      });
+    }
+    db.insert(transfers)
+      .values({
+        id: "transfer_active",
+        householdId: "hh_alex",
+        outflowTransactionId: "txn_transfer_a",
+        inflowTransactionId: "txn_transfer_b",
+        confidenceBps: 10_000,
+        status: "confirmed",
+        matchedBy: "user",
+      })
+      .run();
+
+    expect(() =>
+      db
+        .insert(transfers)
+        .values({
+          id: "transfer_cross_role",
+          householdId: "hh_alex",
+          outflowTransactionId: "txn_transfer_b",
+          inflowTransactionId: "txn_transfer_c",
+          confidenceBps: 9_000,
+          status: "suggested",
+          matchedBy: "fingerprint",
+        })
+        .run(),
+    ).toThrow("transaction already belongs to an active transfer");
+
+    db.insert(transfers)
+      .values({
+        id: "transfer_tombstone",
+        householdId: "hh_alex",
+        outflowTransactionId: "txn_transfer_b",
+        inflowTransactionId: "txn_transfer_c",
+        confidenceBps: 9_000,
+        status: "rejected",
+        matchedBy: "fingerprint",
+      })
+      .run();
+    expect(() =>
+      db
+        .update(transfers)
+        .set({ status: "suggested" })
+        .where(eq(transfers.id, "transfer_tombstone"))
+        .run(),
+    ).toThrow("transaction already belongs to an active transfer");
+
+    db.update(transfers)
+      .set({ status: "rejected" })
+      .where(eq(transfers.id, "transfer_active"))
+      .run();
+    db.update(transfers)
+      .set({ status: "suggested" })
+      .where(eq(transfers.id, "transfer_tombstone"))
+      .run();
+    expect(
+      db
+        .select({ id: transfers.id, status: transfers.status })
+        .from(transfers)
+        .where(eq(transfers.status, "suggested"))
+        .all(),
+    ).toEqual([{ id: "transfer_tombstone", status: "suggested" }]);
   });
 
   test("stores signed 64-bit minor units as canonical text and rejects malformed raw values", () => {

@@ -744,6 +744,94 @@ describe("goal planning API", () => {
     );
   });
 
+  test("only confirmed reimbursements offset observed purchase-planning expenses", async () => {
+    await seedComfortablePurchaseInputs("200000");
+    await application.db
+      .delete(budgetPeriods)
+      .where(eq(budgetPeriods.householdId, auth.householdId));
+    await application.db
+      .delete(incomeSources)
+      .where(eq(incomeSources.householdId, auth.householdId));
+    const oldest = new Date(Date.now() - 70 * 86_400_000).toISOString().slice(0, 10);
+    const middle = new Date(Date.now() - 35 * 86_400_000).toISOString().slice(0, 10);
+    const newest = new Date().toISOString().slice(0, 10);
+    const creditId = ulid();
+    await application.db.insert(transactions).values([
+      {
+        id: ulid(),
+        householdId: auth.householdId,
+        accountId: cashAccountId,
+        amount: 900_000n,
+        currency: "USD",
+        transactedOn: oldest,
+        rawDescription: "Observed paycheck",
+        normalizedDescription: "observed paycheck",
+        status: "posted",
+        source: "fixture",
+        isIncome: true,
+      },
+      {
+        id: ulid(),
+        householdId: auth.householdId,
+        accountId: cashAccountId,
+        amount: -300_000n,
+        currency: "USD",
+        transactedOn: middle,
+        rawDescription: "Observed spending",
+        normalizedDescription: "observed spending",
+        status: "posted",
+        source: "fixture",
+      },
+      {
+        id: creditId,
+        householdId: auth.householdId,
+        accountId: cashAccountId,
+        amount: 300_000n,
+        currency: "USD",
+        transactedOn: newest,
+        rawDescription: "Unconfirmed expense credit",
+        normalizedDescription: "unconfirmed expense credit",
+        status: "posted",
+        source: "fixture",
+        isReimbursement: false,
+      },
+    ]);
+
+    const purchase = await createGoal({
+      name: "Observed-history purchase",
+      type: "purchase",
+      target: { minorUnits: "100000", currency: "USD" },
+      funded: { minorUnits: "100000", currency: "USD" },
+      monthlyContribution: { minorUnits: "0", currency: "USD" },
+      priority: 2,
+    });
+    const coverageDays = Math.floor(
+      (Date.parse(`${newest}T00:00:00.000Z`) - Date.parse(`${oldest}T00:00:00.000Z`)) / 86_400_000,
+    );
+    const expectedBeforeConfirmation =
+      ((900_000n - 300_000n) * 30n) / BigInt(coverageDays + 1) - 100_000n;
+    expect(purchase.comfortablePurchase?.inputs).toMatchObject({
+      monthlySurplus: {
+        minorUnits: expectedBeforeConfirmation.toString(),
+        currency: "USD",
+      },
+      monthlySurplusSource: "observed_90_day",
+    });
+
+    await application.db
+      .update(transactions)
+      .set({ isReimbursement: true })
+      .where(eq(transactions.id, creditId));
+    const goalsResponse = await request("/api/v1/goals");
+    const goalsBody = (await goalsResponse.json()) as { data: GoalResponse[] };
+    const refreshed = goalsBody.data.find(({ id }) => id === purchase.id);
+    const expectedAfterConfirmation = (900_000n * 30n) / BigInt(coverageDays + 1) - 100_000n;
+    expect(refreshed?.comfortablePurchase?.inputs.monthlySurplus).toEqual({
+      minorUnits: expectedAfterConfirmation.toString(),
+      currency: "USD",
+    });
+  });
+
   test("derives exact pace, links valid accounts, and reorders goals atomically", async () => {
     const startMonth = new Date().toISOString().slice(0, 7);
     const targetMonth = addMonths(startMonth, 10);

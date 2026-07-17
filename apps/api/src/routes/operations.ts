@@ -102,13 +102,13 @@ export function createOperationRoutes(db: BetterWealthDatabase, config: AppConfi
   routes.patch("/profile", requireCsrf(config), async (context) => {
     const auth = context.get("auth");
     const input = profilePatchSchema.parse(await context.req.json());
-    await db.transaction(async (transaction) => {
+    db.transaction((transaction) => {
       if (
         input.displayName !== undefined ||
         input.birthDate !== undefined ||
         input.targetAge !== undefined
       ) {
-        await transaction
+        transaction
           .update(users)
           .set({
             displayName: input.displayName,
@@ -116,7 +116,8 @@ export function createOperationRoutes(db: BetterWealthDatabase, config: AppConfi
             targetAge: input.targetAge,
             updatedAt: new Date().toISOString(),
           })
-          .where(eq(users.id, auth.user.id));
+          .where(eq(users.id, auth.user.id))
+          .run();
       }
       if (
         input.householdName !== undefined ||
@@ -124,7 +125,7 @@ export function createOperationRoutes(db: BetterWealthDatabase, config: AppConfi
         input.timezone !== undefined
       ) {
         requireRole(auth, ["owner", "admin"]);
-        await transaction
+        transaction
           .update(households)
           .set({
             name: input.householdName,
@@ -132,19 +133,23 @@ export function createOperationRoutes(db: BetterWealthDatabase, config: AppConfi
             timezone: input.timezone,
             updatedAt: new Date().toISOString(),
           })
-          .where(eq(households.id, auth.householdId));
+          .where(eq(households.id, auth.householdId))
+          .run();
       }
-      await transaction.insert(auditEvents).values({
-        id: ulid(),
-        householdId: auth.householdId,
-        actorUserId: auth.user.id,
-        actorType: "user",
-        action: "profile.updated",
-        entityType: "user",
-        entityId: auth.user.id,
-        requestId: context.get("requestId"),
-        metadata: { fields: Object.keys(input) },
-      });
+      transaction
+        .insert(auditEvents)
+        .values({
+          id: ulid(),
+          householdId: auth.householdId,
+          actorUserId: auth.user.id,
+          actorType: "user",
+          action: "profile.updated",
+          entityType: "user",
+          entityId: auth.user.id,
+          requestId: context.get("requestId"),
+          metadata: { fields: Object.keys(input) },
+        })
+        .run();
     });
     return context.json({ updated: true });
   });
@@ -171,26 +176,31 @@ export function createOperationRoutes(db: BetterWealthDatabase, config: AppConfi
       memoryCost: config.APP_ENV === "test" ? 1_024 : 65_536,
       timeCost: config.APP_ENV === "test" ? 1 : 3,
     });
-    await db.transaction(async (transaction) => {
-      await transaction
+    db.transaction((transaction) => {
+      transaction
         .update(users)
         .set({ passwordHash, updatedAt: new Date().toISOString() })
-        .where(eq(users.id, auth.user.id));
-      await transaction
+        .where(eq(users.id, auth.user.id))
+        .run();
+      transaction
         .update(sessions)
         .set({ revokedAt: new Date().toISOString() })
-        .where(and(eq(sessions.userId, auth.user.id), ne(sessions.id, auth.sessionId)));
-      await transaction.insert(auditEvents).values({
-        id: ulid(),
-        householdId: auth.householdId,
-        actorUserId: auth.user.id,
-        actorType: "user",
-        action: "password.changed",
-        entityType: "user",
-        entityId: auth.user.id,
-        requestId: context.get("requestId"),
-        metadata: {},
-      });
+        .where(and(eq(sessions.userId, auth.user.id), ne(sessions.id, auth.sessionId)))
+        .run();
+      transaction
+        .insert(auditEvents)
+        .values({
+          id: ulid(),
+          householdId: auth.householdId,
+          actorUserId: auth.user.id,
+          actorType: "user",
+          action: "password.changed",
+          entityType: "user",
+          entityId: auth.user.id,
+          requestId: context.get("requestId"),
+          metadata: {},
+        })
+        .run();
     });
     return context.json({ changed: true });
   });

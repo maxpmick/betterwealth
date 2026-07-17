@@ -1,6 +1,6 @@
 import type { BetterWealthDatabase } from "@betterwealth/db";
 import { transactions, transfers } from "@betterwealth/db/schema";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, or } from "drizzle-orm";
 import { ulid } from "ulid";
 
 type Candidate = {
@@ -32,21 +32,39 @@ async function persistMatch(
   matchedBy: "provider" | "fingerprint",
   confidenceBps: number,
 ) {
-  const inserted = await db
-    .insert(transfers)
-    .values({
-      id: ulid(),
-      householdId,
-      outflowTransactionId: outflow.id,
-      inflowTransactionId: inflow.id,
-      confidenceBps,
-      status: "suggested",
-      matchedBy,
-    })
-    .onConflictDoNothing()
-    .returning({ id: transfers.id });
-  if (inserted.length === 0) return false;
-  return true;
+  return db.transaction((transaction) => {
+    const transactionIds = [outflow.id, inflow.id];
+    const existing = transaction
+      .select({ id: transfers.id })
+      .from(transfers)
+      .where(
+        and(
+          eq(transfers.householdId, householdId),
+          ne(transfers.status, "rejected"),
+          or(
+            inArray(transfers.outflowTransactionId, transactionIds),
+            inArray(transfers.inflowTransactionId, transactionIds),
+          ),
+        ),
+      )
+      .get();
+    if (existing) return false;
+    const inserted = transaction
+      .insert(transfers)
+      .values({
+        id: ulid(),
+        householdId,
+        outflowTransactionId: outflow.id,
+        inflowTransactionId: inflow.id,
+        confidenceBps,
+        status: "suggested",
+        matchedBy,
+      })
+      .onConflictDoNothing()
+      .returning({ id: transfers.id })
+      .all();
+    return inserted.length > 0;
+  });
 }
 
 /**
