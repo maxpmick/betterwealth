@@ -179,6 +179,15 @@ describe("transaction imports", () => {
     );
   });
 
+  test("rejects an OFX transaction with an impossible calendar date", () => {
+    // Month 13 matches the digit-shape regex but is not a real date; this must
+    // fail closed with the documented 400 instead of throwing a raw RangeError.
+    expectAppError(
+      () => parseOfxTransactions("<STMTTRN><DTPOSTED>20261345<TRNAMT>-1.00<NAME>A</STMTTRN>"),
+      { message: "OFX transaction 1 has an invalid date", ...INVALID_IMPORT },
+    );
+  });
+
   test("rejects an OFX transaction with an invalid amount", () => {
     expectAppError(
       () => parseOfxTransactions("<STMTTRN><DTPOSTED>20260701120000<TRNAMT>abc<NAME>A</STMTTRN>"),
