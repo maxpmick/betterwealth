@@ -3,6 +3,7 @@ import { categories, householdMembers, households, sessions, users } from "@bett
 import { and, eq, gt, isNull } from "drizzle-orm";
 import { ulid } from "ulid";
 import { z } from "zod";
+import { STARTER_CATEGORIES } from "../categorization/taxonomy";
 import type { AppConfig } from "../config";
 import { randomToken, sha256 } from "../lib/crypto";
 import { ConflictError, ForbiddenError, UnauthorizedError } from "../lib/errors";
@@ -30,20 +31,9 @@ export type AuthContext = {
   absoluteExpiresAt: string;
 };
 
-const DEFAULT_CATEGORIES = [
-  ["income", "Income", "income", "#1F9D72", "payments", null],
-  ["housing", "Housing", "expense", "#4A7FD1", "home", null],
-  ["food", "Food", "expense", "#D98B2B", "restaurant", null],
-  ["transportation", "Transportation", "expense", "#7B61B3", "directions_car", null],
-  ["utilities", "Utilities", "expense", "#4E8597", "bolt", null],
-  ["health", "Health", "expense", "#DD625B", "favorite", null],
-  ["personal", "Personal", "expense", "#A66B8D", "person", null],
-  ["fun", "Fun & entertainment", "expense", "#8C6A43", "celebration", null],
-  ["debt", "Debt payments", "debt", "#C46A4A", "credit_score", null],
-  ["investing", "Investing", "investment", "#287E69", "trending_up", null],
-  ["transfers", "Transfers", "transfer", "#6B7280", "swap_horiz", null],
-  ["uncategorized", "Uncategorized", "expense", "#8A9099", "help_outline", null],
-] as const;
+const DEFAULT_CATEGORIES = STARTER_CATEGORIES.map(
+  ({ slug, name, kind, color, icon }) => [slug, name, kind, color, icon, null] as const,
+);
 
 // Known dummy values make an unknown email perform the same Argon2 work as a real login. The
 // plaintext is intentionally not a credential; these hashes only close the account-enumeration

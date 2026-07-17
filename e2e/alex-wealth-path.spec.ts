@@ -12,7 +12,10 @@ test.describe("Alex's age-22 path to wealth at 30", () => {
   });
 
   test("signs in to a trustworthy Today view with live financial data", async ({ page }) => {
-    await expect(page.getByRole("heading", { name: "Good morning, Alex" })).toBeVisible();
+    // Greeting varies with time of day ("Good morning/afternoon/evening, Alex").
+    await expect(
+      page.getByRole("heading", { name: /Good (morning|afternoon|evening), Alex/ }),
+    ).toBeVisible();
     await expect(page.getByText("Safe to spend", { exact: true }).first()).toBeVisible();
     await expect(page.getByText(/per day/).first()).toBeVisible();
 

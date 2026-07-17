@@ -4,7 +4,9 @@ import {
   buildCategorizationRequestPayload,
   categorizationSuggestionSchema,
   coarseAmountBand,
+  extractAssistantText,
   extractCategorizationResearch,
+  parseJsonObjectText,
   proposedCategoryPathSchema,
   validateCategorizationProviderOutput,
   verifyTransactionCategorization,
@@ -243,7 +245,8 @@ test("provider output must use an allowed id or one strict proposed path, never 
       false,
     ),
   ).toThrow();
-  expect(() =>
+  // Both fields returned: the allowlisted id wins deterministically and the proposal is dropped.
+  expect(
     validateCategorizationProviderOutput(
       {
         ...base,
@@ -257,7 +260,31 @@ test("provider output must use an allowed id or one strict proposed path, never 
       new Set(["software"]),
       true,
     ),
+  ).toMatchObject({ categoryId: "software", proposedCategory: null });
+  // Neither field returned is still unusable.
+  expect(() =>
+    validateCategorizationProviderOutput(
+      { ...base, categoryId: null, proposedCategory: null },
+      new Set(["software"]),
+      true,
+    ),
   ).toThrow();
+  // An unknown id falls back to a permitted proposal.
+  expect(
+    validateCategorizationProviderOutput(
+      {
+        ...base,
+        categoryId: "other-household-category",
+        proposedCategory: {
+          topLevelName: "Subscriptions",
+          childName: "Software",
+          kind: "expense",
+        },
+      },
+      new Set(["software"]),
+      true,
+    ).proposedCategory,
+  ).toEqual({ topLevelName: "Subscriptions", childName: "Software", kind: "expense" });
 });
 
 test("provider metadata is ignored while categorization fields remain strictly validated", () => {
@@ -284,4 +311,38 @@ test("provider metadata is ignored while categorization fields remain strictly v
     rationale: overlongRationale.slice(0, 280),
     proposedRule: { descriptionContains: "OPENROUTER" },
   });
+});
+
+test("assistant text falls back to the reasoning channel used by MiniMax M3", () => {
+  expect(extractAssistantText({ content: '{"ok":true}', reasoning: null })).toBe('{"ok":true}');
+  expect(extractAssistantText({ content: null, reasoning: '{"ok":true}' })).toBe('{"ok":true}');
+  expect(extractAssistantText({ content: "   ", reasoning: '{"ok":true}' })).toBe('{"ok":true}');
+  expect(
+    extractAssistantText({
+      content: null,
+      reasoning: null,
+      reasoning_details: [{ type: "reasoning.text", text: '{"ok":true}' }],
+    }),
+  ).toBe('{"ok":true}');
+  expect(extractAssistantText({ content: [{ text: '{"ok":' }, { text: "true}" }] })).toBe(
+    '{"ok":true}',
+  );
+  expect(extractAssistantText({ content: null, reasoning: null })).toBeUndefined();
+  expect(extractAssistantText({ refusal: "cannot help" })).toBeUndefined();
+  expect(extractAssistantText("not-a-message")).toBeUndefined();
+});
+
+test("categorization JSON is extracted from plain, wrapped, and reasoning-style output", () => {
+  expect(parseJsonObjectText('{"a":1}')).toEqual({ a: 1 });
+  expect(parseJsonObjectText('  \n{"a":"with } brace inside"}\n')).toEqual({
+    a: "with } brace inside",
+  });
+  expect(parseJsonObjectText('Here is the result:\n{"a":1}\nHope that helps.')).toEqual({ a: 1 });
+  expect(parseJsonObjectText('{"bad": ,}\n{"a":2}')).toEqual({ a: 2 });
+  expect(() => parseJsonObjectText("no json here")).toThrow(
+    expect.objectContaining({ code: "ai_invalid_response" }),
+  );
+  expect(() => parseJsonObjectText("[1,2,3]")).toThrow(
+    expect.objectContaining({ code: "ai_invalid_response" }),
+  );
 });

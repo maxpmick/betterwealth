@@ -30,7 +30,7 @@ test.describe("security, privacy, and inclusive interaction", () => {
     await dialog
       .getByRole("textbox", { name: "Supported AI provider base URL" })
       .fill("https://openrouter.ai/api/v1");
-    await dialog.getByRole("textbox", { name: "Model" }).fill("tencent/hy3:free");
+    await dialog.getByRole("textbox", { name: "Model" }).fill("minimax/minimax-m3");
     await dialog.getByLabel(/API key|Replace API key/).fill(syntheticKey);
     const save = page.waitForResponse(
       (candidate) =>
@@ -46,7 +46,7 @@ test.describe("security, privacy, and inclusive interaction", () => {
     expect(config.body).toMatchObject({
       configured: true,
       enabled: true,
-      model: "tencent/hy3:free",
+      model: "minimax/minimax-m3",
     });
     expect(config.body).not.toHaveProperty("apiKey");
 

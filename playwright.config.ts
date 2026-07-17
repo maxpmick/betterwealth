@@ -13,7 +13,14 @@ export default defineConfig({
   workers: 1,
   forbidOnly: true,
   retries: 1,
-  reporter: [["list"], ["html", { open: "never", outputFolder: "playwright-report" }]],
+  // CI adds GitHub check annotations and a JUnit report uploaded as a workflow artifact.
+  reporter: process.env.CI
+    ? [
+        ["github"],
+        ["junit", { outputFile: "reports/e2e.xml" }],
+        ["html", { open: "never", outputFolder: "playwright-report" }],
+      ]
+    : [["list"], ["html", { open: "never", outputFolder: "playwright-report" }]],
   use: {
     baseURL: webOrigin,
     locale: "en-US",

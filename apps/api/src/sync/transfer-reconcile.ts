@@ -75,9 +75,13 @@ async function persistMatch(
 
 /**
  * Suggest only exact, owned-account pairs. Provider pair IDs win; the fallback requires a unique
- * opposite amount, matching currency, and a short date window. Suggestions do not affect reporting
- * until a user confirms them through the ledger API.
+ * opposite amount, matching currency, and a short date window. Card payments routinely settle on
+ * the card side several days after the bank outflow (weekends/holidays), so the window is 7 days;
+ * the mutual-uniqueness requirement is what keeps that wider window safe. Suggestions do not
+ * affect reporting until a user confirms them through the ledger API.
  */
+const FINGERPRINT_WINDOW_DAYS = 7;
+
 export async function reconcileAccountTransfers(db: BetterWealthDatabase, householdId: string) {
   const existingRelationships = await db
     .select({
@@ -186,7 +190,7 @@ export async function reconcileAccountTransfers(db: BetterWealthDatabase, househ
     for (const inflow of inflowsByAmount.get(amountKey) ?? []) {
       if (
         outflow.accountId === inflow.accountId ||
-        daysApart(outflow.transactedOn, inflow.transactedOn) > 3 ||
+        daysApart(outflow.transactedOn, inflow.transactedOn) > FINGERPRINT_WINDOW_DAYS ||
         rejectedPairs.has(pairKey(outflow.id, inflow.id))
       ) {
         continue;

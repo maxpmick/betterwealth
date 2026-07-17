@@ -1732,4 +1732,278 @@ describe("AI-first categorization becomes deterministic", () => {
     expect(calls).toBe(2);
     expect(await db.select().from(aiSuggestions)).toHaveLength(1);
   });
+
+  test("income labels on liability-account inflows always wait for a human decision", async () => {
+    const db = openDatabase(":memory:", { wal: false });
+    databases.push(db);
+    runMigrations(db);
+    const config = loadConfig({
+      APP_ENV: "test",
+      DATABASE_URL: ":memory:",
+      ENCRYPTION_KEY: "b".repeat(64),
+      WEB_ORIGIN: "http://localhost:5173",
+      REGISTRATION_MODE: "open",
+    });
+    const registered = await registerUser(
+      db,
+      {
+        email: "liability@example.com",
+        password: "LiabilityIncome!2026",
+        householdName: "Liability test",
+      },
+      config,
+    );
+    await configureAiForUser(db, config, registered.householdId, registered.userId);
+    const income = await db
+      .select({ id: categories.id })
+      .from(categories)
+      .where(and(eq(categories.householdId, registered.householdId), eq(categories.name, "Income")))
+      .get();
+    if (!income) throw new Error("Default Income category was not created");
+    const accountId = ulid();
+    await db.insert(accounts).values({
+      id: accountId,
+      householdId: registered.householdId,
+      ownerUserId: registered.userId,
+      name: "Visa",
+      group: "credit",
+      type: "credit_card",
+      currency: "USD",
+      isLiability: true,
+      isManual: true,
+    });
+    const transactionId = ulid();
+    await db.insert(transactions).values({
+      id: transactionId,
+      householdId: registered.householdId,
+      accountId,
+      amount: 89_231n,
+      currency: "USD",
+      transactedOn: "2026-07-15",
+      rawDescription: "PAYMENT THANK YOU MOBILE",
+      normalizedDescription: "PAYMENT THANK YOU MOBILE",
+      status: "posted",
+      source: "manual",
+      reviewState: "needs_review",
+    });
+
+    expect(
+      await categorizeHouseholdTransactions({
+        db,
+        config,
+        householdId: registered.householdId,
+        userId: registered.userId,
+        suggestCategory: async () => ({
+          merchant: "Payment Thank You",
+          categoryId: income.id,
+          confidence: 0.99,
+          rationale: "Looks like inbound money.",
+        }),
+      }),
+    ).toMatchObject({ aiCalls: 1, aiAccepted: 0, aiPending: 1 });
+    expect(
+      await db
+        .select({
+          categoryId: transactions.categoryId,
+          isIncome: transactions.isIncome,
+          reviewState: transactions.reviewState,
+        })
+        .from(transactions)
+        .where(eq(transactions.id, transactionId))
+        .get(),
+    ).toEqual({ categoryId: null, isIncome: false, reviewState: "needs_review" });
+    expect(await db.select().from(rules)).toHaveLength(0);
+  });
+
+  test("same merchant in different statement forms mints exactly one rule, even in parallel", async () => {
+    const db = openDatabase(":memory:", { wal: false });
+    databases.push(db);
+    runMigrations(db);
+    const config = loadConfig({
+      APP_ENV: "test",
+      DATABASE_URL: ":memory:",
+      ENCRYPTION_KEY: "9".repeat(64),
+      WEB_ORIGIN: "http://localhost:5173",
+      REGISTRATION_MODE: "open",
+    });
+    const registered = await registerUser(
+      db,
+      {
+        email: "dedupe@example.com",
+        password: "OneMerchantOneRule!2026",
+        householdName: "Dedupe test",
+      },
+      config,
+    );
+    await configureAiForUser(db, config, registered.householdId, registered.userId);
+    const food = await db
+      .select({ id: categories.id })
+      .from(categories)
+      .where(and(eq(categories.householdId, registered.householdId), eq(categories.name, "Food")))
+      .get();
+    if (!food) throw new Error("Default Food category was not created");
+    const accountId = ulid();
+    await db.insert(accounts).values({
+      id: accountId,
+      householdId: registered.householdId,
+      ownerUserId: registered.userId,
+      name: "Checking",
+      group: "cash",
+      type: "checking",
+      currency: "USD",
+      isLiability: false,
+      isManual: true,
+    });
+    const insertTransaction = async (description: string, day: string) => {
+      const id = ulid();
+      await db.insert(transactions).values({
+        id,
+        householdId: registered.householdId,
+        accountId,
+        amount: -1_500n,
+        currency: "USD",
+        transactedOn: day,
+        rawDescription: description,
+        normalizedDescription: description,
+        status: "posted",
+        source: "manual",
+        reviewState: "needs_review",
+      });
+      return id;
+    };
+    // The second description does not textually match the first rule's condition, so without
+    // merchant-similarity dedupe it would mint a twin rule.
+    await insertTransaction("BEREA BEVERAGE", "2026-07-15");
+    await insertTransaction("BEREA BEV MARKETPLACE", "2026-07-16");
+
+    const suggestCategory = async (providerInput: {
+      transaction: { normalizedDescription: string };
+    }) => ({
+      merchant: "Berea Beverage",
+      categoryId: food.id,
+      confidence: 0.97,
+      rationale: `Beverage store: ${providerInput.transaction.normalizedDescription}`,
+    });
+
+    expect(
+      await categorizeHouseholdTransactions({
+        db,
+        config,
+        householdId: registered.householdId,
+        userId: registered.userId,
+        suggestCategory,
+        maxClusterConcurrency: 4,
+      }),
+    ).toMatchObject({ aiCalls: 2, aiAccepted: 2, aiPending: 0 });
+    expect(await db.select().from(rules)).toHaveLength(1);
+    expect(
+      (await db.select().from(transactions)).every(
+        (transaction) => transaction.categoryId === food.id && transaction.reviewState === "none",
+      ),
+    ).toBeTrue();
+  });
+
+  test("a conflicting category for an already-ruled merchant parks a pending suggestion, no twin rule", async () => {
+    const db = openDatabase(":memory:", { wal: false });
+    databases.push(db);
+    runMigrations(db);
+    const config = loadConfig({
+      APP_ENV: "test",
+      DATABASE_URL: ":memory:",
+      ENCRYPTION_KEY: "8".repeat(64),
+      WEB_ORIGIN: "http://localhost:5173",
+      REGISTRATION_MODE: "open",
+    });
+    const registered = await registerUser(
+      db,
+      {
+        email: "conflict@example.com",
+        password: "ConflictResolvedByHuman!2026",
+        householdName: "Conflict test",
+      },
+      config,
+    );
+    await configureAiForUser(db, config, registered.householdId, registered.userId);
+    const findCategory = async (name: string) => {
+      const row = await db
+        .select({ id: categories.id })
+        .from(categories)
+        .where(and(eq(categories.householdId, registered.householdId), eq(categories.name, name)))
+        .get();
+      if (!row) throw new Error(`Default ${name} category was not created`);
+      return row;
+    };
+    const food = await findCategory("Food");
+    const housing = await findCategory("Housing");
+    const accountId = ulid();
+    await db.insert(accounts).values({
+      id: accountId,
+      householdId: registered.householdId,
+      ownerUserId: registered.userId,
+      name: "Checking",
+      group: "cash",
+      type: "checking",
+      currency: "USD",
+      isLiability: false,
+      isManual: true,
+    });
+    const insertTransaction = async (description: string, day: string) => {
+      const id = ulid();
+      await db.insert(transactions).values({
+        id,
+        householdId: registered.householdId,
+        accountId,
+        amount: -2_500n,
+        currency: "USD",
+        transactedOn: day,
+        rawDescription: description,
+        normalizedDescription: description,
+        status: "posted",
+        source: "manual",
+        reviewState: "needs_review",
+      });
+      return id;
+    };
+    await insertTransaction("CORNER COFFEE", "2026-07-15");
+    const conflictTransactionId = await insertTransaction("CORNER BEVERAGE ROASTERS", "2026-07-16");
+
+    const suggestCategory = async (providerInput: {
+      transaction: { normalizedDescription: string };
+    }) => ({
+      merchant: "Corner Coffee",
+      categoryId: providerInput.transaction.normalizedDescription.startsWith("CORNER COFFEE")
+        ? food.id
+        : housing.id,
+      confidence: 0.97,
+      rationale: "Confident but conflicting second opinion.",
+    });
+
+    expect(
+      await categorizeHouseholdTransactions({
+        db,
+        config,
+        householdId: registered.householdId,
+        userId: registered.userId,
+        suggestCategory,
+      }),
+    ).toMatchObject({ aiCalls: 2, aiAccepted: 1, aiPending: 1 });
+    expect(await db.select().from(rules)).toHaveLength(1);
+    expect(
+      await db
+        .select({ categoryId: transactions.categoryId, reviewState: transactions.reviewState })
+        .from(transactions)
+        .where(eq(transactions.id, conflictTransactionId))
+        .get(),
+    ).toEqual({ categoryId: null, reviewState: "needs_review" });
+    expect(
+      await db
+        .select({ status: aiSuggestions.status, rationale: aiSuggestions.rationale })
+        .from(aiSuggestions)
+        .where(eq(aiSuggestions.transactionId, conflictTransactionId))
+        .get(),
+    ).toEqual({
+      status: "pending",
+      rationale: expect.stringContaining("Corner Coffee → Food") as unknown as string,
+    });
+  });
 });

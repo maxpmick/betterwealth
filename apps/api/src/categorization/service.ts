@@ -1,4 +1,5 @@
 import type { BetterWealthDatabase } from "@betterwealth/db";
+import { withImmediateTransaction } from "@betterwealth/db";
 import {
   accounts,
   aiSuggestions,
@@ -24,7 +25,7 @@ import {
   ruleSpecificity,
   transactionRulePatchToJson,
 } from "@betterwealth/shared";
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { ulid } from "ulid";
 import { z } from "zod";
 import type { AppConfig } from "../config";
@@ -37,6 +38,13 @@ import {
 import { FieldCipher, sha256 } from "../lib/crypto";
 import { AppError } from "../lib/errors";
 import { normalizeDescription } from "../sync/reconcile";
+import {
+  clusterByMerchantSimilarity,
+  jaccardSimilarity,
+  merchantTokens,
+  ruleMerchantTokens,
+  SIMILAR_MERCHANT_THRESHOLD,
+} from "./merchant-similarity";
 
 const aiSecretSchema = z.object({
   enabled: z.boolean(),
@@ -493,6 +501,25 @@ function exactDescriptionFallback(transaction: RuleTransaction): RuleCondition {
   };
 }
 
+/**
+ * Generalizes a normalized description into a reusable `contains` pattern by dropping the first
+ * order-ID-like token (letters+digits, 6+ chars, e.g. "BS8HH6UF0", "XXXXXXX6104") and everything
+ * after it, plus trailing store numbers. Returns undefined when nothing can be generalized, so
+ * callers can keep the exact description.
+ */
+function stableDescriptionPattern(normalized: string): string | undefined {
+  const tokens = normalized.split(" ").filter(Boolean);
+  const kept: string[] = [];
+  for (const token of tokens) {
+    if (token.length >= 6 && /[A-Z]/.test(token) && /\d/.test(token)) break;
+    kept.push(token);
+  }
+  while (kept.length > 0 && /^\d+$/.test(kept[kept.length - 1] ?? "")) kept.pop();
+  if (kept.length === tokens.length) return undefined;
+  const pattern = kept.join(" ");
+  return pattern.length >= 4 && /[A-Z]{2,}/.test(pattern) ? pattern : undefined;
+}
+
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (value && typeof value === "object") {
@@ -507,6 +534,68 @@ function canonicalJson(value: unknown): string {
 
 function deterministicRuleIdentity(rule: Pick<CategorizationRule, "condition" | "actions">) {
   return sha256(canonicalJson({ condition: rule.condition, actions: rule.actions }));
+}
+
+function ruleDirection(condition: RuleCondition): "inflow" | "outflow" | undefined {
+  if ("all" in condition) {
+    for (const child of condition.all) {
+      const direction = ruleDirection(child);
+      if (direction) return direction;
+    }
+    return undefined;
+  }
+  if ("any" in condition) {
+    for (const child of condition.any) {
+      const direction = ruleDirection(child);
+      if (direction) return direction;
+    }
+    return undefined;
+  }
+  if ("not" in condition) return undefined;
+  if ("field" in condition && condition.field === "direction") {
+    return condition.value === "inflow" || condition.value === "outflow"
+      ? condition.value
+      : undefined;
+  }
+  return undefined;
+}
+
+type SimilarMerchantRule = {
+  id: string;
+  name: string;
+  categoryId: string | undefined;
+  similarity: number;
+};
+
+/**
+ * Finds the most similar enabled rule for a suggested merchant. Direction-aware: a rule pinned
+ * to the other direction (e.g. purchases vs refunds) never counts as the same merchant rule, so
+ * legitimate direction-specific rules can coexist. Used to guarantee one merchant = one rule.
+ */
+function findSimilarMerchantRule(
+  ruleRows: (typeof rules.$inferSelect)[],
+  tokens: ReadonlySet<string>,
+  direction: "inflow" | "outflow",
+): SimilarMerchantRule | undefined {
+  if (tokens.size === 0) return undefined;
+  let best: SimilarMerchantRule | undefined;
+  for (const row of ruleRows) {
+    if (!row.isEnabled) continue;
+    const rule = asEngineRule(row);
+    if (!rule) continue;
+    const pinnedDirection = ruleDirection(rule.condition);
+    if (pinnedDirection && pinnedDirection !== direction) continue;
+    const similarity = jaccardSimilarity(tokens, ruleMerchantTokens(rule.condition));
+    if (similarity < SIMILAR_MERCHANT_THRESHOLD) continue;
+    if (!best || similarity > best.similarity) {
+      const setCategory = rule.actions.find(
+        (action): action is Extract<RuleAction, { type: "setCategory" }> =>
+          action.type === "setCategory",
+      );
+      best = { id: rule.id, name: rule.name, categoryId: setCategory?.categoryId, similarity };
+    }
+  }
+  return best;
 }
 
 function providerFailureCode(error: unknown): string {
@@ -588,11 +677,13 @@ export function buildAiRule(input: {
   const normalizedMerchant = merchantPattern ? normalizeDescription(merchantPattern) : undefined;
   const usableDescriptionPattern = descriptionPattern
     ? normalizedTransaction.includes(normalizeDescription(descriptionPattern))
-      ? descriptionPattern
+      ? (stableDescriptionPattern(normalizeDescription(descriptionPattern)) ?? descriptionPattern)
       : undefined
     : normalizedMerchant && normalizedTransaction.includes(normalizedMerchant)
       ? merchantPattern
       : undefined;
+  const generalizedFallback = stableDescriptionPattern(normalizedTransaction);
+  let usedExactFallback = false;
   const baseCondition: RuleCondition =
     merchantPattern && currentMerchant === normalizedMerchant
       ? { field: "merchant", operator: "exact", value: merchantPattern, caseSensitive: false }
@@ -603,10 +694,30 @@ export function buildAiRule(input: {
             value: usableDescriptionPattern,
             caseSensitive: false,
           }
-        : exactDescriptionFallback(input.transaction);
+        : generalizedFallback
+          ? {
+              field: "normalizedDescription",
+              operator: "contains",
+              value: generalizedFallback,
+              caseSensitive: false,
+            }
+          : (() => {
+              usedExactFallback = true;
+              return exactDescriptionFallback(input.transaction);
+            })();
   const conditions: RuleCondition[] = [baseCondition];
   if (proposed?.direction && proposed.direction === actualDirection(input.transaction)) {
     conditions.push({ field: "direction", operator: "exact", value: proposed.direction });
+  }
+  // Prefix/merchant patterns cross the purchase/refund boundary (e.g. "AMAZON MKTPL" charges and
+  // refunds share the prefix), so auto-minted rules always pin the direction they learned from —
+  // unless the rule is already direction-bound or matches the full description exactly.
+  const hasDirectionCondition = conditions.some(
+    (condition) => "field" in condition && condition.field === "direction",
+  );
+  const direction = actualDirection(input.transaction);
+  if (!usedExactFallback && !hasDirectionCondition && direction !== "zero") {
+    conditions.push({ field: "direction", operator: "exact", value: direction });
   }
   if (proposed?.accountId === input.transaction.accountId) {
     conditions.push({
@@ -666,12 +777,13 @@ export async function categorizeHouseholdTransactions(input: {
   userId: string;
   aiLimit?: number;
   aiRunDeadlineMs?: number;
+  maxClusterConcurrency?: number;
   suggestCategory?: typeof suggestTransactionCategory;
   verifyCategory?: typeof verifyTransactionCategorization;
   attemptedFingerprints?: Set<string>;
   retryInvalidSuggestions?: boolean;
 }) {
-  const [ruleRows, categoryRows, candidates, confirmedRefundRows] = await Promise.all([
+  const [ruleRows, categoryRows, candidates, confirmedRefundRows, exampleRows] = await Promise.all([
     input.db
       .select()
       .from(rules)
@@ -721,6 +833,24 @@ export async function categorizeHouseholdTransactions(input: {
       .where(
         and(eq(refundLinks.householdId, input.householdId), eq(refundLinks.status, "confirmed")),
       ),
+    input.db
+      .select({
+        merchantName: merchants.name,
+        categoryId: transactions.categoryId,
+        categoryOrigin: transactions.categoryOrigin,
+        transactedOn: transactions.transactedOn,
+      })
+      .from(transactions)
+      .innerJoin(merchants, eq(merchants.id, transactions.merchantId))
+      .where(
+        and(
+          eq(transactions.householdId, input.householdId),
+          inArray(transactions.categoryOrigin, ["user", "rule", "ai"]),
+          sql`${transactions.categoryId} is not null`,
+        ),
+      )
+      .orderBy(desc(transactions.transactedOn))
+      .limit(200),
   ]);
   const confirmedRefundTransactionIds = new Set(
     confirmedRefundRows.map(({ transactionId }) => transactionId),
@@ -790,6 +920,31 @@ export async function categorizeHouseholdTransactions(input: {
       .filter(({ origin }) => origin === "approvedAi")
       .map((rule) => deterministicRuleIdentity(rule)),
   );
+  // Few-shot grounding: the model sees how this household already categorizes familiar
+  // merchants (user-confirmed first, then rule/AI-applied), which keeps labels consistent
+  // with local convention. Only merchant name + category id are disclosed.
+  const exampleOriginRank = (origin: string) => (origin === "user" ? 0 : origin === "rule" ? 1 : 2);
+  const merchantExamples: Array<{ merchant: string; categoryId: string }> = [];
+  const exampleMerchantsSeen = new Set<string>();
+  for (const row of [...exampleRows].sort(
+    (left, right) =>
+      exampleOriginRank(left.categoryOrigin) - exampleOriginRank(right.categoryOrigin) ||
+      right.transactedOn.localeCompare(left.transactedOn),
+  )) {
+    if (!row.categoryId || !categoryById.has(row.categoryId)) continue;
+    const key = normalizeDescription(row.merchantName);
+    if (!key || exampleMerchantsSeen.has(key)) continue;
+    exampleMerchantsSeen.add(key);
+    merchantExamples.push({ merchant: row.merchantName.slice(0, 120), categoryId: row.categoryId });
+    if (merchantExamples.length >= 12) break;
+  }
+  // Production runs always double-check the first pass with an independent recheck; unit tests
+  // that inject only a first-pass double keep skipping verification.
+  const verificationPlanned = !input.suggestCategory || Boolean(input.verifyCategory);
+  // Learned per run: models that cannot execute the server-side web-search tool (MiniMax M3)
+  // fail the tool attempt before the provider layer retries without it. Skipping the doomed
+  // attempt for the rest of the run halves verification traffic and avoids the slow failure.
+  let webResearchUsable = ai?.webResearchEnabled ?? false;
   let deterministic = 0;
   let aiAccepted = 0;
   let aiPending = 0;
@@ -810,7 +965,19 @@ export async function categorizeHouseholdTransactions(input: {
     : AI_RUN_DEADLINE_MS;
   const providerDeadline = Date.now() + deadlineMs;
 
-  for (const row of orderedCandidates) {
+  // In-process serializer for taxonomy and rule mutations: parallel clusters interleave on one
+  // connection, so sections that read-then-write categories or rules run one at a time.
+  let mutationTail: Promise<unknown> = Promise.resolve();
+  const withMutationLock = <T>(operation: () => Promise<T> | T): Promise<T> => {
+    const run = mutationTail.then(operation);
+    mutationTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  };
+
+  const processCandidate = async (row: (typeof orderedCandidates)[number]) => {
     const deterministicResult = await applyEvaluation(
       input.db,
       input.householdId,
@@ -820,14 +987,14 @@ export async function categorizeHouseholdTransactions(input: {
     );
     if (deterministicResult.matched) {
       if (deterministicResult.applied) deterministic += 1;
-      continue;
+      return;
     }
     // A changing taxonomy intentionally changes the provider fingerprint, but it must not cause
     // the same unresolved transaction to accumulate duplicate suggestions across bounded batches.
     // Deterministic rules still run first so a newly approved pattern can resolve parked work.
     if (parkedAiTransactionIds.has(row.transaction.id)) {
       aiPreviouslyAttempted += 1;
-      continue;
+      return;
     }
     const disclosureScope = aiDisclosureScope(row, input.userId);
     if (
@@ -838,7 +1005,7 @@ export async function categorizeHouseholdTransactions(input: {
       aiCalls >= (input.aiLimit ?? 25) ||
       categoryRows.length === 0
     ) {
-      continue;
+      return;
     }
     const providerTransaction = {
       normalizedDescription: row.transaction.normalizedDescription,
@@ -851,14 +1018,19 @@ export async function categorizeHouseholdTransactions(input: {
       canonicalJson({
         disclosureScope,
         model: ai.model,
-        verification: ai.webResearchEnabled ? "openrouter-web-v1" : "none",
+        verification: verificationPlanned
+          ? ai.webResearchEnabled
+            ? "openrouter-web-v2"
+            : "self-recheck-v2"
+          : "none",
         transaction: providerTransaction,
         categories: categoryPromptRows,
+        examples: merchantExamples,
       }),
     );
     if (attemptedFingerprints.has(fingerprint)) {
       aiPreviouslyAttempted += 1;
-      continue;
+      return;
     }
     // Reserve the pattern before provider I/O. A timeout or rate-limit response must not make the
     // next bounded batch retry the same pattern during this invocation.
@@ -872,6 +1044,7 @@ export async function categorizeHouseholdTransactions(input: {
         model: ai.model,
         transaction: providerTransaction,
         categories: categoryPromptRows,
+        examples: merchantExamples,
       });
       consecutiveProviderFailures = 0;
     } catch (error) {
@@ -897,12 +1070,10 @@ export async function categorizeHouseholdTransactions(input: {
         providerCircuitOpen = true;
         if (fatalProviderFailure) attemptedFingerprints.add(PROVIDER_CIRCUIT_SENTINEL);
       }
-      continue;
+      return;
     }
     let selectedCategory = categoryById.get(suggestion.categoryId);
-    const shouldVerify =
-      Boolean(input.verifyCategory) || (ai.webResearchEnabled && !input.suggestCategory);
-    if (shouldVerify) {
+    if (verificationPlanned) {
       aiVerificationCalls += 1;
       try {
         const selectedPath = selectedCategory?.parentId
@@ -914,6 +1085,7 @@ export async function categorizeHouseholdTransactions(input: {
           model: ai.model,
           transaction: providerTransaction,
           categories: categoryPromptRows,
+          examples: merchantExamples,
           previousSuggestion: {
             merchant: suggestion.merchant,
             categoryId: suggestion.categoryId,
@@ -923,26 +1095,33 @@ export async function categorizeHouseholdTransactions(input: {
             ...(suggestion.proposedRule ? { proposedRule: suggestion.proposedRule } : {}),
           },
           allowCategoryProposal: true,
+          allowWebResearch: webResearchUsable,
         });
+        // A verification that fell back to a plain recheck proves the model cannot run the
+        // web-search tool; stop attempting it for the rest of this run.
+        if (webResearchUsable && !verified.research.requested) webResearchUsable = false;
         aiResearchCitations += verified.research.citationCount;
         for (const host of verified.research.citationHosts) aiResearchHosts.add(host);
-        const verifiedRationale = `Independent web-enabled recheck: ${verified.rationale}`.slice(
-          0,
-          280,
-        );
+        const verifiedRationale =
+          `${verified.research.requested ? "Independent web-enabled recheck" : "Independent recheck"}: ${verified.rationale}`.slice(
+            0,
+            280,
+          );
         if ("proposedCategory" in verified && verified.proposedCategory) {
           const proposedCategory = verified.proposedCategory;
-          const materialized = await ensureVerifiedCategoryPath({
-            db: input.db,
-            householdId: input.householdId,
-            proposal: {
-              topLevelName: proposedCategory.topLevelName,
-              kind: proposedCategory.kind,
-              ...(proposedCategory.childName !== undefined
-                ? { childName: proposedCategory.childName }
-                : {}),
-            },
-          });
+          const materialized = await withMutationLock(() =>
+            ensureVerifiedCategoryPath({
+              db: input.db,
+              householdId: input.householdId,
+              proposal: {
+                topLevelName: proposedCategory.topLevelName,
+                kind: proposedCategory.kind,
+                ...(proposedCategory.childName !== undefined
+                  ? { childName: proposedCategory.childName }
+                  : {}),
+              },
+            }),
+          );
           aiCreatedCategories += materialized.created;
           selectedCategory = materialized.category;
           for (const category of materialized.rows) {
@@ -992,7 +1171,7 @@ export async function categorizeHouseholdTransactions(input: {
           providerCircuitOpen = true;
           if (fatalProviderFailure) attemptedFingerprints.add(PROVIDER_CIRCUIT_SENTINEL);
         }
-        continue;
+        return;
       }
     }
     if (!selectedCategory) {
@@ -1009,10 +1188,16 @@ export async function categorizeHouseholdTransactions(input: {
       if (consecutiveProviderFailures >= MAX_CONSECUTIVE_PROVIDER_FAILURES) {
         providerCircuitOpen = true;
       }
-      continue;
+      return;
     }
     const suggestionId = ulid();
-    const accepted = suggestion.confidence >= ai.confidenceThreshold;
+    // Domain invariant the model cannot override: inflows into credit card/loan accounts are
+    // payments, refunds, or transfers between the user's own accounts — never income. An
+    // income label here (e.g. "PAYMENT THANK YOU") would silently inflate income reports, so
+    // it always waits for a human decision regardless of confidence.
+    const liabilityIncomeInflow =
+      selectedCategory.kind === "income" && row.transaction.amount >= 0n && row.account.isLiability;
+    const accepted = suggestion.confidence >= ai.confidenceThreshold && !liabilityIncomeInflow;
     if (!accepted) {
       await input.db
         .insert(aiSuggestions)
@@ -1042,7 +1227,7 @@ export async function categorizeHouseholdTransactions(input: {
           },
         });
       aiPending += 1;
-      continue;
+      return;
     }
     const now = new Date().toISOString();
     const draftRule = buildAiRule({
@@ -1059,101 +1244,47 @@ export async function categorizeHouseholdTransactions(input: {
       id: `ai_rule_${sha256(`${input.householdId}\u001f${identity}`).slice(0, 40)}`,
     };
     const shouldInsertRule = !existingAiRuleIdentities.has(identity);
+    const suggestionDirection =
+      row.transaction.amount >= 0n ? ("inflow" as const) : ("outflow" as const);
+    const suggestionMerchantTokens = new Set<string>([
+      ...merchantTokens(suggestion.merchant),
+      ...ruleMerchantTokens(draftRule.condition),
+    ]);
     try {
-      const committed = input.db.transaction((transaction) => {
-        const normalizedMerchantName = normalizeDescription(suggestion.merchant);
-        let merchantId = transaction
-          .select({ id: merchants.id })
-          .from(merchants)
-          .where(
-            and(
-              eq(merchants.householdId, input.householdId),
-              eq(merchants.normalizedName, normalizedMerchantName),
-            ),
-          )
-          .get()?.id;
-        if (!merchantId) {
-          merchantId = ulid();
-          transaction
-            .insert(merchants)
-            .values({
-              id: merchantId,
-              householdId: input.householdId,
-              name: suggestion.merchant.trim().slice(0, 160),
-              normalizedName: normalizedMerchantName,
-            })
-            .run();
-        }
+      const committed = await withMutationLock(() =>
+        withImmediateTransaction(input.db, (transaction) => {
+          // One merchant = one rule. The similarity check runs inside the immediate transaction
+          // so a concurrent run in another process re-reads a fresh registry before inserting.
+          const similarRule = findSimilarMerchantRule(
+            transaction.select().from(rules).where(eq(rules.householdId, input.householdId)).all(),
+            suggestionMerchantTokens,
+            suggestionDirection,
+          );
+          const normalizedMerchantName = normalizeDescription(suggestion.merchant);
+          let merchantId = transaction
+            .select({ id: merchants.id })
+            .from(merchants)
+            .where(
+              and(
+                eq(merchants.householdId, input.householdId),
+                eq(merchants.normalizedName, normalizedMerchantName),
+              ),
+            )
+            .get()?.id;
+          if (!merchantId) {
+            merchantId = ulid();
+            transaction
+              .insert(merchants)
+              .values({
+                id: merchantId,
+                householdId: input.householdId,
+                name: suggestion.merchant.trim().slice(0, 160),
+                normalizedName: normalizedMerchantName,
+              })
+              .run();
+          }
 
-        let insertedRule = false;
-        if (shouldInsertRule) {
-          const inserted = transaction
-            .insert(rules)
-            .values({
-              id: aiRule.id,
-              householdId: input.householdId,
-              name: aiRule.name,
-              priority: aiRule.priority,
-              isEnabled: true,
-              origin: "ai",
-              conditions: JSON.parse(JSON.stringify(aiRule.condition)) as Record<string, unknown>,
-              actions: JSON.parse(JSON.stringify(aiRule.actions)) as Record<string, unknown>,
-              specificityScore: ruleSpecificity(aiRule.condition),
-              createdByUserId: input.userId,
-            })
-            .onConflictDoNothing()
-            .returning({ id: rules.id })
-            .all();
-          insertedRule = inserted.length > 0;
-        }
-
-        const updated = transaction
-          .update(transactions)
-          .set({
-            merchantId,
-            categoryId: suggestion.categoryId,
-            categoryOrigin: "ai",
-            ...classificationFlagPatch(
-              selectedCategory.kind,
-              row.transaction.amount >= 0n ? "inflow" : "outflow",
-            ),
-            ...(confirmedRefundTransactionIds.has(row.transaction.id)
-              ? {
-                  isIncome: false,
-                  isTransfer: false,
-                  isExcluded: false,
-                  isReimbursement: true,
-                }
-              : {}),
-            reviewState: confirmedRefundTransactionIds.has(row.transaction.id)
-              ? "none"
-              : (selectedCategory.kind === "income" && row.transaction.amount < 0n) ||
-                  movementNeedsConfirmation(
-                    selectedCategory.kind,
-                    row.transaction.amount >= 0n ? "inflow" : "outflow",
-                  )
-                ? "needs_review"
-                : "none",
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(transactions.householdId, input.householdId),
-              eq(transactions.id, row.transaction.id),
-              eq(transactions.status, row.transaction.status),
-              eq(transactions.reviewState, row.transaction.reviewState),
-              eq(transactions.normalizedDescription, row.transaction.normalizedDescription),
-              eq(transactions.amount, row.transaction.amount),
-              isNull(transactions.userOverrideAt),
-            ),
-          )
-          .returning({ id: transactions.id })
-          .all();
-        if (updated.length === 0) throw new EvaluatedTransactionChangedError();
-
-        transaction
-          .insert(aiSuggestions)
-          .values({
+          const acceptSuggestion = {
             id: suggestionId,
             householdId: input.householdId,
             transactionId: row.transaction.id,
@@ -1164,44 +1295,182 @@ export async function categorizeHouseholdTransactions(input: {
             proposedRule: suggestion.proposedRule,
             confidenceBps: Math.round(suggestion.confidence * 10_000),
             rationale: suggestion.rationale,
-            status: "accepted",
+            status: "accepted" as const,
             model: ai.model,
             reviewedByUserId: input.userId,
             reviewedAt: now,
-          })
-          .onConflictDoUpdate({
-            target: [aiSuggestions.transactionId, aiSuggestions.inputFingerprint],
-            set: {
-              suggestedMerchantName: suggestion.merchant,
-              suggestedMerchantId: merchantId,
-              suggestedCategoryId: suggestion.categoryId,
-              proposedRule: suggestion.proposedRule,
-              confidenceBps: Math.round(suggestion.confidence * 10_000),
-              rationale: suggestion.rationale,
-              status: "accepted",
-              model: ai.model,
-              reviewedByUserId: input.userId,
-              reviewedAt: now,
-            },
-          })
-          .run();
-        return { insertedRule };
-      });
+          };
+          const acceptSuggestionConflictUpdate = {
+            suggestedMerchantName: suggestion.merchant,
+            suggestedMerchantId: merchantId,
+            suggestedCategoryId: suggestion.categoryId,
+            proposedRule: suggestion.proposedRule,
+            confidenceBps: Math.round(suggestion.confidence * 10_000),
+            rationale: suggestion.rationale,
+            status: "accepted" as const,
+            model: ai.model,
+            reviewedByUserId: input.userId,
+            reviewedAt: now,
+          };
+          const applyAcceptedCategory = (categoryOrigin: "ai" | "rule") => {
+            const updated = transaction
+              .update(transactions)
+              .set({
+                merchantId,
+                categoryId: suggestion.categoryId,
+                categoryOrigin,
+                ...classificationFlagPatch(selectedCategory.kind, suggestionDirection),
+                ...(confirmedRefundTransactionIds.has(row.transaction.id)
+                  ? {
+                      isIncome: false,
+                      isTransfer: false,
+                      isExcluded: false,
+                      isReimbursement: true,
+                    }
+                  : {}),
+                reviewState: confirmedRefundTransactionIds.has(row.transaction.id)
+                  ? "none"
+                  : (selectedCategory.kind === "income" && row.transaction.amount < 0n) ||
+                      movementNeedsConfirmation(selectedCategory.kind, suggestionDirection)
+                    ? "needs_review"
+                    : "none",
+                updatedAt: now,
+              })
+              .where(
+                and(
+                  eq(transactions.householdId, input.householdId),
+                  eq(transactions.id, row.transaction.id),
+                  eq(transactions.status, row.transaction.status),
+                  eq(transactions.reviewState, row.transaction.reviewState),
+                  eq(transactions.normalizedDescription, row.transaction.normalizedDescription),
+                  eq(transactions.amount, row.transaction.amount),
+                  isNull(transactions.userOverrideAt),
+                ),
+              )
+              .returning({ id: transactions.id })
+              .all();
+            if (updated.length === 0) throw new EvaluatedTransactionChangedError();
+            transaction
+              .insert(aiSuggestions)
+              .values(acceptSuggestion)
+              .onConflictDoUpdate({
+                target: [aiSuggestions.transactionId, aiSuggestions.inputFingerprint],
+                set: acceptSuggestionConflictUpdate,
+              })
+              .run();
+          };
+
+          if (similarRule) {
+            if (similarRule.categoryId === suggestion.categoryId) {
+              // Same merchant, same category: the existing rule already covers this pattern,
+              // so apply through it instead of minting a twin rule.
+              applyAcceptedCategory("rule");
+              transaction
+                .update(rules)
+                .set({
+                  matchCount: sql`${rules.matchCount} + 1`,
+                  lastMatchedAt: now,
+                })
+                .where(and(eq(rules.householdId, input.householdId), eq(rules.id, similarRule.id)))
+                .run();
+              return { kind: "reused" as const };
+            }
+            // Same merchant, different category: park it — a human resolves the conflict once
+            // rather than two rules fighting over one merchant.
+            const conflictRationale =
+              `Held for review: merchant is already covered by rule "${similarRule.name}" but the model proposed a different category. ${suggestion.rationale}`.slice(
+                0,
+                280,
+              );
+            transaction
+              .insert(aiSuggestions)
+              .values({
+                ...acceptSuggestion,
+                rationale: conflictRationale,
+                status: "pending" as const,
+                reviewedByUserId: null,
+                reviewedAt: null,
+              })
+              .onConflictDoUpdate({
+                target: [aiSuggestions.transactionId, aiSuggestions.inputFingerprint],
+                set: {
+                  ...acceptSuggestionConflictUpdate,
+                  rationale: conflictRationale,
+                  status: "pending" as const,
+                },
+              })
+              .run();
+            return { kind: "conflict" as const };
+          }
+
+          let insertedRule = false;
+          if (shouldInsertRule) {
+            const inserted = transaction
+              .insert(rules)
+              .values({
+                id: aiRule.id,
+                householdId: input.householdId,
+                name: aiRule.name,
+                priority: aiRule.priority,
+                isEnabled: true,
+                origin: "ai",
+                conditions: JSON.parse(JSON.stringify(aiRule.condition)) as Record<string, unknown>,
+                actions: JSON.parse(JSON.stringify(aiRule.actions)) as Record<string, unknown>,
+                specificityScore: ruleSpecificity(aiRule.condition),
+                createdByUserId: input.userId,
+              })
+              .onConflictDoNothing()
+              .returning({ id: rules.id })
+              .all();
+            insertedRule = inserted.length > 0;
+          }
+          applyAcceptedCategory("ai");
+          return { kind: "minted" as const, insertedRule };
+        }),
+      );
+      if (committed.kind === "reused") {
+        aiAccepted += 1;
+        return;
+      }
+      if (committed.kind === "conflict") {
+        aiPending += 1;
+        return;
+      }
       if (committed.insertedRule) engineRules.push(aiRule);
       existingAiRuleIdentities.add(identity);
       aiAccepted += 1;
     } catch (error) {
-      if (error instanceof EvaluatedTransactionChangedError) continue;
+      if (error instanceof EvaluatedTransactionChangedError) return;
       throw error;
     }
-  }
+  };
+
+  // Candidates that look like the same merchant (Jaccard similarity on cleaned merchant names)
+  // are processed strictly sequentially within one cluster, so the first minted rule resolves
+  // the rest of the cluster deterministically. Only clearly-different merchant clusters are
+  // allowed to run concurrently.
+  const clusters = clusterByMerchantSimilarity(orderedCandidates);
+  const workerCount = Math.max(1, Math.min(input.maxClusterConcurrency ?? 4, clusters.length || 1));
+  let nextClusterIndex = 0;
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      for (;;) {
+        const clusterIndex = nextClusterIndex;
+        nextClusterIndex += 1;
+        if (clusterIndex >= clusters.length) return;
+        for (const row of clusters[clusterIndex] ?? []) {
+          await processCandidate(row);
+        }
+      }
+    }),
+  );
   if (aiVerificationCalls > 0) {
     await input.db.insert(auditEvents).values({
       id: ulid(),
       householdId: input.householdId,
       actorUserId: input.userId,
       actorType: "system",
-      action: "ai.categorization_web_verified",
+      action: "ai.categorization_verified",
       entityType: "household",
       entityId: input.householdId,
       metadata: {
@@ -1214,6 +1483,7 @@ export async function categorizeHouseholdTransactions(input: {
         createdCategories: aiCreatedCategories,
         accepted: aiAccepted,
         pending: aiPending,
+        examplesProvided: merchantExamples.length,
       },
     });
   }

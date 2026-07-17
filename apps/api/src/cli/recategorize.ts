@@ -13,6 +13,7 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { resetHouseholdCategorization } from "../categorization/reset";
 import { categorizeHouseholdTransactions } from "../categorization/service";
+import { ensureStarterTaxonomy } from "../categorization/taxonomy";
 import { loadConfig } from "../config";
 import {
   assertTrustedAiBaseUrl,
@@ -40,7 +41,7 @@ function assertVerifiedAiConfiguration(input: {
       baseUrl: z.string().url(),
       model: z.string().min(1),
       apiKey: z.string().min(10),
-      webResearchEnabled: z.literal(true),
+      webResearchEnabled: z.boolean(),
     })
     .passthrough()
     .parse(JSON.parse(plaintext));
@@ -85,11 +86,14 @@ async function assertProviderAndWebVerifierReady(configured: {
     previousSuggestion: firstPass,
     allowCategoryProposal: true,
   });
-  if (verified.research.citationCount < 1 || verified.research.citationHosts.length < 1) {
+  // Server-side web search is unavailable for some models (e.g. MiniMax M3); in that case the
+  // provider layer retries without the tool and the verification runs as an independent recheck.
+  if (verified.research.requested && verified.research.citationHosts.length < 1) {
     throw new Error(
       "The configured model did not complete a cited merchant web search; no reset was applied",
     );
   }
+  return { webResearchUsed: verified.research.requested };
 }
 
 const options = parseRecategorizeArgs(process.argv.slice(2));
@@ -105,12 +109,13 @@ if (options.help) {
       "",
       "Apply clears the selected household's categorization/rules, then rebuilds them.",
       "Resume continues a previously reset rebuild without deleting any current state.",
-      "A per-user OpenRouter configuration with merchant web research enabled is required.",
+      "A per-user OpenRouter configuration is required. Merchant web research is used when the",
+      "model supports it; otherwise verification runs as an independent recheck.",
       "Create a SQLite backup before using --apply.",
       "",
       "Options:",
       "  --dry-run              Preview reset impact only (default)",
-      "  --preflight-only       Verify model/key/cited web search without changing data",
+      "  --preflight-only       Verify model/key/verification path without changing data",
       "  --apply                Apply reset and verified rebuild",
       "  --resume               Continue verified rebuild without resetting",
       "  --batches <1-100>      Maximum bounded batches (default 40)",
@@ -172,12 +177,23 @@ try {
     userId: target.userId,
   });
 
+  let preflight: { webResearchUsed: boolean } | undefined;
   if (options.mode !== "dry-run") {
-    await assertProviderAndWebVerifierReady(configuredAi);
+    preflight = await assertProviderAndWebVerifierReady(configuredAi);
   }
 
   if (options.mode === "preflight-only") {
-    console.log(JSON.stringify({ preflight: "verified", reset: "not_applied" }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          preflight: "verified",
+          webResearchUsed: preflight?.webResearchUsed ?? false,
+          reset: "not_applied",
+        },
+        null,
+        2,
+      ),
+    );
   } else {
     const reset =
       options.mode === "resume"
@@ -191,6 +207,8 @@ try {
     if (options.mode === "dry-run") {
       console.log(JSON.stringify({ reset, rebuild: "not_applied" }, null, 2));
     } else {
+      // Guarantee the hardcoded starter taxonomy before the model chooses from it.
+      const taxonomy = await ensureStarterTaxonomy(db, target.householdId);
       const totals = {
         batches: 0,
         aiCalls: 0,
@@ -277,6 +295,8 @@ try {
             reset,
             rebuild: {
               ...totals,
+              webResearchUsed: preflight?.webResearchUsed ?? false,
+              starterTaxonomyCreated: taxonomy.created,
               citationHosts: [...citationHosts].sort(),
               categorizedTransactions: Number(categorized?.count ?? 0),
               pendingHumanReview: Number(pending?.count ?? 0),
