@@ -166,6 +166,22 @@ describe("API boundary", () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/accounts/account%2F1/balances");
   });
 
+  it("loads recent activity through an encoded account-scoped transaction query", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: [], page: { cursor: null, hasMore: false } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.accountTransactions("account/1", 100);
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "/api/v1/transactions?accountId=account%2F1&limit=100",
+    );
+  });
+
   it("configures a per-user AI provider without ever requesting the saved key", async () => {
     const response = {
       configured: true,
@@ -173,6 +189,7 @@ describe("API boundary", () => {
       baseUrl: "https://openrouter.ai/api/v1",
       model: "tencent/hy3:free",
       confidenceThreshold: 0.92,
+      webResearchEnabled: false,
     };
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify(response), {
@@ -190,11 +207,69 @@ describe("API boundary", () => {
         model: response.model,
         apiKey: "test-provider-key",
         confidenceThreshold: response.confidenceThreshold,
+        webResearchEnabled: false,
       }),
     ).resolves.toEqual(response);
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/settings/integrations/ai");
-    expect(fetchMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ method: "PUT" }));
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({
+          enabled: true,
+          consent: true,
+          baseUrl: response.baseUrl,
+          model: response.model,
+          apiKey: "test-provider-key",
+          confidenceThreshold: response.confidenceThreshold,
+          webResearchEnabled: false,
+        }),
+      }),
+    );
     expect(response).not.toHaveProperty("apiKey");
+  });
+
+  it("regenerates an AI proposal with explicit correction and merchant research consent", async () => {
+    const response = {
+      id: "suggestion/1",
+      transactionId: "transaction-1",
+      merchant: "Corner Table",
+      categoryId: "category-groceries",
+      categoryName: "Groceries",
+      categoryPath: ["Everyday", "Groceries"],
+      confidence: 0.96,
+      rationale: "The correction identifies this as a grocery merchant.",
+      proposedRule: {
+        name: "Corner Table → Groceries",
+        conditions: {},
+        actions: {},
+      },
+      status: "pending",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      api.regenerateAiSuggestion("suggestion/1", {
+        feedback: "This is my weekly grocery store.",
+        allowWebResearch: true,
+      }),
+    ).resolves.toEqual(response);
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/ai/suggestions/suggestion%2F1/regenerate");
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          feedback: "This is my weekly grocery store.",
+          allowWebResearch: true,
+        }),
+      }),
+    );
   });
 });

@@ -151,28 +151,57 @@ function demoForecastFor(scenario: ApiScenario): ApiForecast {
       : scenario.preset === "ambitious"
         ? "ambitious"
         : "baseline";
-  const trajectory = forecastHistory.map((row, index) => ({
-    month: `${2026 + index}-07`,
-    liquidCash: forecastMoney(row[key]),
-    netWorth: forecastMoney(row[key]),
-  }));
-  const ranges: ApiForecastRangePoint[] = forecastHistory.map((row, index) => ({
-    month: `${2026 + index}-07`,
-    netWorth: {
-      p10: forecastMoney(row.conservative),
-      p25: forecastMoney(row.conservative + (row.baseline - row.conservative) * 0.5),
-      p50: forecastMoney(row.baseline),
-      p75: forecastMoney(row.baseline + (row.ambitious - row.baseline) * 0.5),
-      p90: forecastMoney(row.ambitious),
-    },
-    liquidCash: {
-      p10: forecastMoney(row.conservative),
-      p25: forecastMoney(row.conservative + (row.baseline - row.conservative) * 0.5),
-      p50: forecastMoney(row.baseline),
-      p75: forecastMoney(row.baseline + (row.ambitious - row.baseline) * 0.5),
-      p90: forecastMoney(row.ambitious),
-    },
-  }));
+  const defaults =
+    key === "conservative"
+      ? { incomeGrowth: 3.2, inflation: 2.6, investmentReturn: 4, cashYield: 4.1, monthly: 700 }
+      : key === "ambitious"
+        ? {
+            incomeGrowth: 5,
+            inflation: 2.6,
+            investmentReturn: 8.5,
+            cashYield: 4.1,
+            monthly: 1000,
+          }
+        : {
+            incomeGrowth: 3.2,
+            inflation: 2.6,
+            investmentReturn: 6.5,
+            cashYield: 4.1,
+            monthly: 700,
+          };
+  const monthly = minor(scenario.assumptions.monthlyInvesting);
+  const trajectory = forecastHistory.map((row, index) => {
+    const value = Math.max(
+      0,
+      row[key] +
+        (monthly - defaults.monthly) * 12 * index * (1 + index * 0.025) +
+        (scenario.assumptions.investmentReturn - defaults.investmentReturn) *
+          row[key] *
+          index *
+          0.004 +
+        (scenario.assumptions.incomeGrowth - defaults.incomeGrowth) * 180 * index ** 2 -
+        (scenario.assumptions.inflation - defaults.inflation) * 110 * index ** 2 +
+        (scenario.assumptions.cashYield - defaults.cashYield) * 35 * index ** 2,
+    );
+    return {
+      month: `${2026 + index}-07`,
+      liquidCash: forecastMoney(value),
+      netWorth: forecastMoney(value),
+    };
+  });
+  const ranges: ApiForecastRangePoint[] = trajectory.map((point, index) => {
+    const value = minor(point.netWorth);
+    const wideSpread = Math.min(0.32, index * 0.04);
+    const narrowSpread = wideSpread / 2;
+    const range = {
+      p10: forecastMoney(value * (1 - wideSpread)),
+      p25: forecastMoney(value * (1 - narrowSpread)),
+      p50: forecastMoney(value),
+      p75: forecastMoney(value * (1 + narrowSpread)),
+      p90: forecastMoney(value * (1 + wideSpread)),
+    };
+    return { month: point.month, netWorth: range, liquidCash: range };
+  });
   const ending = trajectory.at(-1) ?? {
     month: "2034-07",
     liquidCash: forecastMoney(0),
@@ -195,7 +224,11 @@ function demoForecastFor(scenario: ApiScenario): ApiForecast {
       amount: finalRange[`p${percentile}`] ?? ending.netWorth,
     })),
     trajectory,
-    monteCarlo: { runs: 1000, goalSuccessProbability: 0.84, ranges },
+    monteCarlo: {
+      runs: 1000,
+      goalSuccessProbability: Math.max(0.1, Math.min(0.95, minor(ending.netWorth) / 250_000)),
+      ranges,
+    },
     readiness: {
       score: 92,
       missingInputs: ["Confirm the next credit-card statement"],
@@ -461,6 +494,9 @@ export function ForecastPage() {
   const [monteCarlo, setMonteCarlo] = useState(true);
   const [newScenarioOpen, setNewScenarioOpen] = useState(false);
   const [newScenarioName, setNewScenarioName] = useState("");
+  const [demoScenarioData, setDemoScenarioData] = useState<ApiScenario[]>(demoScenarios.data);
+  const [demoForecastData, setDemoForecastData] = useState<ApiForecast[]>(demoForecasts.data);
+  const [demoMessage, setDemoMessage] = useState("");
   const demo = isDemoMode();
   const queryClient = useQueryClient();
   const scenariosQuery = useQuery({
@@ -478,12 +514,12 @@ export function ForecastPage() {
     retry: 1,
   });
 
-  const scenarios = scenariosQuery.data?.data ?? [];
+  const scenarios = demo ? demoScenarioData : (scenariosQuery.data?.data ?? []);
   const selectedScenario =
     scenarios.find((item) => item.id === selectedScenarioId) ??
     scenarios.find((item) => item.isBase) ??
     scenarios[0];
-  const completedForecasts = (forecastsQuery.data?.data ?? []).filter(
+  const completedForecasts = (demo ? demoForecastData : (forecastsQuery.data?.data ?? [])).filter(
     (item) => item.state === undefined || item.state === "succeeded",
   );
   const latestForecast = completedForecasts.find(
@@ -582,6 +618,50 @@ export function ForecastPage() {
     setNewScenarioOpen(false);
     setNewScenarioName("");
   };
+  const runDemoForecast = () => {
+    if (!selectedScenario) return;
+    const updatedScenario: ApiScenario = {
+      ...selectedScenario,
+      assumptions: {
+        incomeGrowth,
+        inflation,
+        investmentReturn: returnRate,
+        cashYield,
+        monthlyInvesting: forecastMoney(monthlyInvesting),
+      },
+    };
+    setDemoScenarioData((current) =>
+      current.map((item) => (item.id === updatedScenario.id ? updatedScenario : item)),
+    );
+    setDemoForecastData((current) => [
+      demoForecastFor(updatedScenario),
+      ...current.filter((item) => item.scenarioId !== updatedScenario.id),
+    ]);
+    setDemoMessage(`${updatedScenario.name} preview recalculated from the visible assumptions.`);
+  };
+  const createDemoScenario = () => {
+    const name = newScenarioName.trim();
+    if (!name) return;
+    const now = Date.now();
+    const created: ApiScenario = {
+      id: `scenario_demo_custom_${now}`,
+      name,
+      preset: "custom",
+      assumptions: {
+        incomeGrowth,
+        inflation,
+        investmentReturn: returnRate,
+        cashYield,
+        monthlyInvesting: forecastMoney(monthlyInvesting),
+      },
+      seed: now % 1_000_000_000,
+      isBase: false,
+    };
+    setDemoScenarioData((current) => [...current, created]);
+    setSelectedScenarioId(created.id);
+    setDemoMessage(`${created.name} was added to this interactive demo session.`);
+    closeNewScenario();
+  };
   const scenarioDialog = (
     <Dialog open={newScenarioOpen} onClose={closeNewScenario} fullWidth maxWidth="xs">
       <DialogTitle>New forecast scenario</DialogTitle>
@@ -606,7 +686,7 @@ export function ForecastPage() {
         <Button
           variant="contained"
           disabled={!newScenarioName.trim() || createScenario.isPending}
-          onClick={() => (demo ? closeNewScenario() : createScenario.mutate())}
+          onClick={() => (demo ? createDemoScenario() : createScenario.mutate())}
         >
           {createScenario.isPending ? "Creating…" : "Create scenario"}
         </Button>
@@ -674,7 +754,11 @@ export function ForecastPage() {
       <PageHeader
         eyebrow="Forecast"
         title="See where today’s plan can lead"
-        description="Change one assumption at a time. Every displayed result comes from a stored, reproducible forecast run."
+        description={
+          demo
+            ? "Change one assumption at a time and recalculate an interactive local preview."
+            : "Change one assumption at a time. Every displayed result comes from a stored, reproducible forecast run."
+        }
         actions={
           <>
             <Button
@@ -687,16 +771,22 @@ export function ForecastPage() {
             <Button
               variant="contained"
               startIcon={<PlayArrowRounded />}
-              disabled={runForecast.isPending || demo}
-              onClick={() => runForecast.mutate()}
+              disabled={runForecast.isPending}
+              onClick={() => (demo ? runDemoForecast() : runForecast.mutate())}
             >
-              {demo ? "Demo result" : runForecast.isPending ? "Running…" : "Run forecast"}
+              {demo ? "Run preview" : runForecast.isPending ? "Running…" : "Run forecast"}
             </Button>
           </>
         }
       />
       {runForecast.error instanceof Error ? (
         <Alert severity="error">{runForecast.error.message}</Alert>
+      ) : null}
+      {demo ? (
+        <Alert severity={demoMessage ? "success" : "info"}>
+          {demoMessage ||
+            "Interactive preview: create scenarios and recalculate results locally. Sign in to store versioned runs."}
+        </Alert>
       ) : null}
       <Card sx={{ p: 1 }}>
         <Tabs
@@ -802,7 +892,7 @@ export function ForecastPage() {
           <CardContent sx={{ p: 5 }}>
             <SectionHeader
               title="Assumptions"
-              description={`Stored with ${selectedScenario.name}.`}
+              description={`${demo ? "Previewed" : "Stored"} with ${selectedScenario.name}.`}
               action={<TuneRounded color="action" />}
             />
             <Stack gap={4} sx={{ mt: 5 }}>

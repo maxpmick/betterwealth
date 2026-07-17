@@ -1,6 +1,6 @@
 import type { BetterWealthDatabase } from "@betterwealth/db";
 import { connections, jobs } from "@betterwealth/db/schema";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { ulid } from "ulid";
 import type { AppConfig } from "../config";
 
@@ -8,7 +8,12 @@ export async function syncActiveConnections(db: BetterWealthDatabase, config: Ap
   const active = await db
     .select({ id: connections.id, householdId: connections.householdId })
     .from(connections)
-    .where(and(eq(connections.provider, "simplefin"), eq(connections.status, "active")));
+    .where(
+      and(
+        eq(connections.provider, "simplefin"),
+        inArray(connections.status, ["active", "degraded"]),
+      ),
+    );
   const now = new Date().toISOString();
   const intervalMs = config.SYNC_INTERVAL_MINUTES * 60_000;
   const scheduleBucket = Math.floor(Date.now() / intervalMs);

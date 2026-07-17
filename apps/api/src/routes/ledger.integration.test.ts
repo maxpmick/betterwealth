@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { accounts, refundLinks, transactions, transfers } from "@betterwealth/db/schema";
+import {
+  accounts,
+  auditEvents,
+  refundLinks,
+  transactions,
+  transfers,
+} from "@betterwealth/db/schema";
 import { and, eq, inArray } from "drizzle-orm";
 import type { BetterWealthApplication } from "../app";
 import { createApp } from "../app";
@@ -164,6 +170,48 @@ describe("transaction ledger operations", () => {
     expect(accountsAfterRejectedOverwrite.data.find(({ id }) => id === checking.id)).toMatchObject({
       name: "Checking",
       balance: { minorUnits: "-1250" },
+    });
+    await application.db
+      .update(accounts)
+      .set({ providerMetadata: { providerAccountType: "checking" } })
+      .where(eq(accounts.id, checking.id));
+    const providerClassificationOverride = await request(`/accounts/${checking.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        name: "Daily checking",
+        group: "cash",
+        type: "depository",
+        subtype: "checking",
+        status: "hidden",
+      }),
+    });
+    expect(providerClassificationOverride.status).toBe(200);
+    expect(
+      await application.db
+        .select({
+          group: accounts.group,
+          name: accounts.name,
+          type: accounts.type,
+          subtype: accounts.subtype,
+          status: accounts.status,
+          providerMetadata: accounts.providerMetadata,
+        })
+        .from(accounts)
+        .where(eq(accounts.id, checking.id))
+        .get(),
+    ).toEqual({
+      group: "cash",
+      name: "Daily checking",
+      type: "depository",
+      subtype: "checking",
+      status: "hidden",
+      providerMetadata: {
+        providerAccountType: "checking",
+        classificationOverride: true,
+        nameOverride: true,
+        providerName: "Checking",
+        statusOverride: true,
+      },
     });
     const groceries = await create("/categories", { name: "Groceries", kind: "expense" });
     const home = await create("/categories", { name: "Home", kind: "expense" });
@@ -363,8 +411,8 @@ describe("transaction ledger operations", () => {
       categories: Array<{ category: string; amount: { minorUnits: string; currency: string } }>;
     };
     expect(spendingBody.categories).toEqual([
-      { category: "Home", amount: { minorUnits: "4000", currency: "USD" } },
-      { category: "Groceries", amount: { minorUnits: "3500", currency: "USD" } },
+      { category: "Groceries", amount: { minorUnits: "4500", currency: "USD" } },
+      { category: "Home", amount: { minorUnits: "3000", currency: "USD" } },
     ]);
     const cashFlow = await request("/reports/cash-flow");
     const cashFlowBody = (await cashFlow.json()) as {
@@ -427,6 +475,62 @@ describe("transaction ledger operations", () => {
         .where(eq(transfers.id, transferBody.id))
         .get(),
     ).toEqual({ status: "rejected" });
+    const confirmedRefundAudit = await application.db
+      .select({ action: auditEvents.action, metadata: auditEvents.metadata })
+      .from(auditEvents)
+      .where(eq(auditEvents.entityId, linkedBody.id));
+    expect(confirmedRefundAudit).toContainEqual({
+      action: "movement.confirmed",
+      metadata: {
+        movementType: "refund",
+        refundTransactionId: refund.id,
+        purchaseTransactionId: purchase.id,
+        amountMinorUnits: "2500",
+        currency: "USD",
+        evidence: { source: "suggestion", confidenceBps: 9_500 },
+      },
+    });
+    expect(confirmedRefundAudit).toContainEqual({
+      action: "movement.rejected",
+      metadata: {
+        movementType: "refund",
+        previousStatus: "confirmed",
+        refundTransactionId: refund.id,
+        purchaseTransactionId: purchase.id,
+        amountMinorUnits: "2500",
+        confidenceBps: 10_000,
+      },
+    });
+    const confirmedTransferAudit = await application.db
+      .select({ action: auditEvents.action, metadata: auditEvents.metadata })
+      .from(auditEvents)
+      .where(eq(auditEvents.entityId, transferBody.id));
+    expect(confirmedTransferAudit).toContainEqual({
+      action: "movement.confirmed",
+      metadata: {
+        movementType: "transfer",
+        outflowTransactionId: outflow.id,
+        inflowTransactionId: inflow.id,
+        amountMinorUnits: "50000",
+        currency: "USD",
+        evidence: {
+          source: "suggestion",
+          matchedBy: "fingerprint",
+          confidenceBps: 9_800,
+        },
+      },
+    });
+    expect(confirmedTransferAudit).toContainEqual({
+      action: "movement.rejected",
+      metadata: {
+        movementType: "transfer",
+        previousStatus: "confirmed",
+        outflowTransactionId: outflow.id,
+        inflowTransactionId: inflow.id,
+        matchedBy: "fingerprint",
+        confidenceBps: 10_000,
+      },
+    });
     expect(
       (
         await request("/refund-links", {
@@ -598,6 +702,285 @@ describe("transaction ledger operations", () => {
     });
     expect(alternativeTransfer.status).toBe(201);
 
+    const tagged = await transaction(checking.id, "-1234", "Independent contractor expense");
+    const replaceTags = await request(`/transactions/${tagged.id}/tags`, {
+      method: "PUT",
+      body: JSON.stringify({
+        tags: ["Tax Deductible", "tax deductible", "  Side   Hustle  "],
+      }),
+    });
+    expect(replaceTags.status).toBe(200);
+    expect(await replaceTags.json()).toEqual({
+      id: tagged.id,
+      tags: ["Tax Deductible", "Side Hustle"],
+    });
+    expect(
+      await application.db
+        .select({ userOverrideAt: transactions.userOverrideAt })
+        .from(transactions)
+        .where(eq(transactions.id, tagged.id))
+        .get(),
+    ).toEqual({ userOverrideAt: null });
+    const taggedPatch = await request(`/transactions/${tagged.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ note: "Receipt retained" }),
+    });
+    expect(taggedPatch.status).toBe(200);
+    expect(await taggedPatch.json()).toMatchObject({
+      id: tagged.id,
+      note: "Receipt retained",
+      tags: ["Side Hustle", "Tax Deductible"],
+    });
+    const overrideBeforeRemoval = await application.db
+      .select({ userOverrideAt: transactions.userOverrideAt })
+      .from(transactions)
+      .where(eq(transactions.id, tagged.id))
+      .get();
+    expect(overrideBeforeRemoval?.userOverrideAt).toEqual(expect.any(String));
+    expect(await (await request(`/transactions/${tagged.id}`)).json()).toMatchObject({
+      tags: ["Side Hustle", "Tax Deductible"],
+      status: "posted",
+    });
+    const taggedListBeforeRemoval = (await (await request("/transactions")).json()) as {
+      data: Array<{ id: string; status: string; tags: string[] }>;
+    };
+    expect(taggedListBeforeRemoval.data.find(({ id }) => id === tagged.id)).toMatchObject({
+      status: "posted",
+      tags: expect.arrayContaining(["Tax Deductible", "Side Hustle"]),
+    });
+
+    await application.db
+      .update(transactions)
+      .set({ status: "pending" })
+      .where(eq(transactions.id, tagged.id));
+    const removed = await request(`/transactions/${tagged.id}`, { method: "DELETE" });
+    expect(removed.status).toBe(200);
+    expect(await removed.json()).toEqual({
+      id: tagged.id,
+      status: "removed",
+      removed: true,
+      changed: true,
+    });
+    expect(await (await request(`/transactions/${tagged.id}`)).json()).toMatchObject({
+      status: "removed",
+      tags: ["Side Hustle", "Tax Deductible"],
+    });
+    const removedList = (await (await request("/transactions")).json()) as {
+      data: Array<{ id: string; status: string }>;
+    };
+    expect(removedList.data.find(({ id }) => id === tagged.id)?.status).toBe("removed");
+    expect(
+      (
+        await request(`/transactions/${tagged.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ note: "Must restore first" }),
+        })
+      ).status,
+    ).toBe(409);
+    expect(
+      await application.db
+        .select({ id: transactions.id, status: transactions.status })
+        .from(transactions)
+        .where(eq(transactions.id, tagged.id))
+        .get(),
+    ).toEqual({ id: tagged.id, status: "removed" });
+    const repeatedRemoval = await request(`/transactions/${tagged.id}`, { method: "DELETE" });
+    expect(await repeatedRemoval.json()).toMatchObject({ status: "removed", changed: false });
+    await application.db
+      .update(transactions)
+      .set({ postedAt: "2026-07-17T12:00:00.000Z" })
+      .where(eq(transactions.id, tagged.id));
+
+    const restored = await request(`/transactions/${tagged.id}/restore`, { method: "POST" });
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).toEqual({
+      id: tagged.id,
+      status: "posted",
+      restored: true,
+    });
+    expect(await (await request(`/transactions/${tagged.id}`)).json()).toMatchObject({
+      status: "posted",
+      tags: ["Side Hustle", "Tax Deductible"],
+    });
+    expect(
+      await application.db
+        .select({ userOverrideAt: transactions.userOverrideAt })
+        .from(transactions)
+        .where(eq(transactions.id, tagged.id))
+        .get(),
+    ).toEqual(overrideBeforeRemoval);
+    const transactionAudit = await application.db
+      .select({ action: auditEvents.action, metadata: auditEvents.metadata })
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.householdId, checkingRow.householdId),
+          eq(auditEvents.entityType, "transaction"),
+          eq(auditEvents.entityId, tagged.id),
+        ),
+      );
+    expect(transactionAudit).toHaveLength(3);
+    expect(transactionAudit).toContainEqual({
+      action: "transaction.tags_replaced",
+      metadata: {
+        previousTags: [],
+        tags: ["Tax Deductible", "Side Hustle"],
+      },
+    });
+    expect(transactionAudit).toContainEqual({
+      action: "transaction.removed",
+      metadata: {
+        previousStatus: "pending",
+        previousUserOverrideAt: overrideBeforeRemoval?.userOverrideAt,
+      },
+    });
+    expect(transactionAudit).toContainEqual({
+      action: "transaction.restored",
+      metadata: {
+        restoredStatus: "posted",
+        restoredUserOverrideAt: overrideBeforeRemoval?.userOverrideAt,
+        removalAuditEventId: expect.any(String),
+      },
+    });
+
+    const bulkEligible = await transaction(checking.id, "-875", "Bulk eligible");
+    const bulkRemoved = await transaction(checking.id, "-975", "Bulk removed");
+    expect((await request(`/transactions/${bulkRemoved.id}`, { method: "DELETE" })).status).toBe(
+      200,
+    );
+    const bulkUpdate = await request("/transactions/bulk", {
+      method: "POST",
+      body: JSON.stringify({
+        ids: [bulkEligible.id, bulkRemoved.id, bulkEligible.id, "missing-transaction"],
+        patch: { categoryName: "Home", note: "Reviewed as one batch" },
+      }),
+    });
+    expect(bulkUpdate.status).toBe(200);
+    const bulkUpdateBody = (await bulkUpdate.json()) as {
+      affected: number;
+      batchId: string;
+      reversibleBatchId?: string;
+    };
+    expect(bulkUpdateBody.affected).toBe(1);
+    expect(typeof bulkUpdateBody.batchId).toBe("string");
+    expect(bulkUpdateBody.batchId.length).toBeGreaterThan(0);
+    expect(bulkUpdateBody).not.toHaveProperty("reversibleBatchId");
+    expect(await (await request(`/transactions/${bulkEligible.id}`)).json()).toMatchObject({
+      categoryName: "Home",
+      note: "Reviewed as one batch",
+    });
+    expect(await (await request(`/transactions/${bulkRemoved.id}`)).json()).toMatchObject({
+      categoryName: "Uncategorized",
+      note: null,
+      status: "removed",
+    });
+    const bulkAudit = (
+      await application.db
+        .select({
+          id: auditEvents.id,
+          action: auditEvents.action,
+          entityType: auditEvents.entityType,
+          metadata: auditEvents.metadata,
+        })
+        .from(auditEvents)
+    ).find(({ id }) => id === bulkUpdateBody.batchId);
+    expect(bulkAudit).toEqual({
+      id: bulkUpdateBody.batchId,
+      action: "transaction.bulk_updated",
+      entityType: "transaction_batch",
+      metadata: {
+        batchId: bulkUpdateBody.batchId,
+        transactionIds: [bulkEligible.id],
+        categoryId: home.id,
+        categoryName: "Home",
+        patch: { categoryName: "Home", note: "Reviewed as one batch" },
+      },
+    });
+
+    const paginatedRows = Array.from({ length: 260 }, (_, index) => ({
+      id: `pagination-${index.toString().padStart(3, "0")}`,
+      householdId: checkingRow.householdId,
+      accountId: checking.id,
+      amount: index === 0 ? -43_210n : -100n - BigInt(index),
+      currency: "USD",
+      postedAt: "2025-01-01T00:00:00.000Z",
+      transactedOn: "2025-01-01T00:00:00.000Z",
+      rawDescription:
+        index === 0 ? "Ancient pagination sentinel" : `Pagination ledger row ${index}`,
+      normalizedDescription:
+        index === 0 ? "ancient pagination sentinel" : `pagination ledger row ${index}`,
+      status: index === 0 ? ("removed" as const) : ("posted" as const),
+      source: "manual" as const,
+    }));
+    for (let index = 0; index < paginatedRows.length; index += 40) {
+      await application.db.insert(transactions).values(paginatedRows.slice(index, index + 40));
+    }
+    await application.db.insert(transactions).values({
+      id: "account-filter-sentinel",
+      householdId: checkingRow.householdId,
+      accountId: savings.id,
+      amount: -321n,
+      currency: "USD",
+      postedAt: "2024-01-01T00:00:00.000Z",
+      transactedOn: "2024-01-01T00:00:00.000Z",
+      rawDescription: "Old account-scoped sentinel",
+      normalizedDescription: "old account scoped sentinel",
+      status: "posted",
+      source: "manual",
+    });
+    const scopedActivity = await request(
+      `/transactions?accountId=${encodeURIComponent(savings.id)}&limit=100`,
+    );
+    expect(scopedActivity.status).toBe(200);
+    const scopedActivityBody = (await scopedActivity.json()) as {
+      data: Array<{ id: string; accountId: string }>;
+    };
+    expect(scopedActivityBody.data.every(({ accountId }) => accountId === savings.id)).toBeTrue();
+    expect(scopedActivityBody.data.map(({ id }) => id)).toContain("account-filter-sentinel");
+
+    const invalidAccountFilter = await request("/transactions?accountId=not-an-internal-id");
+    expect(invalidAccountFilter.status).toBe(422);
+    expect(await invalidAccountFilter.json()).toMatchObject({
+      error: { code: "validation_failed" },
+    });
+    const discoveredIds: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const response = await request(
+        `/transactions?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        data: Array<{ id: string }>;
+        page: { cursor: string | null; hasMore: boolean };
+      };
+      expect(body.data.length).toBeLessThanOrEqual(100);
+      discoveredIds.push(...body.data.map(({ id }) => id));
+      cursor = body.page.cursor;
+      pages += 1;
+      expect(pages).toBeLessThan(10);
+      if (body.page.hasMore) expect(cursor).not.toBeNull();
+    } while (cursor);
+    expect(pages).toBeGreaterThanOrEqual(3);
+    expect(new Set(discoveredIds).size).toBe(discoveredIds.length);
+    expect(discoveredIds.filter((id) => id.startsWith("pagination-"))).toHaveLength(260);
+
+    const oldDescriptionSearch = await request(
+      "/transactions?query=Ancient%20pagination%20sentinel&limit=10",
+    );
+    expect(await oldDescriptionSearch.json()).toMatchObject({
+      data: [{ id: "pagination-000", status: "removed" }],
+      page: { cursor: null, hasMore: false },
+    });
+    const oldAmountSearch = await request("/transactions?query=-432.10&limit=10");
+    expect(await oldAmountSearch.json()).toMatchObject({
+      data: [{ id: "pagination-000", amount: { minorUnits: "-43210", currency: "USD" } }],
+    });
+    const invalidCursor = await request("/transactions?cursor=not-a-valid-cursor");
+    expect(invalidCursor.status).toBe(422);
+    expect(await invalidCursor.json()).toMatchObject({ error: { code: "validation_failed" } });
+
     await application.app.request("/api/v1/auth/register", {
       method: "POST",
       headers: { "content-type": "application/json", origin: "http://localhost:5173" },
@@ -619,5 +1002,14 @@ describe("transaction ledger operations", () => {
       headers: { cookie: cookieHeader(cookieJar(otherLogin)) },
     });
     expect(isolated.status).toBe(404);
+    const isolatedAccountActivity = await application.app.request(
+      `/api/v1/transactions?accountId=${encodeURIComponent(checking.id)}`,
+      { headers: { cookie: cookieHeader(cookieJar(otherLogin)) } },
+    );
+    expect(isolatedAccountActivity.status).toBe(200);
+    expect(await isolatedAccountActivity.json()).toMatchObject({
+      data: [],
+      page: { cursor: null, hasMore: false },
+    });
   });
 });

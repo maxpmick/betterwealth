@@ -6,6 +6,7 @@ import {
   categories,
   envelopes,
   merchants,
+  providerInstitutions,
   refundLinks,
   tags,
   transactionSplits,
@@ -13,8 +14,8 @@ import {
   transactionTags,
   transfers,
 } from "@betterwealth/db/schema";
-import { MinorUnitsStringSchema } from "@betterwealth/shared";
-import { and, desc, eq, inArray, like, ne, or } from "drizzle-orm";
+import { MinorUnitsStringSchema, UlidSchema } from "@betterwealth/shared";
+import { and, desc, eq, inArray, like, lt, ne, or } from "drizzle-orm";
 import { Hono } from "hono";
 import { ulid } from "ulid";
 import { z } from "zod";
@@ -44,6 +45,23 @@ function mapSource(source: typeof transactions.$inferSelect.source) {
   if (source === "provider") return "simplefin" as const;
   if (source === "import") return "import" as const;
   return "manual" as const;
+}
+
+function transactionProvenance(source: typeof transactions.$inferSelect.source) {
+  if (source === "provider") return "SimpleFIN provider import";
+  if (source === "import") return "Reviewed file import";
+  if (source === "fixture") return "Seeded example data";
+  return "Manual entry";
+}
+
+function queryAmountMinorUnits(value: string): bigint | null {
+  const normalized = value.trim().replace(/[$,\s]/g, "");
+  if (!/^[+-]?\d+(?:\.\d{1,2})?$/.test(normalized)) return null;
+  const negative = normalized.startsWith("-");
+  const unsigned = normalized.replace(/^[+-]/, "");
+  const [whole = "0", fraction = ""] = unsigned.split(".");
+  const amount = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
+  return negative ? -amount : amount;
 }
 
 async function latestBalances(db: BetterWealthDatabase, householdId: string) {
@@ -142,6 +160,30 @@ const transactionTagsSchema = z
   })
   .strict();
 
+const transactionRemovalMetadataSchema = z.object({
+  previousStatus: z.enum(["pending", "posted", "void"]),
+  previousUserOverrideAt: z.string().nullable().optional(),
+});
+
+const transactionCursorSchema = z.object({
+  transactedOn: z.string().min(1),
+  id: z.string().min(1),
+});
+
+function encodeTransactionCursor(cursor: z.infer<typeof transactionCursorSchema>) {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function decodeTransactionCursor(value: string) {
+  try {
+    return transactionCursorSchema.parse(
+      JSON.parse(Buffer.from(value, "base64url").toString("utf8")),
+    );
+  } catch {
+    throw new AppError("Invalid transaction cursor", 422, "validation_failed");
+  }
+}
+
 const manualTransactionSchema = z.object({
   accountId: z.string(),
   amountMinorUnits: MinorUnitsStringSchema.refine((value) => value !== "0"),
@@ -229,20 +271,28 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
     const auth = context.get("auth");
     const [accountRows, balances] = await Promise.all([
       db
-        .select()
+        .select({ account: accounts, institutionName: providerInstitutions.name })
         .from(accounts)
+        .leftJoin(providerInstitutions, eq(providerInstitutions.id, accounts.institutionId))
         .where(eq(accounts.householdId, auth.householdId))
         .orderBy(accounts.group, accounts.name),
       latestBalances(db, auth.householdId),
     ]);
     return context.json({
-      data: accountRows.map((account) => {
+      data: accountRows.map(({ account, institutionName }) => {
         const balance = balances.get(account.id);
         return {
           id: account.id,
           name: account.name,
           mask: account.mask ?? "••••",
           group: mapGroup(account.group),
+          type: account.type,
+          subtype: account.subtype,
+          institutionName: account.isManual ? null : institutionName,
+          isManual: account.isManual,
+          includeInBudget: account.includeInBudget,
+          includeInNetWorth: account.includeInNetWorth,
+          status: account.status,
           balance: money(balance?.currentBalance ?? 0n, balance?.currency ?? account.currency),
           availableBalance:
             balance?.availableBalance === null || balance?.availableBalance === undefined
@@ -317,32 +367,38 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
     const input = accountCreateSchema.parse(await context.req.json());
     const id = ulid();
     const now = new Date().toISOString();
-    await db.transaction(async (transaction) => {
-      await transaction.insert(accounts).values({
-        id,
-        householdId: auth.householdId,
-        ownerUserId: auth.user.id,
-        name: input.name,
-        mask: input.mask,
-        group: input.group,
-        type: input.type,
-        subtype: input.subtype,
-        currency: input.currency,
-        isLiability: input.group === "credit" || input.group === "loan",
-        isManual: true,
-        includeInBudget: input.includeInBudget,
-      });
-      await transaction.insert(balanceSnapshots).values({
-        id: ulid(),
-        householdId: auth.householdId,
-        accountId: id,
-        ledgerBalance: BigInt(input.balanceMinorUnits),
-        currentBalance: BigInt(input.balanceMinorUnits),
-        availableBalance: BigInt(input.balanceMinorUnits),
-        currency: input.currency,
-        asOf: now,
-        source: "manual",
-      });
+    db.transaction((transaction) => {
+      transaction
+        .insert(accounts)
+        .values({
+          id,
+          householdId: auth.householdId,
+          ownerUserId: auth.user.id,
+          name: input.name,
+          mask: input.mask,
+          group: input.group,
+          type: input.type,
+          subtype: input.subtype,
+          currency: input.currency,
+          isLiability: input.group === "credit" || input.group === "loan",
+          isManual: true,
+          includeInBudget: input.includeInBudget,
+        })
+        .run();
+      transaction
+        .insert(balanceSnapshots)
+        .values({
+          id: ulid(),
+          householdId: auth.householdId,
+          accountId: id,
+          ledgerBalance: BigInt(input.balanceMinorUnits),
+          currentBalance: BigInt(input.balanceMinorUnits),
+          availableBalance: BigInt(input.balanceMinorUnits),
+          currency: input.currency,
+          asOf: now,
+          source: "manual",
+        })
+        .run();
     });
     return context.json({ id }, 201);
   });
@@ -364,6 +420,36 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
         "provider_balance_read_only",
       );
     }
+    const overridesProviderClassification =
+      !existing.isManual &&
+      (input.group !== undefined || input.type !== undefined || input.subtype !== undefined);
+    const overridesProviderName = !existing.isManual && input.name !== undefined;
+    const overridesProviderStatus = !existing.isManual && input.status !== undefined;
+    const existingProviderMetadata =
+      existing.providerMetadata &&
+      typeof existing.providerMetadata === "object" &&
+      !Array.isArray(existing.providerMetadata)
+        ? existing.providerMetadata
+        : {};
+    const providerMetadata =
+      overridesProviderClassification || overridesProviderName || overridesProviderStatus
+        ? {
+            ...existingProviderMetadata,
+            ...(overridesProviderClassification ? { classificationOverride: true } : {}),
+            ...(overridesProviderName
+              ? {
+                  nameOverride: true,
+                  providerName:
+                    typeof existingProviderMetadata.providerName === "string"
+                      ? existingProviderMetadata.providerName
+                      : existing.name,
+                }
+              : {}),
+            ...(overridesProviderStatus
+              ? { statusOverride: input.status === "hidden" || input.status === "closed" }
+              : {}),
+          }
+        : undefined;
     await db
       .update(accounts)
       .set({
@@ -379,6 +465,7 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
           input.group === undefined
             ? undefined
             : input.group === "credit" || input.group === "loan",
+        providerMetadata,
         updatedAt: new Date().toISOString(),
       })
       .where(and(eq(accounts.householdId, auth.householdId), eq(accounts.id, existing.id)));
@@ -501,28 +588,59 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
   routes.get("/transactions", async (context) => {
     const auth = context.get("auth");
     const query = context.req.query("query")?.trim();
-    const conditions = [eq(transactions.householdId, auth.householdId)];
+    const accountId = UlidSchema.optional().parse(context.req.query("accountId"));
+    const pageSize = z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(250)
+      .default(100)
+      .parse(context.req.query("limit"));
+    const cursorValue = context.req.query("cursor");
+    const cursor = cursorValue ? decodeTransactionCursor(cursorValue) : null;
+    const conditions = [
+      eq(transactions.householdId, auth.householdId),
+      eq(accounts.householdId, auth.householdId),
+    ];
+    if (accountId) conditions.push(eq(transactions.accountId, accountId));
     if (query) {
+      const amount = queryAmountMinorUnits(query);
       const queryCondition = or(
         like(transactions.rawDescription, `%${query}%`),
         like(transactions.normalizedDescription, `%${query}%`),
+        like(transactions.note, `%${query}%`),
+        like(accounts.name, `%${query}%`),
+        like(merchants.name, `%${query}%`),
+        like(categories.name, `%${query}%`),
+        ...(amount === null ? [] : [eq(transactions.amount, amount)]),
       );
       if (queryCondition) conditions.push(queryCondition);
     }
-    const rows = await db
+    if (cursor) {
+      const cursorCondition = or(
+        lt(transactions.transactedOn, cursor.transactedOn),
+        and(eq(transactions.transactedOn, cursor.transactedOn), lt(transactions.id, cursor.id)),
+      );
+      if (cursorCondition) conditions.push(cursorCondition);
+    }
+    const fetchedRows = await db
       .select({
         transaction: transactions,
         accountName: accounts.name,
         merchantName: merchants.name,
         categoryName: categories.name,
+        envelopeName: envelopes.name,
       })
       .from(transactions)
       .innerJoin(accounts, eq(accounts.id, transactions.accountId))
       .leftJoin(merchants, eq(merchants.id, transactions.merchantId))
       .leftJoin(categories, eq(categories.id, transactions.categoryId))
+      .leftJoin(envelopes, eq(envelopes.id, transactions.envelopeId))
       .where(and(...conditions))
       .orderBy(desc(transactions.transactedOn), desc(transactions.id))
-      .limit(250);
+      .limit(pageSize + 1);
+    const hasMore = fetchedRows.length > pageSize;
+    const rows = hasMore ? fetchedRows.slice(0, pageSize) : fetchedRows;
     const ids = rows.map(({ transaction }) => transaction.id);
     const [tagRows, splitRows, transferRows, refundRows] = ids.length
       ? await Promise.all([
@@ -643,8 +761,9 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
         refundLinksByTransaction.set(transactionId, summaries);
       }
     }
+    const lastRow = rows.at(-1);
     return context.json({
-      data: rows.map(({ transaction, accountName, merchantName, categoryName }) => ({
+      data: rows.map(({ transaction, accountName, merchantName, categoryName, envelopeName }) => ({
         id: transaction.id,
         effectiveDate: transaction.postedAt ?? transaction.authorizedAt ?? transaction.transactedOn,
         description: transaction.rawDescription,
@@ -653,10 +772,13 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
         accountId: transaction.accountId,
         accountName,
         categoryName: categoryName ?? "Uncategorized",
-        status: transaction.status === "pending" ? "pending" : "posted",
+        envelopeName: envelopeName ?? null,
+        status: transaction.status,
         reviewState: mapReviewState(transaction.reviewState),
         source: mapSource(transaction.source),
         note: transaction.note ?? undefined,
+        isRecurring: Boolean(transaction.recurringSeriesId),
+        provenance: transactionProvenance(transaction.source),
         tags: tagsByTransaction.get(transaction.id) ?? [],
         isTransfer: transaction.isTransfer,
         isExcluded: transaction.isExcluded,
@@ -671,7 +793,16 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
           amount: money(link.amount, transaction.currency),
         })),
       })),
-      page: { cursor: null, hasMore: false },
+      page: {
+        cursor:
+          hasMore && lastRow
+            ? encodeTransactionCursor({
+                transactedOn: lastRow.transaction.transactedOn,
+                id: lastRow.transaction.id,
+              })
+            : null,
+        hasMore,
+      },
     });
   });
 
@@ -684,16 +815,18 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
         accountName: accounts.name,
         merchantName: merchants.name,
         categoryName: categories.name,
+        envelopeName: envelopes.name,
       })
       .from(transactions)
       .innerJoin(accounts, eq(accounts.id, transactions.accountId))
       .leftJoin(merchants, eq(merchants.id, transactions.merchantId))
       .leftJoin(categories, eq(categories.id, transactions.categoryId))
+      .leftJoin(envelopes, eq(envelopes.id, transactions.envelopeId))
       .where(and(eq(transactions.householdId, auth.householdId), eq(transactions.id, id)))
       .get();
     if (!row) throw new NotFoundError("Transaction");
 
-    const [splitRows, transfer, linkedRefunds] = await Promise.all([
+    const [splitRows, tagRows, transfer, linkedRefunds] = await Promise.all([
       db
         .select({
           id: transactionSplits.id,
@@ -715,6 +848,17 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
           ),
         )
         .orderBy(transactionSplits.sequence),
+      db
+        .select({ name: tags.name })
+        .from(transactionTags)
+        .innerJoin(tags, eq(tags.id, transactionTags.tagId))
+        .where(
+          and(
+            eq(transactionTags.householdId, auth.householdId),
+            eq(transactionTags.transactionId, id),
+          ),
+        )
+        .orderBy(tags.name),
       db
         .select()
         .from(transfers)
@@ -750,10 +894,14 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
       categoryId: row.transaction.categoryId,
       categoryName: row.categoryName ?? "Uncategorized",
       envelopeId: row.transaction.envelopeId,
+      envelopeName: row.envelopeName,
       status: row.transaction.status,
       reviewState: mapReviewState(row.transaction.reviewState),
       source: mapSource(row.transaction.source),
       note: row.transaction.note,
+      tags: tagRows.map(({ name }) => name),
+      isRecurring: Boolean(row.transaction.recurringSeriesId),
+      provenance: transactionProvenance(row.transaction.source),
       isTransfer: row.transaction.isTransfer,
       isExcluded: row.transaction.isExcluded,
       isIncome: row.transaction.isIncome,
@@ -778,6 +926,236 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
         status: link.status,
       })),
     });
+  });
+
+  routes.put("/transactions/:id/tags", requireCsrf(config), async (context) => {
+    const auth = context.get("auth");
+    const id = context.req.param("id");
+    const input = transactionTagsSchema.parse(await context.req.json());
+    const uniqueRequestedTags = new Map<string, { name: string; normalizedName: string }>();
+    for (const value of input.tags) {
+      const name = value.normalize("NFKC").trim().replace(/\s+/g, " ");
+      const normalizedName = normalizedTagName(name);
+      if (!uniqueRequestedTags.has(normalizedName)) {
+        uniqueRequestedTags.set(normalizedName, { name, normalizedName });
+      }
+    }
+    const requestedTags = [...uniqueRequestedTags.values()];
+    const now = new Date().toISOString();
+    const result = db.transaction((transaction) => {
+      const parent = transaction
+        .select({ id: transactions.id, status: transactions.status })
+        .from(transactions)
+        .where(and(eq(transactions.householdId, auth.householdId), eq(transactions.id, id)))
+        .get();
+      if (!parent) return null;
+      if (parent.status === "removed") {
+        throw new ConflictError(
+          "Restore the transaction before changing its tags",
+          "transaction_removed",
+        );
+      }
+
+      const previousTags = transaction
+        .select({ name: tags.name })
+        .from(transactionTags)
+        .innerJoin(tags, eq(tags.id, transactionTags.tagId))
+        .where(
+          and(
+            eq(transactionTags.householdId, auth.householdId),
+            eq(transactionTags.transactionId, id),
+          ),
+        )
+        .orderBy(tags.name)
+        .all()
+        .map(({ name }) => name);
+      const resolvedTags = requestedTags.map((requested) => {
+        const existing = transaction
+          .select({ id: tags.id, name: tags.name })
+          .from(tags)
+          .where(
+            and(
+              eq(tags.householdId, auth.householdId),
+              eq(tags.normalizedName, requested.normalizedName),
+            ),
+          )
+          .get();
+        if (existing) return existing;
+        const tag = { id: ulid(), name: requested.name };
+        transaction
+          .insert(tags)
+          .values({
+            id: tag.id,
+            householdId: auth.householdId,
+            name: tag.name,
+            normalizedName: requested.normalizedName,
+          })
+          .run();
+        return tag;
+      });
+
+      transaction
+        .delete(transactionTags)
+        .where(
+          and(
+            eq(transactionTags.householdId, auth.householdId),
+            eq(transactionTags.transactionId, id),
+          ),
+        )
+        .run();
+      if (resolvedTags.length) {
+        transaction
+          .insert(transactionTags)
+          .values(
+            resolvedTags.map((tag) => ({
+              householdId: auth.householdId,
+              transactionId: id,
+              tagId: tag.id,
+            })),
+          )
+          .run();
+      }
+      transaction
+        .update(transactions)
+        .set({ updatedAt: now })
+        .where(and(eq(transactions.householdId, auth.householdId), eq(transactions.id, id)))
+        .run();
+      transaction
+        .insert(auditEvents)
+        .values({
+          id: ulid(),
+          householdId: auth.householdId,
+          actorUserId: auth.user.id,
+          actorType: "user",
+          action: "transaction.tags_replaced",
+          entityType: "transaction",
+          entityId: id,
+          requestId: context.get("requestId"),
+          metadata: { previousTags, tags: resolvedTags.map(({ name }) => name) },
+        })
+        .run();
+      return resolvedTags.map(({ name }) => name);
+    });
+    if (!result) throw new NotFoundError("Transaction");
+    return context.json({ id, tags: result });
+  });
+
+  routes.delete("/transactions/:id", requireCsrf(config), async (context) => {
+    const auth = context.get("auth");
+    const id = context.req.param("id");
+    const now = new Date().toISOString();
+    const result = db.transaction((transaction) => {
+      const parent = transaction
+        .select({
+          id: transactions.id,
+          status: transactions.status,
+          userOverrideAt: transactions.userOverrideAt,
+        })
+        .from(transactions)
+        .where(and(eq(transactions.householdId, auth.householdId), eq(transactions.id, id)))
+        .get();
+      if (!parent) return null;
+      if (parent.status === "removed") return { previousStatus: parent.status, changed: false };
+      transaction
+        .update(transactions)
+        .set({ status: "removed", userOverrideAt: now, updatedAt: now })
+        .where(and(eq(transactions.householdId, auth.householdId), eq(transactions.id, id)))
+        .run();
+      transaction
+        .insert(auditEvents)
+        .values({
+          id: ulid(),
+          householdId: auth.householdId,
+          actorUserId: auth.user.id,
+          actorType: "user",
+          action: "transaction.removed",
+          entityType: "transaction",
+          entityId: id,
+          requestId: context.get("requestId"),
+          metadata: {
+            previousStatus: parent.status,
+            previousUserOverrideAt: parent.userOverrideAt,
+          },
+        })
+        .run();
+      return { previousStatus: parent.status, changed: true };
+    });
+    if (!result) throw new NotFoundError("Transaction");
+    return context.json({ id, status: "removed" as const, removed: true, changed: result.changed });
+  });
+
+  routes.post("/transactions/:id/restore", requireCsrf(config), async (context) => {
+    const auth = context.get("auth");
+    const id = context.req.param("id");
+    const now = new Date().toISOString();
+    const result = db.transaction((transaction) => {
+      const parent = transaction
+        .select({
+          id: transactions.id,
+          status: transactions.status,
+          postedAt: transactions.postedAt,
+        })
+        .from(transactions)
+        .where(and(eq(transactions.householdId, auth.householdId), eq(transactions.id, id)))
+        .get();
+      if (!parent) return null;
+      if (parent.status !== "removed") {
+        throw new ConflictError("Only a removed transaction can be restored", "transaction_active");
+      }
+      const removalEvent = transaction
+        .select({ id: auditEvents.id, metadata: auditEvents.metadata })
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.householdId, auth.householdId),
+            eq(auditEvents.action, "transaction.removed"),
+            eq(auditEvents.entityType, "transaction"),
+            eq(auditEvents.entityId, id),
+          ),
+        )
+        .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
+        .get();
+      const removalMetadata = transactionRemovalMetadataSchema.safeParse(removalEvent?.metadata);
+      const restoredStatus = parent.postedAt
+        ? ("posted" as const)
+        : removalMetadata.success
+          ? removalMetadata.data.previousStatus
+          : ("pending" as const);
+      transaction
+        .update(transactions)
+        .set({
+          status: restoredStatus,
+          userOverrideAt: removalMetadata.success
+            ? (removalMetadata.data.previousUserOverrideAt ?? null)
+            : null,
+          updatedAt: now,
+        })
+        .where(and(eq(transactions.householdId, auth.householdId), eq(transactions.id, id)))
+        .run();
+      transaction
+        .insert(auditEvents)
+        .values({
+          id: ulid(),
+          householdId: auth.householdId,
+          actorUserId: auth.user.id,
+          actorType: "user",
+          action: "transaction.restored",
+          entityType: "transaction",
+          entityId: id,
+          requestId: context.get("requestId"),
+          metadata: {
+            restoredStatus,
+            restoredUserOverrideAt: removalMetadata.success
+              ? (removalMetadata.data.previousUserOverrideAt ?? null)
+              : null,
+            removalAuditEventId: removalEvent?.id ?? null,
+          },
+        })
+        .run();
+      return restoredStatus;
+    });
+    if (!result) throw new NotFoundError("Transaction");
+    return context.json({ id, status: result, restored: true });
   });
 
   routes.put("/transactions/:id/splits", requireCsrf(config), async (context) => {
@@ -830,16 +1208,17 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
     if (validEnvelopes.length !== envelopeIds.length) throw new NotFoundError("Envelope");
 
     const now = new Date().toISOString();
-    const created = await db.transaction(async (transaction) => {
-      await transaction
+    const created = db.transaction((transaction) => {
+      transaction
         .delete(transactionSplits)
         .where(
           and(
             eq(transactionSplits.householdId, auth.householdId),
             eq(transactionSplits.transactionId, id),
           ),
-        );
-      const rows = await transaction
+        )
+        .run();
+      const rows = transaction
         .insert(transactionSplits)
         .values(
           input.splits.map((split, sequence) => ({
@@ -853,8 +1232,9 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
             memo: split.memo,
           })),
         )
-        .returning();
-      await transaction
+        .returning()
+        .all();
+      transaction
         .update(transactions)
         .set({
           categoryId: null,
@@ -864,7 +1244,8 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
           userOverrideAt: now,
           updatedAt: now,
         })
-        .where(and(eq(transactions.householdId, auth.householdId), eq(transactions.id, id)));
+        .where(and(eq(transactions.householdId, auth.householdId), eq(transactions.id, id)))
+        .run();
       return rows;
     });
     return context.json({
@@ -888,8 +1269,8 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
       .where(and(eq(transactions.householdId, auth.householdId), eq(transactions.id, id)))
       .get();
     if (!parent) throw new NotFoundError("Transaction");
-    const deleted = await db.transaction(async (transaction) => {
-      const rows = await transaction
+    const deleted = db.transaction((transaction) => {
+      const rows = transaction
         .delete(transactionSplits)
         .where(
           and(
@@ -897,9 +1278,10 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
             eq(transactionSplits.transactionId, id),
           ),
         )
-        .returning({ id: transactionSplits.id });
+        .returning({ id: transactionSplits.id })
+        .all();
       if (rows.length) {
-        await transaction
+        transaction
           .update(transactions)
           .set({
             categoryOrigin: "none",
@@ -907,7 +1289,8 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
             userOverrideAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           })
-          .where(and(eq(transactions.householdId, auth.householdId), eq(transactions.id, id)));
+          .where(and(eq(transactions.householdId, auth.householdId), eq(transactions.id, id)))
+          .run();
       }
       return rows;
     });
@@ -1035,30 +1418,60 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
           ),
         )
         .run();
+      transaction
+        .insert(auditEvents)
+        .values({
+          id: ulid(),
+          householdId: auth.householdId,
+          actorUserId: auth.user.id,
+          actorType: "user",
+          action: "movement.confirmed",
+          entityType: "transfer",
+          entityId: id,
+          requestId: context.get("requestId"),
+          metadata: {
+            movementType: "transfer",
+            outflowTransactionId: outflow.id,
+            inflowTransactionId: inflow.id,
+            amountMinorUnits: (-outflow.amount).toString(),
+            currency: outflow.currency,
+            evidence: {
+              source: exactExisting?.status === "suggested" ? "suggestion" : "manual",
+              matchedBy: exactExisting?.matchedBy ?? "user",
+              confidenceBps: exactExisting?.confidenceBps ?? 10_000,
+            },
+          },
+        })
+        .run();
     });
     return context.json({ id, status: "confirmed" }, 201);
   });
 
   routes.delete("/transfers/:id", requireCsrf(config), async (context) => {
     const auth = context.get("auth");
-    const transfer = await db
-      .select()
-      .from(transfers)
-      .where(
-        and(eq(transfers.householdId, auth.householdId), eq(transfers.id, context.req.param("id"))),
-      )
-      .get();
-    if (!transfer) throw new NotFoundError("Transfer");
-    if (transfer.status === "rejected") return context.body(null, 204);
-    const transactionIds = [transfer.outflowTransactionId, transfer.inflowTransactionId];
+    const transferId = context.req.param("id");
     const now = new Date().toISOString();
     db.transaction((transaction) => {
+      const transfer = transaction
+        .select()
+        .from(transfers)
+        .where(and(eq(transfers.householdId, auth.householdId), eq(transfers.id, transferId)))
+        .get();
+      if (!transfer) throw new NotFoundError("Transfer");
+      if (transfer.status === "rejected") return;
       transaction
         .update(transfers)
         .set({ status: "rejected", updatedAt: now })
-        .where(and(eq(transfers.householdId, auth.householdId), eq(transfers.id, transfer.id)))
+        .where(
+          and(
+            eq(transfers.householdId, auth.householdId),
+            eq(transfers.id, transfer.id),
+            ne(transfers.status, "rejected"),
+          ),
+        )
         .run();
       if (transfer.status === "confirmed") {
+        const transactionIds = [transfer.outflowTransactionId, transfer.inflowTransactionId];
         transaction
           .update(transactions)
           .set({
@@ -1076,6 +1489,27 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
           )
           .run();
       }
+      transaction
+        .insert(auditEvents)
+        .values({
+          id: ulid(),
+          householdId: auth.householdId,
+          actorUserId: auth.user.id,
+          actorType: "user",
+          action: "movement.rejected",
+          entityType: "transfer",
+          entityId: transfer.id,
+          requestId: context.get("requestId"),
+          metadata: {
+            movementType: "transfer",
+            previousStatus: transfer.status,
+            outflowTransactionId: transfer.outflowTransactionId,
+            inflowTransactionId: transfer.inflowTransactionId,
+            matchedBy: transfer.matchedBy,
+            confidenceBps: transfer.confidenceBps,
+          },
+        })
+        .run();
     });
     return context.body(null, 204);
   });
@@ -1204,6 +1638,30 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
         })
         .where(and(eq(transactions.householdId, auth.householdId), eq(transactions.id, refund.id)))
         .run();
+      transaction
+        .insert(auditEvents)
+        .values({
+          id: ulid(),
+          householdId: auth.householdId,
+          actorUserId: auth.user.id,
+          actorType: "user",
+          action: "movement.confirmed",
+          entityType: "refund_link",
+          entityId: id,
+          requestId: context.get("requestId"),
+          metadata: {
+            movementType: "refund",
+            refundTransactionId: refund.id,
+            purchaseTransactionId: purchase.id,
+            amountMinorUnits: requested.toString(),
+            currency: refund.currency,
+            evidence: {
+              source: exact?.status === "suggested" ? "suggestion" : "manual",
+              confidenceBps: exact?.confidenceBps ?? 10_000,
+            },
+          },
+        })
+        .run();
       return { id, requested };
     });
     return context.json(
@@ -1218,24 +1676,26 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
 
   routes.delete("/refund-links/:id", requireCsrf(config), async (context) => {
     const auth = context.get("auth");
-    const link = await db
-      .select()
-      .from(refundLinks)
-      .where(
-        and(
-          eq(refundLinks.householdId, auth.householdId),
-          eq(refundLinks.id, context.req.param("id")),
-        ),
-      )
-      .get();
-    if (!link) throw new NotFoundError("Refund link");
-    if (link.status === "rejected") return context.body(null, 204);
+    const linkId = context.req.param("id");
     const now = new Date().toISOString();
     db.transaction((transaction) => {
+      const link = transaction
+        .select()
+        .from(refundLinks)
+        .where(and(eq(refundLinks.householdId, auth.householdId), eq(refundLinks.id, linkId)))
+        .get();
+      if (!link) throw new NotFoundError("Refund link");
+      if (link.status === "rejected") return;
       transaction
         .update(refundLinks)
         .set({ status: "rejected", updatedAt: now })
-        .where(and(eq(refundLinks.householdId, auth.householdId), eq(refundLinks.id, link.id)))
+        .where(
+          and(
+            eq(refundLinks.householdId, auth.householdId),
+            eq(refundLinks.id, link.id),
+            ne(refundLinks.status, "rejected"),
+          ),
+        )
         .run();
       if (link.status === "confirmed") {
         const remaining = transaction
@@ -1267,6 +1727,27 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
           )
           .run();
       }
+      transaction
+        .insert(auditEvents)
+        .values({
+          id: ulid(),
+          householdId: auth.householdId,
+          actorUserId: auth.user.id,
+          actorType: "user",
+          action: "movement.rejected",
+          entityType: "refund_link",
+          entityId: link.id,
+          requestId: context.get("requestId"),
+          metadata: {
+            movementType: "refund",
+            previousStatus: link.status,
+            refundTransactionId: link.refundTransactionId,
+            purchaseTransactionId: link.purchaseTransactionId,
+            amountMinorUnits: link.amount.toString(),
+            confidenceBps: link.confidenceBps,
+          },
+        })
+        .run();
     });
     return context.body(null, 204);
   });
@@ -1329,6 +1810,9 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
       )
       .get();
     if (!existing) throw new NotFoundError("Transaction");
+    if (existing.status === "removed") {
+      throw new ConflictError("Restore the transaction before changing it", "transaction_removed");
+    }
     const merchantId = input.merchant
       ? await ensureMerchant(db, auth.householdId, input.merchant)
       : undefined;
@@ -1357,19 +1841,34 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
         userOverrideAt: new Date().toISOString(),
       })
       .where(and(eq(transactions.householdId, auth.householdId), eq(transactions.id, existing.id)));
-    const updated = await db
-      .select({
-        transaction: transactions,
-        accountName: accounts.name,
-        merchantName: merchants.name,
-        categoryName: categories.name,
-      })
-      .from(transactions)
-      .innerJoin(accounts, eq(accounts.id, transactions.accountId))
-      .leftJoin(merchants, eq(merchants.id, transactions.merchantId))
-      .leftJoin(categories, eq(categories.id, transactions.categoryId))
-      .where(and(eq(transactions.householdId, auth.householdId), eq(transactions.id, existing.id)))
-      .get();
+    const [updated, updatedTags] = await Promise.all([
+      db
+        .select({
+          transaction: transactions,
+          accountName: accounts.name,
+          merchantName: merchants.name,
+          categoryName: categories.name,
+        })
+        .from(transactions)
+        .innerJoin(accounts, eq(accounts.id, transactions.accountId))
+        .leftJoin(merchants, eq(merchants.id, transactions.merchantId))
+        .leftJoin(categories, eq(categories.id, transactions.categoryId))
+        .where(
+          and(eq(transactions.householdId, auth.householdId), eq(transactions.id, existing.id)),
+        )
+        .get(),
+      db
+        .select({ name: tags.name })
+        .from(transactionTags)
+        .innerJoin(tags, eq(tags.id, transactionTags.tagId))
+        .where(
+          and(
+            eq(transactionTags.householdId, auth.householdId),
+            eq(transactionTags.transactionId, existing.id),
+          ),
+        )
+        .orderBy(tags.name),
+    ]);
     if (!updated) throw new NotFoundError("Transaction");
     return context.json({
       id: updated.transaction.id,
@@ -1383,11 +1882,11 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
       accountId: updated.transaction.accountId,
       accountName: updated.accountName,
       categoryName: updated.categoryName ?? "Uncategorized",
-      status: updated.transaction.status === "pending" ? "pending" : "posted",
+      status: updated.transaction.status,
       reviewState: mapReviewState(updated.transaction.reviewState),
       source: mapSource(updated.transaction.source),
       note: updated.transaction.note ?? undefined,
-      tags: [],
+      tags: updatedTags.map(({ name }) => name),
     });
   });
 
@@ -1399,28 +1898,79 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
     const categoryId = body.patch.categoryName
       ? await ensureCategory(db, auth.householdId, body.patch.categoryName)
       : undefined;
-    const updatedRows = db
-      .update(transactions)
-      .set({
-        categoryId,
-        categoryOrigin: categoryId ? "user" : undefined,
-        note: body.patch.note,
-        reviewState:
-          body.patch.reviewState === "approved"
-            ? "reviewed"
-            : body.patch.reviewState === "needs_review"
-              ? "needs_review"
-              : undefined,
-        isExcluded: body.patch.isExcluded,
-        isTransfer: body.patch.isTransfer,
-        userOverrideAt: new Date().toISOString(),
-      })
-      .where(
-        and(eq(transactions.householdId, auth.householdId), inArray(transactions.id, body.ids)),
-      )
-      .returning({ id: transactions.id })
-      .all();
-    return context.json({ affected: updatedRows.length, reversibleBatchId: ulid() });
+    const batchId = ulid();
+    const now = new Date().toISOString();
+    const affectedIds = db.transaction((transaction) => {
+      const requestedIds = [...new Set(body.ids)];
+      const eligibleIds = new Set(
+        transaction
+          .select({ id: transactions.id })
+          .from(transactions)
+          .where(
+            and(
+              eq(transactions.householdId, auth.householdId),
+              inArray(transactions.id, requestedIds),
+              ne(transactions.status, "removed"),
+            ),
+          )
+          .all()
+          .map(({ id }) => id),
+      );
+      const ids = requestedIds.filter((id) => eligibleIds.has(id));
+      if (ids.length) {
+        transaction
+          .update(transactions)
+          .set({
+            categoryId,
+            categoryOrigin: categoryId ? "user" : undefined,
+            note: body.patch.note,
+            reviewState:
+              body.patch.reviewState === "approved"
+                ? "reviewed"
+                : body.patch.reviewState === "needs_review"
+                  ? "needs_review"
+                  : body.patch.reviewState === "ready"
+                    ? "none"
+                    : undefined,
+            status: body.patch.status,
+            isExcluded: body.patch.isExcluded,
+            isTransfer: body.patch.isTransfer,
+            isIncome: body.patch.isIncome,
+            userOverrideAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(transactions.householdId, auth.householdId),
+              inArray(transactions.id, ids),
+              ne(transactions.status, "removed"),
+            ),
+          )
+          .run();
+      }
+      transaction
+        .insert(auditEvents)
+        .values({
+          id: batchId,
+          householdId: auth.householdId,
+          actorUserId: auth.user.id,
+          actorType: "user",
+          action: "transaction.bulk_updated",
+          entityType: "transaction_batch",
+          entityId: batchId,
+          requestId: context.get("requestId"),
+          metadata: {
+            batchId,
+            transactionIds: ids,
+            categoryId: categoryId ?? null,
+            categoryName: body.patch.categoryName ?? null,
+            patch: body.patch,
+          },
+        })
+        .run();
+      return ids;
+    });
+    return context.json({ affected: affectedIds.length, batchId });
   });
 
   return routes;

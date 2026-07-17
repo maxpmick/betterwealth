@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { balanceSnapshots, transactions } from "@betterwealth/db/schema";
-import { eq } from "drizzle-orm";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { balanceSnapshots } from "@betterwealth/db/schema";
+import { eq } from "drizzle-orm";
 import type { BetterWealthApplication } from "../app";
 import { createApp } from "../app";
 import { loadConfig } from "../config";
@@ -272,6 +272,76 @@ describe("dashboard planning truth", () => {
     ]);
   });
 
+  test("excludes hidden and closed balances while preserving recoverable inclusion settings", async () => {
+    const createAccount = async (name: string, balanceMinorUnits: string) => {
+      const response = await request("/accounts", {
+        name,
+        group: "cash",
+        type: "checking",
+        currency: "USD",
+        balanceMinorUnits,
+        includeInBudget: true,
+      });
+      expect(response.status).toBe(201);
+      return (await response.json()) as { id: string };
+    };
+    const active = await createAccount("Active checking", "100000");
+    const hidden = await createAccount("Hidden vault", "900000");
+    const closed = await createAccount("Closed checking", "700000");
+
+    expect((await request(`/accounts/${hidden.id}`, { status: "hidden" }, "PATCH")).status).toBe(
+      200,
+    );
+    expect((await request(`/accounts/${closed.id}`, { status: "closed" }, "PATCH")).status).toBe(
+      200,
+    );
+
+    const dashboard = (await (await request("/reports/dashboard")).json()) as {
+      availableCash: { minorUnits: string };
+    };
+    expect(dashboard.availableCash.minorUnits).toBe("100000");
+    const netWorth = (await (await request("/reports/net-worth?range=All")).json()) as {
+      total: { minorUnits: string };
+      assets: { minorUnits: string };
+    };
+    expect(netWorth.total.minorUnits).toBe("100000");
+    expect(netWorth.assets.minorUnits).toBe("100000");
+
+    const accountList = (await (await request("/accounts")).json()) as {
+      data: Array<{
+        id: string;
+        status: string;
+        includeInBudget: boolean;
+        includeInNetWorth: boolean;
+      }>;
+    };
+    expect(accountList.data.find(({ id }) => id === hidden.id)).toMatchObject({
+      status: "hidden",
+      includeInBudget: true,
+      includeInNetWorth: true,
+    });
+    expect(accountList.data.find(({ id }) => id === closed.id)).toMatchObject({
+      status: "closed",
+      includeInBudget: true,
+      includeInNetWorth: true,
+    });
+
+    expect((await request(`/accounts/${hidden.id}`, { status: "active" }, "PATCH")).status).toBe(
+      200,
+    );
+    const reopenedDashboard = (await (await request("/reports/dashboard")).json()) as {
+      availableCash: { minorUnits: string };
+    };
+    expect(reopenedDashboard.availableCash.minorUnits).toBe("1000000");
+    const reopenedNetWorth = (await (await request("/reports/net-worth?range=All")).json()) as {
+      total: { minorUnits: string };
+    };
+    expect(reopenedNetWorth.total.minorUnits).toBe("1000000");
+
+    const activeRecord = accountList.data.find(({ id }) => id === active.id);
+    expect(activeRecord).toMatchObject({ status: "active" });
+  });
+
   test("does not treat an expense-category credit as a refund before confirmation", async () => {
     const accountResponse = await request("/accounts", {
       name: "Refund safety checking",
@@ -287,8 +357,13 @@ describe("dashboard planning truth", () => {
       kind: "expense",
     });
     const category = (await categoryResponse.json()) as { id: string };
+    const secondCategoryResponse = await request("/categories", {
+      name: "Refund safety home",
+      kind: "expense",
+    });
+    const secondCategory = (await secondCategoryResponse.json()) as { id: string };
     const effectiveDate = new Date().toISOString();
-    await request("/transactions", {
+    const purchaseResponse = await request("/transactions", {
       accountId: account.id,
       amountMinorUnits: "-10000",
       currency: "USD",
@@ -296,9 +371,19 @@ describe("dashboard planning truth", () => {
       description: "Refund safety purchase",
       categoryId: category.id,
     });
+    const purchase = (await purchaseResponse.json()) as { id: string };
+    const secondPurchaseResponse = await request("/transactions", {
+      accountId: account.id,
+      amountMinorUnits: "-5000",
+      currency: "USD",
+      effectiveDate,
+      description: "Refund safety second purchase",
+      categoryId: secondCategory.id,
+    });
+    const secondPurchase = (await secondPurchaseResponse.json()) as { id: string };
     const creditResponse = await request("/transactions", {
       accountId: account.id,
-      amountMinorUnits: "2500",
+      amountMinorUnits: "10000",
       currency: "USD",
       effectiveDate,
       description: "Refund safety credit",
@@ -316,12 +401,20 @@ describe("dashboard planning truth", () => {
     const beforeCashFlow = (await (await request("/reports/cash-flow")).json()) as {
       months: Array<{ month: string; expenses: { minorUnits: string } }>;
     };
-    expect(beforeCashFlow.months.at(-1)?.expenses.minorUnits).toBe("10000");
+    expect(beforeCashFlow.months.at(-1)?.expenses.minorUnits).toBe("15000");
 
-    await application.db
-      .update(transactions)
-      .set({ isReimbursement: true })
-      .where(eq(transactions.id, credit.id));
+    const confirmation = await request("/refund-links", {
+      refundTransactionId: credit.id,
+      purchaseTransactionId: purchase.id,
+      amountMinorUnits: "2500",
+    });
+    expect(confirmation.status).toBe(201);
+    const secondConfirmation = await request("/refund-links", {
+      refundTransactionId: credit.id,
+      purchaseTransactionId: secondPurchase.id,
+      amountMinorUnits: "5000",
+    });
+    expect(secondConfirmation.status).toBe(201);
     const afterSpending = (await (await request("/reports/spending")).json()) as {
       categories: Array<{ category: string; amount: { minorUnits: string } }>;
     };
@@ -329,5 +422,12 @@ describe("dashboard planning truth", () => {
       afterSpending.categories.find(({ category: name }) => name === "Refund safety groceries")
         ?.amount.minorUnits,
     ).toBe("7500");
+    expect(
+      afterSpending.categories.find(({ category: name }) => name === "Refund safety home"),
+    ).toBeUndefined();
+    const afterCashFlow = (await (await request("/reports/cash-flow")).json()) as {
+      months: Array<{ month: string; expenses: { minorUnits: string } }>;
+    };
+    expect(afterCashFlow.months.at(-1)?.expenses.minorUnits).toBe("7500");
   });
 });

@@ -89,17 +89,20 @@ export interface NetWorthReport {
 
 export interface ApiTransaction {
   id: string;
-  accountId?: string;
+  accountId: string;
   effectiveDate: string;
   description: string;
   merchant: string;
   amount: Money;
   accountName: string;
   categoryName: string;
-  status: "pending" | "posted";
+  envelopeName?: string | null;
+  status: "pending" | "posted" | "removed" | "void";
   reviewState: "ready" | "needs_review" | "approved";
   source: "simplefin" | "manual" | "import";
   note?: string | null;
+  isRecurring?: boolean;
+  provenance?: string;
   tags: string[];
   isTransfer?: boolean;
   isExcluded?: boolean;
@@ -107,6 +110,24 @@ export interface ApiTransaction {
   hasSplits?: boolean;
   transferId?: string;
   refundLinkIds?: string[];
+  transfer?: ApiTransferMatch;
+  refundLinks?: ApiRefundLinkMatch[];
+}
+
+export interface ApiTransferMatch {
+  id: string;
+  outflowTransactionId: string;
+  inflowTransactionId: string;
+  status: "suggested" | "confirmed" | "rejected" | "unmatched";
+  matchedBy: "provider" | "fingerprint" | "user";
+}
+
+export interface ApiRefundLinkMatch {
+  id: string;
+  refundTransactionId: string;
+  purchaseTransactionId: string;
+  amount: Money;
+  status: "suggested" | "confirmed" | "rejected";
 }
 
 export interface ApiCapabilities {
@@ -128,26 +149,17 @@ export interface ApiTransactionSplit {
 }
 
 export interface ApiTransactionDetail
-  extends Omit<ApiTransaction, "status" | "hasSplits" | "transferId" | "refundLinkIds"> {
+  extends Omit<
+    ApiTransaction,
+    "status" | "hasSplits" | "transferId" | "refundLinkIds" | "transfer" | "refundLinks"
+  > {
   accountId: string;
   categoryId: string | null;
   envelopeId: string | null;
-  status: "pending" | "posted" | "void";
+  status: "pending" | "posted" | "removed" | "void";
   splits: ApiTransactionSplit[];
-  transfer: {
-    id: string;
-    outflowTransactionId: string;
-    inflowTransactionId: string;
-    status: "suggested" | "confirmed" | "rejected";
-    matchedBy: "provider" | "rule" | "heuristic" | "user";
-  } | null;
-  refundLinks: Array<{
-    id: string;
-    refundTransactionId: string;
-    purchaseTransactionId: string;
-    amount: Money;
-    status: "suggested" | "confirmed" | "rejected";
-  }>;
+  transfer: ApiTransferMatch | null;
+  refundLinks: ApiRefundLinkMatch[];
 }
 
 export interface ApiTransactionImportResult {
@@ -164,6 +176,13 @@ export interface ApiAccount {
   name: string;
   mask: string;
   group: "cash" | "credit" | "loan" | "investment" | "property" | "vehicle" | "crypto" | "custom";
+  type?: string;
+  subtype?: string | null;
+  institutionName?: string | null;
+  isManual?: boolean;
+  includeInBudget?: boolean;
+  includeInNetWorth?: boolean;
+  status?: "active" | "closed" | "hidden" | "stale";
   balance: Money;
   availableBalance?: Money;
   syncStatus: "healthy" | "syncing" | "attention" | "manual";
@@ -205,10 +224,10 @@ export interface AccountUpdateInput {
   mask?: string;
   group?: ApiAccount["group"];
   type?: string;
-  subtype?: string;
+  subtype?: string | null;
   includeInBudget?: boolean;
   includeInNetWorth?: boolean;
-  status?: "active" | "stale" | "closed";
+  status?: "active" | "stale" | "closed" | "hidden";
   balanceMinorUnits?: string;
 }
 
@@ -470,6 +489,7 @@ export interface ApiAiSuggestion {
   merchant: string;
   categoryId: string;
   categoryName: string;
+  categoryPath?: string[];
   confidence: number;
   rationale: string;
   amount?: Money;
@@ -564,6 +584,7 @@ export interface AiIntegrationConfig {
   baseUrl: string;
   model: string | null;
   confidenceThreshold: number;
+  webResearchEnabled: boolean;
 }
 
 export interface ApiSession {
@@ -845,6 +866,10 @@ export const api = {
     request<NetWorthReport>(`/reports/net-worth?range=${encodeURIComponent(range)}`),
   transactions: (query = "") =>
     request<CursorPage<ApiTransaction>>(`/transactions${query ? `?${query}` : ""}`),
+  accountTransactions: (accountId: string, limit = 100) => {
+    const query = new URLSearchParams({ accountId, limit: String(limit) });
+    return request<CursorPage<ApiTransaction>>(`/transactions?${query.toString()}`);
+  },
   transaction: (id: string) =>
     request<ApiTransactionDetail>(`/transactions/${encodeURIComponent(id)}`),
   updateTransaction: (id: string, patch: Partial<ApiTransaction>) =>
@@ -852,8 +877,24 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
+  replaceTransactionTags: (id: string, tags: string[]) =>
+    request<{ id: string; tags: string[] }>(`/transactions/${encodeURIComponent(id)}/tags`, {
+      method: "PUT",
+      body: JSON.stringify({ tags }),
+    }),
+  removeTransaction: (id: string) =>
+    request<{ id: string; status: "removed"; removed: true; changed: boolean }>(
+      `/transactions/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
+  restoreTransaction: (id: string) =>
+    request<{
+      id: string;
+      status: "pending" | "posted" | "void";
+      restored: true;
+    }>(`/transactions/${encodeURIComponent(id)}/restore`, { method: "POST" }),
   bulkTransactions: (input: { ids: string[]; patch: Partial<ApiTransaction> }) =>
-    request<{ affected: number; reversibleBatchId: string }>("/transactions/bulk", {
+    request<{ affected: number; batchId: string }>("/transactions/bulk", {
       method: "POST",
       headers: { "Idempotency-Key": idempotencyKey() },
       body: JSON.stringify(input),
@@ -1135,12 +1176,18 @@ export const api = {
     model: string;
     apiKey?: string;
     confidenceThreshold: number;
+    webResearchEnabled: boolean;
   }) =>
     request<AiIntegrationConfig>("/settings/integrations/ai", {
       method: "PUT",
       body: JSON.stringify(input),
     }),
   aiSuggestions: () => request<CursorPage<ApiAiSuggestion>>("/ai/suggestions"),
+  regenerateAiSuggestion: (id: string, input: { feedback: string; allowWebResearch?: boolean }) =>
+    request<ApiAiSuggestion>(`/ai/suggestions/${encodeURIComponent(id)}/regenerate`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
   reviewAiSuggestion: (
     id: string,
     input: { status: "accepted" | "rejected"; createRule: boolean },

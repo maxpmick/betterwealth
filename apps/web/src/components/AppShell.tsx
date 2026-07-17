@@ -404,7 +404,17 @@ function TopBar() {
   const [quickAnchor, setQuickAnchor] = useState<HTMLElement | null>(null);
   const navigate = useNavigate();
   const demo = isDemoMode();
-  const syncRun = useMutation({ mutationFn: api.sync });
+  const queryClient = useQueryClient();
+  const [syncNotice, setSyncNotice] = useState("");
+  const syncRun = useMutation({
+    mutationFn: api.sync,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries();
+      setSyncNotice(
+        "Account sync queued. Fresh balances and transactions will appear as the run completes.",
+      );
+    },
+  });
 
   useEffect(() => {
     const openSearch = (event: KeyboardEvent) => {
@@ -425,6 +435,11 @@ function TopBar() {
   const sync = () => {
     if (!demo) syncRun.mutate();
   };
+  const syncLabel = demo
+    ? "Sync unavailable for demo data"
+    : syncRun.isError
+      ? "Sync failed; try again"
+      : "Sync accounts now";
 
   return (
     <>
@@ -495,15 +510,12 @@ function TopBar() {
               {resolvedMode === "dark" ? <DarkModeRounded /> : <LightModeRounded />}
             </IconButton>
           </Tooltip>
-          <Tooltip
-            describeChild
-            title={syncRun.isError ? "Sync failed; try again" : "Sync accounts now"}
-          >
+          <Tooltip describeChild title={syncLabel}>
             <span>
               <IconButton
-                aria-label={syncRun.isError ? "Sync failed; try again" : "Sync accounts now"}
+                aria-label={syncLabel}
                 color={syncRun.isError ? "error" : "default"}
-                disabled={syncRun.isPending}
+                disabled={syncRun.isPending || demo}
                 onClick={sync}
                 sx={{ display: { xs: "inline-flex", sm: "none" } }}
               >
@@ -519,7 +531,7 @@ function TopBar() {
           <Button
             variant="text"
             color={syncRun.isError ? "error" : "inherit"}
-            aria-label={syncRun.isError ? "Sync failed; try again" : "Sync accounts now"}
+            aria-label={syncLabel}
             startIcon={
               <SyncRounded
                 sx={{
@@ -529,7 +541,7 @@ function TopBar() {
               />
             }
             onClick={sync}
-            disabled={syncRun.isPending}
+            disabled={syncRun.isPending || demo}
             sx={{
               display: { xs: "none", sm: "flex" },
               color: syncRun.isError ? "error.main" : "text.secondary",
@@ -537,11 +549,13 @@ function TopBar() {
           >
             {syncRun.isPending
               ? "Syncing"
-              : syncRun.isError
-                ? "Sync failed"
-                : syncRun.data?.state === "queued" || syncRun.data?.state === "leased"
-                  ? "Sync queued"
-                  : "Sync now"}
+              : demo
+                ? "Demo data"
+                : syncRun.isError
+                  ? "Sync failed"
+                  : syncRun.data?.state === "queued" || syncRun.data?.state === "leased"
+                    ? "Sync queued"
+                    : "Sync now"}
           </Button>
           <Button
             variant="contained"
@@ -586,6 +600,17 @@ function TopBar() {
         })}
       </Menu>
       <CommandPalette open={searchOpen} onClose={() => setSearchOpen(false)} />
+      <Snackbar
+        open={Boolean(syncNotice)}
+        autoHideDuration={6000}
+        onClose={() => setSyncNotice("")}
+        message={syncNotice}
+        action={
+          <Button color="secondary" onClick={() => setSyncNotice("")}>
+            Dismiss
+          </Button>
+        }
+      />
     </>
   );
 }

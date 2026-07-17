@@ -2,9 +2,11 @@ import type { BetterWealthDatabase } from "@betterwealth/db";
 import {
   accounts,
   aiSuggestions,
+  auditEvents,
   categories,
   connections,
   merchants,
+  refundLinks,
   ruleRuns,
   rules,
   settings,
@@ -30,6 +32,7 @@ import {
   type CategorizationSuggestion,
   coarseAmountBand,
   suggestTransactionCategory,
+  verifyTransactionCategorization,
 } from "../integrations/openrouter";
 import { FieldCipher, sha256 } from "../lib/crypto";
 import { AppError } from "../lib/errors";
@@ -42,6 +45,7 @@ const aiSecretSchema = z.object({
   model: z.string().min(1),
   apiKey: z.string().min(10),
   confidenceThreshold: z.number().min(0).max(1),
+  webResearchEnabled: z.boolean().default(false),
 });
 
 type TransactionContext = {
@@ -54,8 +58,18 @@ type TransactionContext = {
 type CategoryKind = "income" | "expense" | "transfer" | "debt" | "investment";
 
 const AI_RUN_DEADLINE_MS = 120_000;
-const MAX_CONSECUTIVE_PROVIDER_FAILURES = 3;
+// Authentication, rate-limit, and unsafe-egress failures still open immediately. A small run of
+// schema-invalid model replies is tolerated because free OpenAI-compatible models can be noisy
+// even after a successful synthetic preflight.
+const MAX_CONSECUTIVE_PROVIDER_FAILURES = 5;
 const PROVIDER_CIRCUIT_SENTINEL = "__betterwealth_ai_provider_circuit_open__";
+
+type ActiveCategoryRow = {
+  id: string;
+  name: string;
+  parentId: string | null;
+  kind: CategoryKind;
+};
 
 class EvaluatedTransactionChangedError extends Error {
   constructor() {
@@ -199,6 +213,84 @@ function configuredAi(
   return undefined;
 }
 
+function categorySlug(name: string) {
+  return (
+    name
+      .normalize("NFKD")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "category"
+  );
+}
+
+async function ensureVerifiedCategoryPath(input: {
+  db: BetterWealthDatabase;
+  householdId: string;
+  proposal: {
+    topLevelName: string;
+    childName?: string | null;
+    kind: CategoryKind;
+  };
+}) {
+  const find = async (name: string, parentId: string | null) =>
+    input.db
+      .select({
+        id: categories.id,
+        name: categories.name,
+        parentId: categories.parentId,
+        kind: categories.kind,
+      })
+      .from(categories)
+      .where(
+        and(
+          eq(categories.householdId, input.householdId),
+          eq(categories.isActive, true),
+          parentId ? eq(categories.parentId, parentId) : isNull(categories.parentId),
+          sql`lower(trim(${categories.name})) = ${name.trim().toLowerCase()}`,
+        ),
+      )
+      .get();
+  const create = async (name: string, parentId: string | null) => {
+    const id = ulid();
+    const baseSlug = categorySlug(name);
+    const slugExists = await input.db
+      .select({ id: categories.id })
+      .from(categories)
+      .where(and(eq(categories.householdId, input.householdId), eq(categories.slug, baseSlug)))
+      .get();
+    const row: ActiveCategoryRow = {
+      id,
+      name: name.trim(),
+      parentId,
+      kind: input.proposal.kind,
+    };
+    await input.db.insert(categories).values({
+      ...row,
+      householdId: input.householdId,
+      slug: slugExists ? `${baseSlug}-${id.slice(-6).toLowerCase()}` : baseSlug,
+      isActive: true,
+      isSystem: false,
+      sortOrder: 1_000,
+    });
+    return row;
+  };
+  const topName = input.proposal.topLevelName.trim();
+  const existingTop = await find(topName, null);
+  const top = existingTop ?? (await create(topName, null));
+  const childName = input.proposal.childName?.trim();
+  if (!childName || childName.toLowerCase() === top.name.trim().toLowerCase()) {
+    return { category: top, path: [top.name], rows: [top], created: existingTop ? 0 : 1 };
+  }
+  const existingChild = await find(childName, top.id);
+  const child = existingChild ?? (await create(childName, top.id));
+  return {
+    category: child,
+    path: [top.name, child.name],
+    rows: [top, child],
+    created: Number(!existingTop) + Number(!existingChild),
+  };
+}
+
 function asEngineRule(row: typeof rules.$inferSelect): CategorizationRule | undefined {
   const parsed = CategorizationRuleSchema.safeParse({
     id: row.id,
@@ -262,6 +354,7 @@ async function applyEvaluation(
   householdId: string,
   row: TransactionContext,
   engineRules: CategorizationRule[],
+  preserveConfirmedRefund: boolean,
 ) {
   const evaluation = evaluateRules(asRuleTransaction(row), engineRules);
   if (!evaluation) return { matched: false, applied: false } as const;
@@ -275,10 +368,16 @@ async function applyEvaluation(
     envelopeId: patch.envelopeId ?? row.transaction.envelopeId,
     merchantId: merchantId ?? row.transaction.merchantId,
     recurringSeriesId: patch.recurringSeriesId ?? row.transaction.recurringSeriesId,
-    isTransfer: patch.flags.transfer ?? row.transaction.isTransfer,
-    isIncome: patch.flags.income ?? row.transaction.isIncome,
-    isReimbursement: patch.flags.reimbursement ?? row.transaction.isReimbursement,
-    isExcluded: patch.flags.reportingExcluded ?? row.transaction.isExcluded,
+    isTransfer: preserveConfirmedRefund
+      ? false
+      : (patch.flags.transfer ?? row.transaction.isTransfer),
+    isIncome: preserveConfirmedRefund ? false : (patch.flags.income ?? row.transaction.isIncome),
+    isReimbursement: preserveConfirmedRefund
+      ? true
+      : (patch.flags.reimbursement ?? row.transaction.isReimbursement),
+    isExcluded: preserveConfirmedRefund
+      ? false
+      : (patch.flags.reportingExcluded ?? row.transaction.isExcluded),
     note: patch.note ?? row.transaction.note,
     reviewState: patch.needsReview === true ? ("needs_review" as const) : ("none" as const),
   };
@@ -414,6 +513,20 @@ function providerFailureCode(error: unknown): string {
   return error instanceof AppError ? error.code : "ai_provider_failed";
 }
 
+function providerValidationReasons(error: unknown): string[] {
+  if (!(error instanceof AppError)) return [];
+  const details = error.details;
+  if (!details || typeof details !== "object" || Array.isArray(details)) return [];
+  const values = (details as { validationReason?: unknown }).validationReason;
+  if (!Array.isArray(values)) return [];
+  return values
+    .slice(0, 8)
+    .filter(
+      (value): value is string =>
+        typeof value === "string" && value.length <= 80 && /^[A-Za-z0-9_.-]+:[a-z_]+$/.test(value),
+    );
+}
+
 function opensProviderCircuit(error: unknown): boolean {
   if (!(error instanceof AppError)) return false;
   return (
@@ -433,8 +546,12 @@ async function persistInvalidAiAttempt(input: {
   fingerprint: string;
   model: string;
   code: string;
+  validationReasons?: string[];
 }) {
-  const rationale = `AI output rejected (${input.code})`.slice(0, 280);
+  const reasonSuffix = input.validationReasons?.length
+    ? `: ${input.validationReasons.join(", ")}`
+    : "";
+  const rationale = `AI output rejected (${input.code}${reasonSuffix})`.slice(0, 280);
   await input.db
     .insert(aiSuggestions)
     .values({
@@ -550,9 +667,11 @@ export async function categorizeHouseholdTransactions(input: {
   aiLimit?: number;
   aiRunDeadlineMs?: number;
   suggestCategory?: typeof suggestTransactionCategory;
+  verifyCategory?: typeof verifyTransactionCategorization;
   attemptedFingerprints?: Set<string>;
+  retryInvalidSuggestions?: boolean;
 }) {
-  const [ruleRows, categoryRows, candidates] = await Promise.all([
+  const [ruleRows, categoryRows, candidates, confirmedRefundRows] = await Promise.all([
     input.db
       .select()
       .from(rules)
@@ -596,9 +715,19 @@ export async function categorizeHouseholdTransactions(input: {
       )
       .orderBy(asc(transactions.transactedOn))
       .limit(2_000),
+    input.db
+      .select({ transactionId: refundLinks.refundTransactionId })
+      .from(refundLinks)
+      .where(
+        and(eq(refundLinks.householdId, input.householdId), eq(refundLinks.status, "confirmed")),
+      ),
   ]);
+  const confirmedRefundTransactionIds = new Set(
+    confirmedRefundRows.map(({ transactionId }) => transactionId),
+  );
   const previousSuggestionRows = await input.db
     .select({
+      transactionId: aiSuggestions.transactionId,
       inputFingerprint: aiSuggestions.inputFingerprint,
       status: aiSuggestions.status,
     })
@@ -606,19 +735,53 @@ export async function categorizeHouseholdTransactions(input: {
     .where(eq(aiSuggestions.householdId, input.householdId));
   const attemptedFingerprints = input.attemptedFingerprints ?? new Set<string>();
   for (const row of previousSuggestionRows) {
-    if (row.status !== "expired") attemptedFingerprints.add(row.inputFingerprint);
+    if (row.status !== "expired" && !(input.retryInvalidSuggestions && row.status === "invalid")) {
+      attemptedFingerprints.add(row.inputFingerprint);
+    }
   }
+  const parkedAiTransactionIds = new Set(
+    previousSuggestionRows
+      .filter(({ status }) => status === "pending" || status === "accepted")
+      .map(({ transactionId }) => transactionId),
+  );
+  const invalidAiTransactionIds = new Set(
+    previousSuggestionRows
+      .filter(({ status }) => status === "invalid")
+      .map(({ transactionId }) => transactionId),
+  );
+  const orderedCandidates = input.retryInvalidSuggestions
+    ? [...candidates].sort(
+        (left, right) =>
+          Number(invalidAiTransactionIds.has(left.transaction.id)) -
+          Number(invalidAiTransactionIds.has(right.transaction.id)),
+      )
+    : candidates;
   const engineRules = ruleRows
     .map(asEngineRule)
     .filter((value): value is CategorizationRule => value !== undefined);
   const ai = configuredAi(input.db, input.config, input.householdId, input.userId);
   const parents = new Map(categoryRows.map(({ id, name }) => [id, name]));
   const categoryById = new Map(categoryRows.map((category) => [category.id, category]));
+  const categoryPaths = new Map<string, string>();
+  const categoryPath = (
+    category: (typeof categoryRows)[number],
+    seen = new Set<string>(),
+  ): string => {
+    const cached = categoryPaths.get(category.id);
+    if (cached) return cached;
+    if (!category.parentId || seen.has(category.id)) return category.name;
+    const parent = categoryById.get(category.parentId);
+    if (!parent) return category.name;
+    const path = `${categoryPath(parent, new Set(seen).add(category.id))} / ${category.name}`;
+    categoryPaths.set(category.id, path);
+    return path;
+  };
   const categoryPromptRows = categoryRows.map((category) => {
     const parentName = category.parentId ? parents.get(category.parentId) : undefined;
     return {
       id: category.id,
       name: category.name,
+      path: categoryPath(category),
       ...(parentName ? { parentName } : {}),
     };
   });
@@ -632,6 +795,12 @@ export async function categorizeHouseholdTransactions(input: {
   let aiPending = 0;
   let aiFailed = 0;
   let aiCalls = 0;
+  let aiVerificationCalls = 0;
+  let aiVerificationFailed = 0;
+  let aiVerified = 0;
+  let aiResearchCitations = 0;
+  let aiCreatedCategories = 0;
+  const aiResearchHosts = new Set<string>();
   let aiPreviouslyAttempted = 0;
   let consecutiveProviderFailures = 0;
   let providerCircuitOpen = attemptedFingerprints.has(PROVIDER_CIRCUIT_SENTINEL);
@@ -641,15 +810,23 @@ export async function categorizeHouseholdTransactions(input: {
     : AI_RUN_DEADLINE_MS;
   const providerDeadline = Date.now() + deadlineMs;
 
-  for (const row of candidates) {
+  for (const row of orderedCandidates) {
     const deterministicResult = await applyEvaluation(
       input.db,
       input.householdId,
       row,
       engineRules,
+      confirmedRefundTransactionIds.has(row.transaction.id),
     );
     if (deterministicResult.matched) {
       if (deterministicResult.applied) deterministic += 1;
+      continue;
+    }
+    // A changing taxonomy intentionally changes the provider fingerprint, but it must not cause
+    // the same unresolved transaction to accumulate duplicate suggestions across bounded batches.
+    // Deterministic rules still run first so a newly approved pattern can resolve parked work.
+    if (parkedAiTransactionIds.has(row.transaction.id)) {
+      aiPreviouslyAttempted += 1;
       continue;
     }
     const disclosureScope = aiDisclosureScope(row, input.userId);
@@ -674,6 +851,7 @@ export async function categorizeHouseholdTransactions(input: {
       canonicalJson({
         disclosureScope,
         model: ai.model,
+        verification: ai.webResearchEnabled ? "openrouter-web-v1" : "none",
         transaction: providerTransaction,
         categories: categoryPromptRows,
       }),
@@ -708,18 +886,115 @@ export async function categorizeHouseholdTransactions(input: {
           fingerprint,
           model: ai.model,
           code,
+          validationReasons: providerValidationReasons(error),
         });
       }
+      const fatalProviderFailure = opensProviderCircuit(error);
       if (
-        opensProviderCircuit(error) ||
+        fatalProviderFailure ||
         consecutiveProviderFailures >= MAX_CONSECUTIVE_PROVIDER_FAILURES
       ) {
         providerCircuitOpen = true;
-        attemptedFingerprints.add(PROVIDER_CIRCUIT_SENTINEL);
+        if (fatalProviderFailure) attemptedFingerprints.add(PROVIDER_CIRCUIT_SENTINEL);
       }
       continue;
     }
-    const selectedCategory = categoryById.get(suggestion.categoryId);
+    let selectedCategory = categoryById.get(suggestion.categoryId);
+    const shouldVerify =
+      Boolean(input.verifyCategory) || (ai.webResearchEnabled && !input.suggestCategory);
+    if (shouldVerify) {
+      aiVerificationCalls += 1;
+      try {
+        const selectedPath = selectedCategory?.parentId
+          ? `${parents.get(selectedCategory.parentId) ?? ""} / ${selectedCategory.name}`
+          : selectedCategory?.name;
+        const verified = await (input.verifyCategory ?? verifyTransactionCategorization)({
+          apiKey: ai.apiKey,
+          baseUrl: ai.baseUrl,
+          model: ai.model,
+          transaction: providerTransaction,
+          categories: categoryPromptRows,
+          previousSuggestion: {
+            merchant: suggestion.merchant,
+            categoryId: suggestion.categoryId,
+            ...(selectedPath ? { categoryPath: selectedPath } : {}),
+            confidence: suggestion.confidence,
+            rationale: suggestion.rationale,
+            ...(suggestion.proposedRule ? { proposedRule: suggestion.proposedRule } : {}),
+          },
+          allowCategoryProposal: true,
+        });
+        aiResearchCitations += verified.research.citationCount;
+        for (const host of verified.research.citationHosts) aiResearchHosts.add(host);
+        const verifiedRationale = `Independent web-enabled recheck: ${verified.rationale}`.slice(
+          0,
+          280,
+        );
+        if ("proposedCategory" in verified && verified.proposedCategory) {
+          const proposedCategory = verified.proposedCategory;
+          const materialized = await ensureVerifiedCategoryPath({
+            db: input.db,
+            householdId: input.householdId,
+            proposal: {
+              topLevelName: proposedCategory.topLevelName,
+              kind: proposedCategory.kind,
+              ...(proposedCategory.childName !== undefined
+                ? { childName: proposedCategory.childName }
+                : {}),
+            },
+          });
+          aiCreatedCategories += materialized.created;
+          selectedCategory = materialized.category;
+          for (const category of materialized.rows) {
+            if (categoryById.has(category.id)) continue;
+            categoryRows.push(category);
+            categoryById.set(category.id, category);
+            parents.set(category.id, category.name);
+            categoryPromptRows.push({
+              id: category.id,
+              name: category.name,
+              path: category.parentId
+                ? `${materialized.path[0]} / ${category.name}`
+                : category.name,
+              ...(category.parentId && materialized.path[0]
+                ? { parentName: materialized.path[0] }
+                : {}),
+            });
+          }
+          suggestion = {
+            merchant: verified.merchant,
+            categoryId: materialized.category.id,
+            confidence: verified.confidence,
+            rationale: verifiedRationale,
+            ...(verified.proposedRule ? { proposedRule: verified.proposedRule } : {}),
+          };
+        } else if (verified.categoryId) {
+          suggestion = {
+            merchant: verified.merchant,
+            categoryId: verified.categoryId,
+            confidence: verified.confidence,
+            rationale: verifiedRationale,
+            ...(verified.proposedRule ? { proposedRule: verified.proposedRule } : {}),
+          };
+          selectedCategory = categoryById.get(suggestion.categoryId);
+        }
+        aiVerified += 1;
+        consecutiveProviderFailures = 0;
+      } catch (error) {
+        aiFailed += 1;
+        aiVerificationFailed += 1;
+        consecutiveProviderFailures += 1;
+        const fatalProviderFailure = opensProviderCircuit(error);
+        if (
+          fatalProviderFailure ||
+          consecutiveProviderFailures >= MAX_CONSECUTIVE_PROVIDER_FAILURES
+        ) {
+          providerCircuitOpen = true;
+          if (fatalProviderFailure) attemptedFingerprints.add(PROVIDER_CIRCUIT_SENTINEL);
+        }
+        continue;
+      }
+    }
     if (!selectedCategory) {
       aiFailed += 1;
       consecutiveProviderFailures += 1;
@@ -733,7 +1008,6 @@ export async function categorizeHouseholdTransactions(input: {
       });
       if (consecutiveProviderFailures >= MAX_CONSECUTIVE_PROVIDER_FAILURES) {
         providerCircuitOpen = true;
-        attemptedFingerprints.add(PROVIDER_CIRCUIT_SENTINEL);
       }
       continue;
     }
@@ -843,12 +1117,21 @@ export async function categorizeHouseholdTransactions(input: {
               selectedCategory.kind,
               row.transaction.amount >= 0n ? "inflow" : "outflow",
             ),
-            reviewState:
-              (selectedCategory.kind === "income" && row.transaction.amount < 0n) ||
-              movementNeedsConfirmation(
-                selectedCategory.kind,
-                row.transaction.amount >= 0n ? "inflow" : "outflow",
-              )
+            ...(confirmedRefundTransactionIds.has(row.transaction.id)
+              ? {
+                  isIncome: false,
+                  isTransfer: false,
+                  isExcluded: false,
+                  isReimbursement: true,
+                }
+              : {}),
+            reviewState: confirmedRefundTransactionIds.has(row.transaction.id)
+              ? "none"
+              : (selectedCategory.kind === "income" && row.transaction.amount < 0n) ||
+                  movementNeedsConfirmation(
+                    selectedCategory.kind,
+                    row.transaction.amount >= 0n ? "inflow" : "outflow",
+                  )
                 ? "needs_review"
                 : "none",
             updatedAt: now,
@@ -912,10 +1195,38 @@ export async function categorizeHouseholdTransactions(input: {
       throw error;
     }
   }
+  if (aiVerificationCalls > 0) {
+    await input.db.insert(auditEvents).values({
+      id: ulid(),
+      householdId: input.householdId,
+      actorUserId: input.userId,
+      actorType: "system",
+      action: "ai.categorization_web_verified",
+      entityType: "household",
+      entityId: input.householdId,
+      metadata: {
+        model: ai?.model ?? null,
+        verificationCalls: aiVerificationCalls,
+        verified: aiVerified,
+        failed: aiVerificationFailed,
+        citationCount: aiResearchCitations,
+        citationHosts: [...aiResearchHosts].sort(),
+        createdCategories: aiCreatedCategories,
+        accepted: aiAccepted,
+        pending: aiPending,
+      },
+    });
+  }
   return {
     candidates: candidates.length,
     deterministic,
     aiCalls,
+    aiVerificationCalls,
+    aiVerified,
+    aiVerificationFailed,
+    aiResearchCitations,
+    aiResearchHosts: [...aiResearchHosts].sort(),
+    aiCreatedCategories,
     aiAccepted,
     aiPending,
     aiFailed,

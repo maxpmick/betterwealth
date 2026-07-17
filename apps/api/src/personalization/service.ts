@@ -3,6 +3,8 @@ import type { BetterWealthDatabase } from "@betterwealth/db";
 import {
   accounts,
   aiSuggestions,
+  assets,
+  assetValuations,
   auditEvents,
   balanceSnapshots,
   bills,
@@ -22,6 +24,7 @@ import {
   refundLinks,
   rules,
   settings,
+  transactionSplits,
   transactions,
   transfers,
   users,
@@ -33,10 +36,30 @@ import {
   type RuleCondition,
   ruleSpecificity,
 } from "@betterwealth/shared";
-import { and, asc, desc, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNull,
+  like,
+  lt,
+  lte,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
 import { z } from "zod";
 import { categorizeHouseholdTransactions } from "../categorization/service";
 import type { AppConfig } from "../config";
+import {
+  isRetirementAccount,
+  liquidAccountContribution,
+  liquidAssetContribution,
+} from "../lib/net-worth";
 import { normalizeDescription } from "../sync/reconcile";
 
 const DAY_MS = 86_400_000;
@@ -46,6 +69,7 @@ const STARTER_BUFFER_FLOOR = 100_000n;
 const TRUSTED_PATTERN_COVERAGE_BPS = 6_000;
 const TRUSTED_PATTERN_AGREEMENT_BPS = 8_000;
 const GENERATED_RULE_PRIORITY = 50;
+const REFUND_EXCLUDED_ACCOUNT_GROUPS = new Set(["investment", "crypto", "rewards"]);
 
 type CategoryKind = "income" | "expense" | "transfer" | "debt" | "investment";
 type Direction = "inflow" | "outflow";
@@ -278,8 +302,13 @@ export interface PersonalizeHouseholdInput {
   aiBatchLimit?: number;
   employerHint?: string;
   starterProfile?: boolean;
+  /** Explicitly opt managed paycheck allocations back into generated planning. */
+  rebaseManagedBudget?: boolean;
   now?: Date;
   categorizeTransactions?: typeof categorizeHouseholdTransactions;
+  testHooks?: {
+    beforeLocalCommit?: () => void | Promise<void>;
+  };
 }
 
 type CategoryRow = typeof categories.$inferSelect;
@@ -463,19 +492,46 @@ function buildPattern(key: string, rows: PersonalizationLedgerRow[]): PatternAna
   };
 }
 
-function patternLooksLikeEmployer(pattern: PatternAnalysis, employerHint: string) {
-  const hintTokens = normalizeDescription(employerHint).split(" ").filter(Boolean);
-  if (hintTokens.length === 0) return false;
-  return pattern.rows.every((row) =>
-    [row.normalizedDescription, row.merchantName ?? ""].some((value) => {
-      const evidenceTokens = normalizeDescription(value).split(" ").filter(Boolean);
-      return hintTokens.every((hint) =>
-        evidenceTokens.some(
-          (evidence) => evidence === hint || evidence.startsWith(hint) || hint.startsWith(evidence),
-        ),
-      );
-    }),
+function rowLooksLikeEmployer(row: PersonalizationLedgerRow, hintTokens: readonly string[]) {
+  return [row.normalizedDescription, row.merchantName ?? ""].some((value) => {
+    const evidenceTokens = normalizeDescription(value).split(" ").filter(Boolean);
+    return hintTokens.every((hint) =>
+      evidenceTokens.some(
+        (evidence) => evidence === hint || evidence.startsWith(hint) || hint.startsWith(evidence),
+      ),
+    );
+  });
+}
+
+function withCurrentPayrollAmount(pattern: PatternAnalysis): PatternAnalysis {
+  const ordered = [...pattern.rows].sort(
+    (left, right) =>
+      left.transactedOn.localeCompare(right.transactedOn) || left.id.localeCompare(right.id),
   );
+  let currentRows: PersonalizationLedgerRow[] | undefined;
+  for (let start = 0; start <= ordered.length - 2; start += 1) {
+    const suffix = ordered.slice(start);
+    const amounts = suffix.map(({ amount }) => (amount < 0n ? -amount : amount));
+    const typical = median(amounts);
+    const minimum = amounts.reduce((best, value) => (value < best ? value : best), amounts[0]!);
+    const maximum = amounts.reduce((best, value) => (value > best ? value : best), amounts[0]!);
+    if (ratioBps(maximum - minimum, typical) <= 2_500) {
+      currentRows = suffix;
+      break;
+    }
+  }
+  if (!currentRows || currentRows.length === ordered.length) return pattern;
+  const amounts = currentRows.map(({ amount }) => (amount < 0n ? -amount : amount));
+  const typicalAmount = median(amounts);
+  const amountMin = amounts.reduce((best, value) => (value < best ? value : best), amounts[0]!);
+  const amountMax = amounts.reduce((best, value) => (value > best ? value : best), amounts[0]!);
+  return {
+    ...pattern,
+    typicalAmount,
+    amountMin,
+    amountMax,
+    variabilityBps: ratioBps(amountMax - amountMin, typicalAmount),
+  };
 }
 
 function billEligible(pattern: PatternAnalysis) {
@@ -531,17 +587,30 @@ export function analyzePersonalizationLedger(
     groups.set(key, [...(groups.get(key) ?? []), row]);
   }
   const merchantPatterns = [...groups.entries()].map(([key, rows]) => buildPattern(key, rows));
-  const inflowPatterns = merchantPatterns.filter(
-    (pattern) =>
-      pattern.direction === "inflow" &&
-      pattern.cadence &&
-      pattern.rows.length >= 2 &&
-      pattern.variabilityBps <= 2_500 &&
-      pattern.rows.every((row) => !row.isReimbursement),
-  );
-  const payrollCandidates = input.employerHint?.trim()
-    ? inflowPatterns.filter((pattern) => patternLooksLikeEmployer(pattern, input.employerHint!))
-    : [];
+  const payrollCandidates: PatternAnalysis[] = [];
+  if (input.employerHint?.trim()) {
+    const hintTokens = normalizeDescription(input.employerHint).split(" ").filter(Boolean);
+    const employerGroups = new Map<string, PersonalizationLedgerRow[]>();
+    for (const row of evidenceRows) {
+      if (
+        row.amount <= 0n ||
+        row.isTransfer ||
+        row.isExcluded ||
+        row.isReimbursement ||
+        !row.merchantId ||
+        !row.merchantName ||
+        !rowLooksLikeEmployer(row, hintTokens)
+      ) {
+        continue;
+      }
+      const key = `employer\u001f${row.accountId}\u001f${row.currency}`;
+      employerGroups.set(key, [...(employerGroups.get(key) ?? []), row]);
+    }
+    for (const [key, rows] of employerGroups) {
+      const candidate = withCurrentPayrollAmount(buildPattern(key, rows));
+      if (candidate.rows.length >= 2 && candidate.cadence) payrollCandidates.push(candidate);
+    }
+  }
   payrollCandidates.sort(
     (left, right) =>
       right.rows.length - left.rows.length ||
@@ -553,7 +622,15 @@ export function analyzePersonalizationLedger(
   const payrollIds = new Set(payroll?.rows.map(({ id }) => id) ?? []);
   const purchasesByMerchant = new Map<string, PersonalizationLedgerRow[]>();
   for (const row of evidenceRows) {
-    if (!row.merchantId || row.amount >= 0n || row.isTransfer || row.isExcluded) continue;
+    if (
+      !row.merchantId ||
+      row.amount >= 0n ||
+      row.isTransfer ||
+      row.isExcluded ||
+      REFUND_EXCLUDED_ACCOUNT_GROUPS.has(row.accountGroup)
+    ) {
+      continue;
+    }
     purchasesByMerchant.set(row.merchantId, [
       ...(purchasesByMerchant.get(row.merchantId) ?? []),
       row,
@@ -566,6 +643,7 @@ export function analyzePersonalizationLedger(
       !refund.merchantId ||
       refund.amount <= 0n ||
       refund.isTransfer ||
+      REFUND_EXCLUDED_ACCOUNT_GROUPS.has(refund.accountGroup) ||
       payrollIds.has(refund.id)
     ) {
       continue;
@@ -758,24 +836,58 @@ async function refineExistingAiRules(
     .where(and(eq(rules.householdId, householdId), eq(rules.origin, "ai")));
   let renamed = 0;
   let disabledBroad = 0;
+  let movementActionsRewritten = 0;
   const broadCategoryIds = new Set<string>();
   for (const row of rows) {
     const actions = actionRows(row.actions);
     const categoryId = actions.find((action) => action.type === "setCategory")?.categoryId;
     const broad = Boolean(categoryId && parentIds.has(categoryId));
     const readableName = readableRuleName(row, categoryById);
-    const nextName =
-      broad && readableName ? `${readableName} (broad, superseded)`.slice(0, 160) : readableName;
-    await db
-      .update(rules)
-      .set({
-        ...(nextName && nextName !== row.name ? { name: nextName } : {}),
-        ...(broad ? { isEnabled: false } : {}),
-        updatedAt: new Date().toISOString(),
-      })
-      .where(and(eq(rules.householdId, householdId), eq(rules.id, row.id)));
+    const opaqueGeneratedName = /autoplan_|[0-9A-HJKMNP-TV-Z]{26}/.test(row.name);
+    const nextName = opaqueGeneratedName
+      ? broad && readableName
+        ? `${readableName} (broad, superseded)`.slice(0, 160)
+        : readableName
+      : undefined;
+    const hasUnsafeMovementAction = actions.some(
+      (action) =>
+        action.type === "setFlag" &&
+        action.value &&
+        ["transfer", "reportingExcluded", "reimbursement"].includes(action.flag),
+    );
+    const safeActions = hasUnsafeMovementAction
+      ? [
+          ...actions.filter(
+            (action) =>
+              !(
+                action.type === "setFlag" &&
+                action.value &&
+                ["transfer", "reportingExcluded", "reimbursement"].includes(action.flag)
+              ),
+          ),
+          ...(actions.some((action) => action.type === "requestReview" && action.value)
+            ? []
+            : ([{ type: "requestReview", value: true }] satisfies RuleAction[])),
+        ]
+      : actions;
+    const patch = {
+      ...(nextName && nextName !== row.name ? { name: nextName } : {}),
+      ...(broad && row.isEnabled ? { isEnabled: false } : {}),
+      ...(hasUnsafeMovementAction
+        ? { actions: safeActions as unknown as Record<string, unknown> }
+        : {}),
+    };
+    if (Object.keys(patch).length > 0) {
+      await db
+        .update(rules)
+        .set({ ...patch, updatedAt: new Date().toISOString() })
+        .where(
+          and(eq(rules.householdId, householdId), eq(rules.id, row.id), eq(rules.origin, "ai")),
+        );
+    }
     if (nextName && nextName !== row.name) renamed += 1;
     if (broad && row.isEnabled) disabledBroad += 1;
+    if (hasUnsafeMovementAction) movementActionsRewritten += 1;
     if (broad && categoryId) broadCategoryIds.add(categoryId);
   }
   if (broadCategoryIds.size > 0) {
@@ -791,7 +903,7 @@ async function refineExistingAiRules(
         ),
       );
   }
-  return { renamed, disabledBroad };
+  return { renamed, disabledBroad, movementActionsRewritten };
 }
 
 async function repairHistoricalFlags(
@@ -799,6 +911,56 @@ async function repairHistoricalFlags(
   householdId: string,
   categoryRows: CategoryRow[],
 ) {
+  const [confirmedTransferRows, confirmedRefundRows] = await Promise.all([
+    db
+      .select({
+        outflowTransactionId: transfers.outflowTransactionId,
+        inflowTransactionId: transfers.inflowTransactionId,
+      })
+      .from(transfers)
+      .where(and(eq(transfers.householdId, householdId), eq(transfers.status, "confirmed"))),
+    db
+      .select({ refundTransactionId: refundLinks.refundTransactionId })
+      .from(refundLinks)
+      .where(and(eq(refundLinks.householdId, householdId), eq(refundLinks.status, "confirmed"))),
+  ]);
+  const confirmedTransferIds = [
+    ...new Set(
+      confirmedTransferRows.flatMap(({ outflowTransactionId, inflowTransactionId }) => [
+        outflowTransactionId,
+        inflowTransactionId,
+      ]),
+    ),
+  ];
+  const confirmedRefundIds = [
+    ...new Set(confirmedRefundRows.map(({ refundTransactionId }) => refundTransactionId)),
+  ];
+  const confirmedMovementIds = [...new Set([...confirmedTransferIds, ...confirmedRefundIds])];
+  const timestamp = new Date().toISOString();
+
+  // System classifications may suggest a relationship, but only a confirmed relationship is
+  // allowed to affect reporting. This also repairs flags written by older generated rules.
+  await db
+    .update(transactions)
+    .set({
+      isTransfer: false,
+      isExcluded: false,
+      isReimbursement: false,
+      updatedAt: timestamp,
+    })
+    .where(
+      and(
+        eq(transactions.householdId, householdId),
+        isNull(transactions.userOverrideAt),
+        confirmedMovementIds.length ? notInArray(transactions.id, confirmedMovementIds) : undefined,
+        or(
+          eq(transactions.isTransfer, true),
+          eq(transactions.isExcluded, true),
+          eq(transactions.isReimbursement, true),
+        ),
+      ),
+    );
+
   const idsByKind = new Map<CategoryKind, string[]>();
   for (const category of categoryRows) {
     idsByKind.set(category.kind, [...(idsByKind.get(category.kind) ?? []), category.id]);
@@ -818,35 +980,76 @@ async function repairHistoricalFlags(
       .update(transactions)
       .set({
         isIncome: true,
-        isTransfer: false,
-        isExcluded: false,
-        isReimbursement: false,
-        updatedAt: new Date().toISOString(),
+        updatedAt: timestamp,
       })
-      .where(and(common(incomeIds), gt(transactions.amount, 0n)));
+      .where(and(common(incomeIds), gt(transactions.amount, 0n), eq(transactions.isIncome, false)));
     await db
       .update(transactions)
       .set({
         isIncome: false,
-        isTransfer: false,
-        isExcluded: false,
-        isReimbursement: false,
         reviewState: "needs_review",
-        updatedAt: new Date().toISOString(),
+        updatedAt: timestamp,
       })
-      .where(and(common(incomeIds), lt(transactions.amount, 0n)));
+      .where(
+        and(
+          common(incomeIds),
+          lt(transactions.amount, 0n),
+          or(eq(transactions.isIncome, true), eq(transactions.reviewState, "none")),
+        ),
+      );
   }
   if (expenseIds.length) {
     await db
       .update(transactions)
       .set({
         isIncome: false,
-        isTransfer: false,
-        isExcluded: false,
-        isReimbursement: false,
-        updatedAt: new Date().toISOString(),
+        updatedAt: timestamp,
       })
-      .where(and(common(expenseIds), lt(transactions.amount, 0n)));
+      .where(and(common(expenseIds), lt(transactions.amount, 0n), eq(transactions.isIncome, true)));
+    await db
+      .update(transactions)
+      .set({
+        isIncome: false,
+        reviewState: "needs_review",
+        updatedAt: timestamp,
+      })
+      .where(
+        and(
+          common(expenseIds),
+          gt(transactions.amount, 0n),
+          confirmedRefundIds.length ? notInArray(transactions.id, confirmedRefundIds) : undefined,
+          or(eq(transactions.isIncome, true), eq(transactions.reviewState, "none")),
+        ),
+      );
+  }
+  if (transferIds.length) {
+    await db
+      .update(transactions)
+      .set({
+        isIncome: false,
+        reviewState: "needs_review",
+        updatedAt: timestamp,
+      })
+      .where(
+        and(
+          common(transferIds),
+          confirmedTransferIds.length
+            ? notInArray(transactions.id, confirmedTransferIds)
+            : undefined,
+          or(eq(transactions.isIncome, true), eq(transactions.reviewState, "none")),
+        ),
+      );
+  }
+  if (nonIncomeIds.length) {
+    await db
+      .update(transactions)
+      .set({
+        isIncome: false,
+        updatedAt: timestamp,
+      })
+      .where(and(common(nonIncomeIds), eq(transactions.isIncome, true)));
+  }
+  if (confirmedRefundIds.length) {
     await db
       .update(transactions)
       .set({
@@ -854,11 +1057,23 @@ async function repairHistoricalFlags(
         isTransfer: false,
         isExcluded: false,
         isReimbursement: true,
-        updatedAt: new Date().toISOString(),
+        updatedAt: timestamp,
       })
-      .where(and(common(expenseIds), gt(transactions.amount, 0n)));
+      .where(
+        and(
+          eq(transactions.householdId, householdId),
+          inArray(transactions.id, confirmedRefundIds),
+          isNull(transactions.userOverrideAt),
+          or(
+            eq(transactions.isIncome, true),
+            eq(transactions.isTransfer, true),
+            eq(transactions.isExcluded, true),
+            eq(transactions.isReimbursement, false),
+          ),
+        ),
+      );
   }
-  if (transferIds.length) {
+  if (confirmedTransferIds.length) {
     await db
       .update(transactions)
       .set({
@@ -866,21 +1081,21 @@ async function repairHistoricalFlags(
         isTransfer: true,
         isExcluded: true,
         isReimbursement: false,
-        updatedAt: new Date().toISOString(),
+        updatedAt: timestamp,
       })
-      .where(common(transferIds));
-  }
-  if (nonIncomeIds.length) {
-    await db
-      .update(transactions)
-      .set({
-        isIncome: false,
-        isTransfer: false,
-        isExcluded: false,
-        isReimbursement: false,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(common(nonIncomeIds));
+      .where(
+        and(
+          eq(transactions.householdId, householdId),
+          inArray(transactions.id, confirmedTransferIds),
+          isNull(transactions.userOverrideAt),
+          or(
+            eq(transactions.isIncome, true),
+            eq(transactions.isTransfer, false),
+            eq(transactions.isExcluded, false),
+            eq(transactions.isReimbursement, true),
+          ),
+        ),
+      );
   }
 }
 
@@ -1162,35 +1377,50 @@ async function upsertEnvelopes(
   plans: EnvelopePlan[],
   analysis: PersonalizationAnalysis,
   annualPaychecks: number,
+  rebaseManagedBudget: boolean,
 ) {
+  const planIds = plans.map(({ id }) => id);
+  if (rebaseManagedBudget && planIds.length) {
+    await db
+      .delete(envelopeCategoryLinks)
+      .where(
+        and(
+          eq(envelopeCategoryLinks.householdId, householdId),
+          inArray(envelopeCategoryLinks.envelopeId, planIds),
+        ),
+      );
+  }
   for (const plan of plans) {
-    const inserted = await db
-      .insert(envelopes)
-      .values({
-        id: plan.id,
-        householdId,
-        categoryId: plan.categoryIds[0] ?? null,
-        name: plan.name,
-        cadence: "paycheck",
-        cadenceConfig: {
-          source: PLAN_VERSION,
-          observedMonthlyMinorUnits: plan.observedMonthly.toString(),
-          monthlyAmountMinorUnits: plan.targetMonthly.toString(),
-          paychecksPerYear: annualPaychecks,
-          lookbackStart: analysis.earliestDate,
-          lookbackEnd: analysis.latestDate,
-        },
-        rolloverPolicy: "positive",
-        priority: plan.priority,
-        minimumAmount: plan.required ? plan.targetPerPaycheck : 0n,
-        targetAmount: plan.targetPerPaycheck,
-        currency,
-        isRequired: plan.required,
-        isActive: true,
-      })
-      .onConflictDoNothing()
-      .returning({ id: envelopes.id });
-    if (inserted.length && plan.categoryIds.length) {
+    const managedValues = {
+      categoryId: plan.categoryIds[0] ?? null,
+      cadence: "paycheck" as const,
+      cadenceConfig: {
+        source: PLAN_VERSION,
+        observedMonthlyMinorUnits: plan.observedMonthly.toString(),
+        monthlyAmountMinorUnits: plan.targetMonthly.toString(),
+        paychecksPerYear: annualPaychecks,
+        lookbackStart: analysis.earliestDate,
+        lookbackEnd: analysis.latestDate,
+      },
+      priority: plan.priority,
+      minimumAmount: plan.required ? plan.targetPerPaycheck : 0n,
+      targetAmount: plan.targetPerPaycheck,
+      currency,
+      isRequired: plan.required,
+    };
+    const insert = db.insert(envelopes).values({
+      id: plan.id,
+      householdId,
+      name: plan.name,
+      ...managedValues,
+      rolloverPolicy: "positive",
+      isActive: true,
+    });
+    const written = await (rebaseManagedBudget
+      ? insert.onConflictDoUpdate({ target: envelopes.id, set: managedValues })
+      : insert.onConflictDoNothing()
+    ).returning({ id: envelopes.id });
+    if ((written.length || rebaseManagedBudget) && plan.categoryIds.length) {
       await db.insert(envelopeCategoryLinks).values(
         plan.categoryIds.map((categoryId) => ({
           householdId,
@@ -1200,7 +1430,6 @@ async function upsertEnvelopes(
       );
     }
   }
-  const planIds = plans.map(({ id }) => id);
   const links = planIds.length
     ? await db
         .select({
@@ -1433,16 +1662,12 @@ function classificationActions(
     actions.push({ type: "setFlag", flag: "reimbursement", value: false });
     if (direction === "outflow") actions.push({ type: "requestReview", value: true });
   } else if (category.kind === "expense") {
-    actions.push(
-      { type: "setFlag", flag: "income", value: false },
-      { type: "setFlag", flag: "reimbursement", value: direction === "inflow" },
-    );
+    actions.push({ type: "setFlag", flag: "income", value: false });
+    if (direction === "inflow") actions.push({ type: "requestReview", value: true });
   } else if (category.kind === "transfer") {
     actions.push(
       { type: "setFlag", flag: "income", value: false },
-      { type: "setFlag", flag: "transfer", value: true },
-      { type: "setFlag", flag: "reportingExcluded", value: true },
-      { type: "setFlag", flag: "reimbursement", value: false },
+      { type: "requestReview", value: true },
     );
   } else {
     actions.push({ type: "setFlag", flag: "income", value: false });
@@ -1454,28 +1679,22 @@ function classificationPatch(category: CategoryRow, direction: Direction) {
   if (category.kind === "income") {
     return {
       isIncome: direction === "inflow",
-      isTransfer: false,
-      isExcluded: false,
-      isReimbursement: false,
+      reviewState: direction === "outflow" ? ("needs_review" as const) : ("none" as const),
     };
   }
   if (category.kind === "expense") {
     return {
       isIncome: false,
-      isTransfer: false,
-      isExcluded: false,
-      isReimbursement: direction === "inflow",
+      reviewState: direction === "inflow" ? ("needs_review" as const) : ("none" as const),
     };
   }
   if (category.kind === "transfer") {
     return {
       isIncome: false,
-      isTransfer: true,
-      isExcluded: true,
-      isReimbursement: false,
+      reviewState: "needs_review" as const,
     };
   }
-  return { isIncome: false, isTransfer: false, isExcluded: false, isReimbursement: false };
+  return { isIncome: false, reviewState: "none" as const };
 }
 
 async function upsertPatternRules(input: {
@@ -1510,9 +1729,11 @@ async function upsertPatternRules(input: {
   const generatedPriority = Number.isFinite(minimumUserPriority)
     ? Math.min(GENERATED_RULE_PRIORITY, minimumUserPriority - 1)
     : GENERATED_RULE_PRIORITY;
+  const payrollRowIds = new Set(input.analysis.payroll?.rows.map(({ id }) => id) ?? []);
   let generated = 0;
   for (const pattern of input.analysis.merchantPatterns) {
-    const isPayroll = pattern.key === input.analysis.payroll?.key;
+    const isPayroll =
+      payrollRowIds.size > 0 && pattern.rows.every(({ id }) => payrollRowIds.has(id));
     const category = isPayroll
       ? categoryBySlug.get("paycheck")
       : pattern.dominantCategoryId
@@ -1520,7 +1741,7 @@ async function upsertPatternRules(input: {
         : undefined;
     if (
       !category ||
-      pattern.trustedCategorizedRows < 2 ||
+      pattern.trustedCategorizedRows < (isPayroll ? 1 : 2) ||
       pattern.trustedCoverageBps < TRUSTED_PATTERN_COVERAGE_BPS ||
       pattern.categoryAgreementBps < TRUSTED_PATTERN_AGREEMENT_BPS ||
       (category.kind === "income" && pattern.direction === "outflow") ||
@@ -1530,7 +1751,9 @@ async function upsertPatternRules(input: {
       continue;
     }
     const envelopeId = input.envelopeByCategory.get(category.id);
-    const recurringSeriesId = input.recurrence.recurringByPattern.get(pattern.key);
+    const recurringSeriesId = isPayroll
+      ? (input.recurrence.payrollSeriesId ?? undefined)
+      : input.recurrence.recurringByPattern.get(pattern.key);
     const condition: RuleCondition = {
       all: [
         {
@@ -1557,12 +1780,18 @@ async function upsertPatternRules(input: {
     const id = stableId("rule", input.householdId, pattern.merchantId, pattern.direction);
     const timestamp = new Date().toISOString();
     const existingRule = await input.db
-      .select({ priority: rules.priority, isEnabled: rules.isEnabled })
+      .select({
+        priority: rules.priority,
+        isEnabled: rules.isEnabled,
+        origin: rules.origin,
+        actions: rules.actions,
+      })
       .from(rules)
       .where(and(eq(rules.householdId, input.householdId), eq(rules.id, id)))
       .get();
     if (
       existingRule?.isEnabled &&
+      existingRule.origin === "ai" &&
       Number.isFinite(minimumUserPriority) &&
       existingRule.priority >= minimumUserPriority
     ) {
@@ -1571,9 +1800,45 @@ async function upsertPatternRules(input: {
         .set({ priority: generatedPriority, updatedAt: timestamp })
         .where(and(eq(rules.householdId, input.householdId), eq(rules.id, id)));
     }
-    const inserted = await input.db
-      .insert(rules)
-      .values({
+    if (existingRule && existingRule.origin !== "ai") {
+      continue;
+    }
+    if (existingRule) {
+      // Stable personalization rule IDs are managed, so old unsafe movement actions can be
+      // rewritten. A user-origin rule at the same ID is intentionally left untouched above.
+      const existingActions = actionRows(existingRule.actions);
+      const hasUnsafeMovementAction = existingActions.some(
+        (action) =>
+          action.type === "setFlag" &&
+          action.value &&
+          ["transfer", "reportingExcluded", "reimbursement"].includes(action.flag),
+      );
+      if (hasUnsafeMovementAction) {
+        const safeActions = [
+          ...existingActions.filter(
+            (action) =>
+              !(
+                action.type === "setFlag" &&
+                action.value &&
+                ["transfer", "reportingExcluded", "reimbursement"].includes(action.flag)
+              ),
+          ),
+          ...(existingActions.some((action) => action.type === "requestReview" && action.value)
+            ? []
+            : ([{ type: "requestReview", value: true }] satisfies RuleAction[])),
+        ];
+        await input.db
+          .update(rules)
+          .set({
+            actions: safeActions as unknown as Record<string, unknown>,
+            updatedAt: timestamp,
+          })
+          .where(
+            and(eq(rules.householdId, input.householdId), eq(rules.id, id), eq(rules.origin, "ai")),
+          );
+      }
+    } else {
+      await input.db.insert(rules).values({
         id,
         householdId: input.householdId,
         name: `${pattern.merchantName} → ${category.name}`.slice(0, 160),
@@ -1584,12 +1849,7 @@ async function upsertPatternRules(input: {
         actions: actions as unknown as Record<string, unknown>,
         specificityScore: ruleSpecificity(condition),
         createdByUserId: input.userId,
-      })
-      .onConflictDoNothing()
-      .returning({ id: rules.id });
-    if (inserted.length === 0) {
-      generated += 1;
-      continue;
+      });
     }
     if (envelopeId) {
       await input.db
@@ -1612,7 +1872,6 @@ async function upsertPatternRules(input: {
           ...(envelopeId ? { envelopeId } : {}),
           ...(recurringSeriesId ? { recurringSeriesId } : {}),
           ...classificationPatch(category, pattern.direction),
-          reviewState: "none",
           updatedAt: timestamp,
         })
         .where(
@@ -1633,6 +1892,19 @@ async function upsertRefundSuggestions(
   householdId: string,
   candidates: PersonalizationAnalysis["refundCandidatePairs"],
 ) {
+  const managedCandidateIds = candidates.map(({ refundId, purchaseId }) =>
+    stableId("refund", householdId, refundId, purchaseId),
+  );
+  await db
+    .delete(refundLinks)
+    .where(
+      and(
+        eq(refundLinks.householdId, householdId),
+        eq(refundLinks.status, "suggested"),
+        like(refundLinks.id, "autoplan_refund_%"),
+        managedCandidateIds.length ? notInArray(refundLinks.id, managedCandidateIds) : undefined,
+      ),
+    );
   for (const candidate of candidates) {
     const inserted = await db
       .insert(refundLinks)
@@ -1675,6 +1947,233 @@ function currentPayCycle(pattern: PatternAnalysis, nowDate: string) {
   return { startsOn, endsOn: addDays(next, -1), nextPayday: next };
 }
 
+type ManagedBudgetActivityPiece = {
+  sequence: number;
+  amount: bigint;
+  envelopeId: string | null;
+  categoryId: string | null;
+};
+
+async function calculateManagedBudgetActivity(input: {
+  db: BetterWealthDatabase;
+  householdId: string;
+  currency: string;
+  startsOn: string;
+  endsOn: string;
+  eligibleEnvelopeIds: ReadonlySet<string>;
+  envelopeByCategory: ReadonlyMap<string, string>;
+}) {
+  const activity = new Map<string, bigint>();
+  const currentTransactions = await input.db
+    .select()
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.householdId, input.householdId),
+        eq(transactions.status, "posted"),
+        eq(transactions.isExcluded, false),
+        eq(transactions.isTransfer, false),
+        eq(transactions.isIncome, false),
+        eq(transactions.currency, input.currency),
+        gte(transactions.transactedOn, input.startsOn),
+        lte(transactions.transactedOn, input.endsOn),
+      ),
+    );
+  const currentIds = currentTransactions.map(({ id }) => id);
+  const confirmedRefunds = currentIds.length
+    ? await input.db
+        .select()
+        .from(refundLinks)
+        .where(
+          and(
+            eq(refundLinks.householdId, input.householdId),
+            eq(refundLinks.status, "confirmed"),
+            inArray(refundLinks.refundTransactionId, currentIds),
+          ),
+        )
+        .orderBy(asc(refundLinks.createdAt), asc(refundLinks.id))
+    : [];
+  const purchaseIds = [
+    ...new Set(confirmedRefunds.map(({ purchaseTransactionId }) => purchaseTransactionId)),
+  ];
+  const purchaseRows = purchaseIds.length
+    ? await input.db
+        .select()
+        .from(transactions)
+        .where(
+          and(
+            eq(transactions.householdId, input.householdId),
+            inArray(transactions.id, purchaseIds),
+          ),
+        )
+    : [];
+  const transactionById = new Map(
+    [...currentTransactions, ...purchaseRows].map((transaction) => [transaction.id, transaction]),
+  );
+  const allTransactionIds = [...transactionById.keys()];
+  const splitRows = allTransactionIds.length
+    ? await input.db
+        .select()
+        .from(transactionSplits)
+        .where(
+          and(
+            eq(transactionSplits.householdId, input.householdId),
+            inArray(transactionSplits.transactionId, allTransactionIds),
+          ),
+        )
+        .orderBy(asc(transactionSplits.sequence), asc(transactionSplits.id))
+    : [];
+  const splitsByTransaction = new Map<string, ManagedBudgetActivityPiece[]>();
+  for (const split of splitRows) {
+    splitsByTransaction.set(split.transactionId, [
+      ...(splitsByTransaction.get(split.transactionId) ?? []),
+      {
+        sequence: split.sequence,
+        amount: split.amount,
+        envelopeId: split.envelopeId,
+        categoryId: split.categoryId,
+      },
+    ]);
+  }
+  const piecesFor = (transaction: typeof transactions.$inferSelect): ManagedBudgetActivityPiece[] =>
+    splitsByTransaction.get(transaction.id) ?? [
+      {
+        sequence: 0,
+        amount: transaction.amount,
+        envelopeId: transaction.envelopeId,
+        categoryId: transaction.categoryId,
+      },
+    ];
+  const resolveEnvelope = (piece: ManagedBudgetActivityPiece) => {
+    if (piece.envelopeId && input.eligibleEnvelopeIds.has(piece.envelopeId)) {
+      return piece.envelopeId;
+    }
+    const mapped = piece.categoryId ? input.envelopeByCategory.get(piece.categoryId) : undefined;
+    return mapped && input.eligibleEnvelopeIds.has(mapped) ? mapped : null;
+  };
+  const addActivity = (envelopeId: string, amount: bigint) => {
+    activity.set(envelopeId, (activity.get(envelopeId) ?? 0n) + amount);
+  };
+  const refundsByTransaction = new Map<string, (typeof confirmedRefunds)[number][]>();
+  for (const link of confirmedRefunds) {
+    refundsByTransaction.set(link.refundTransactionId, [
+      ...(refundsByTransaction.get(link.refundTransactionId) ?? []),
+      link,
+    ]);
+  }
+  for (const transaction of currentTransactions) {
+    if (transaction.amount < 0n) {
+      for (const piece of piecesFor(transaction)) {
+        const envelopeId = resolveEnvelope(piece);
+        if (envelopeId) addActivity(envelopeId, piece.amount);
+      }
+      continue;
+    }
+
+    // A positive expense-category transaction is only a review candidate. It becomes envelope
+    // activity after a confirmed refund link, and it follows the original purchase allocation.
+    let remainingCredit = transaction.amount;
+    for (const link of refundsByTransaction.get(transaction.id) ?? []) {
+      if (remainingCredit <= 0n) break;
+      const purchase = transactionById.get(link.purchaseTransactionId);
+      if (!purchase || purchase.amount >= 0n || purchase.currency !== input.currency) continue;
+      const purchasePieces = piecesFor(purchase).flatMap((piece) => {
+        const envelopeId = resolveEnvelope(piece);
+        return envelopeId ? [{ piece, envelopeId }] : [];
+      });
+      const denominator = purchasePieces.reduce(
+        (sum, { piece }) => sum + (piece.amount < 0n ? -piece.amount : piece.amount),
+        0n,
+      );
+      if (denominator === 0n) continue;
+      const refundable = link.amount < remainingCredit ? link.amount : remainingCredit;
+      const apportioned = purchasePieces.map((item) => {
+        const weight = item.piece.amount < 0n ? -item.piece.amount : item.piece.amount;
+        const numerator = refundable * weight;
+        return { ...item, amount: numerator / denominator, remainder: numerator % denominator };
+      });
+      let minorUnitsLeft = refundable - apportioned.reduce((sum, item) => sum + item.amount, 0n);
+      apportioned.sort((left, right) =>
+        left.remainder === right.remainder
+          ? left.piece.sequence - right.piece.sequence
+          : left.remainder > right.remainder
+            ? -1
+            : 1,
+      );
+      for (const item of apportioned) {
+        const extra = minorUnitsLeft > 0n ? 1n : 0n;
+        minorUnitsLeft -= extra;
+        addActivity(item.envelopeId, item.amount + extra);
+      }
+      remainingCredit -= refundable;
+    }
+  }
+  return activity;
+}
+
+const BUDGET_PROVENANCE_KEY = "planning.personalization_budget_provenance";
+const BudgetProvenanceSchema = z.object({
+  version: z.literal(PLAN_VERSION),
+  budgetId: z.string().min(1),
+  payCycleId: z.string().min(1),
+  expectedIncomeMinorUnits: z.string().regex(/^\d+$/),
+  managedAllocationBaselines: z.record(z.string(), z.string().regex(/^\d+$/)),
+  preservedAllocationIds: z.array(z.string().min(1)).default([]),
+});
+
+const LegacyBudgetAuditSchema = z.object({
+  expectedPaycheckMinorUnits: z.string().regex(/^\d+$/),
+  budgetPeriodId: z.string().min(1).optional(),
+  payCycleId: z.string().min(1).optional(),
+});
+
+const LegacyPersonalizationMarkerSchema = z.object({
+  version: z.literal(PLAN_VERSION),
+  employerHint: z.string().min(1),
+});
+
+type BudgetProvenance = z.infer<typeof BudgetProvenanceSchema>;
+
+async function loadBudgetProvenance(db: BetterWealthDatabase, householdId: string) {
+  const stored = await db
+    .select({ value: settings.value })
+    .from(settings)
+    .where(
+      and(
+        eq(settings.householdId, householdId),
+        eq(settings.scopeKey, "household"),
+        eq(settings.key, BUDGET_PROVENANCE_KEY),
+      ),
+    )
+    .get();
+  if (!stored) return { exists: false, value: null as BudgetProvenance | null };
+  const parsed = BudgetProvenanceSchema.safeParse(stored.value);
+  return { exists: true, value: parsed.success ? parsed.data : null };
+}
+
+async function saveBudgetProvenance(
+  db: BetterWealthDatabase,
+  householdId: string,
+  value: BudgetProvenance,
+  timestamp: string,
+) {
+  await db
+    .insert(settings)
+    .values({
+      id: stableId("setting", householdId, "personalization-budget-provenance"),
+      householdId,
+      userId: null,
+      scopeKey: "household",
+      key: BUDGET_PROVENANCE_KEY,
+      value,
+      isSecret: false,
+    })
+    .onConflictDoUpdate({
+      target: [settings.householdId, settings.scopeKey, settings.key],
+      set: { value, updatedAt: timestamp },
+    });
+}
+
 async function upsertBudget(input: {
   db: BetterWealthDatabase;
   householdId: string;
@@ -1683,9 +2182,9 @@ async function upsertBudget(input: {
   payroll: PatternAnalysis;
   incomeSourceId: string;
   envelopePlans: EnvelopePlan[];
-  rows: PersonalizationLedgerRow[];
   envelopeByCategory: Map<string, string>;
   nowDate: string;
+  rebaseManagedBudget: boolean;
 }) {
   const cycle = currentPayCycle(input.payroll, input.nowDate);
   if (!cycle) {
@@ -1696,6 +2195,8 @@ async function upsertBudget(input: {
       plannedTotal: 0n,
       requiredPlannedTotal: 0n,
       requiredPerPaycheck: 0n,
+      budgetPeriodId: null,
+      payCycleId: null,
     };
   }
   const payCycleId = stableId("paycycle", input.householdId, input.incomeSourceId, cycle.startsOn);
@@ -1706,7 +2207,7 @@ async function upsertBudget(input: {
     })
     .reduce((sum, { amount }) => sum + (amount > 0n ? amount : 0n), 0n);
   const timestamp = new Date().toISOString();
-  await input.db
+  const insertedPayCycles = await input.db
     .insert(payCycles)
     .values({
       id: payCycleId,
@@ -1719,9 +2220,10 @@ async function upsertBudget(input: {
       currency: input.currency,
       status: "open",
     })
-    .onConflictDoNothing();
+    .onConflictDoNothing()
+    .returning({ id: payCycles.id });
   const budgetId = stableId("budget", input.householdId, "pay_cycle", cycle.startsOn, cycle.endsOn);
-  await input.db
+  const insertedBudgets = await input.db
     .insert(budgetPeriods)
     .values({
       id: budgetId,
@@ -1735,72 +2237,211 @@ async function upsertBudget(input: {
       actualIncome,
       status: "open",
     })
-    .onConflictDoNothing();
-  const currentBudget = await input.db
-    .select()
-    .from(budgetPeriods)
-    .where(and(eq(budgetPeriods.householdId, input.householdId), eq(budgetPeriods.id, budgetId)))
-    .get();
-  if (!currentBudget) throw new Error("The managed budget period could not be created");
-  const existingAllocations = await input.db
-    .select()
-    .from(envelopeAllocations)
-    .where(
-      and(
-        eq(envelopeAllocations.householdId, input.householdId),
-        eq(envelopeAllocations.budgetPeriodId, budgetId),
+    .onConflictDoNothing()
+    .returning({ id: budgetPeriods.id });
+  const [currentBudget, currentCycleRow, existingAllocations, provenanceState] = await Promise.all([
+    input.db
+      .select()
+      .from(budgetPeriods)
+      .where(and(eq(budgetPeriods.householdId, input.householdId), eq(budgetPeriods.id, budgetId)))
+      .get(),
+    input.db
+      .select()
+      .from(payCycles)
+      .where(and(eq(payCycles.householdId, input.householdId), eq(payCycles.id, payCycleId)))
+      .get(),
+    input.db
+      .select()
+      .from(envelopeAllocations)
+      .where(
+        and(
+          eq(envelopeAllocations.householdId, input.householdId),
+          eq(envelopeAllocations.budgetPeriodId, budgetId),
+        ),
       ),
-    );
-  if (currentBudget.status === "closed" || currentBudget.status === "archived") {
-    return {
-      budgetPeriods: 1,
-      status: currentBudget.status,
-      plannedTotal: existingAllocations.reduce((sum, allocation) => sum + allocation.planned, 0n),
-      expectedIncome: currentBudget.expectedIncome,
-      requiredPlannedTotal: existingAllocations
-        .filter((allocation) =>
-          input.envelopePlans.some((plan) => plan.required && plan.id === allocation.envelopeId),
-        )
-        .reduce((sum, allocation) => sum + allocation.planned, 0n),
-      requiredPerPaycheck: input.envelopePlans
-        .filter(({ required }) => required)
-        .reduce((sum, { targetPerPaycheck }) => sum + targetPerPaycheck, 0n),
-    };
+    loadBudgetProvenance(input.db, input.householdId),
+  ]);
+  if (!currentBudget || !currentCycleRow) {
+    throw new Error("The managed paycheck budget could not be created");
   }
-  const existingByEnvelope = new Map(
-    existingAllocations.map((allocation) => [allocation.envelopeId, allocation]),
+  if (provenanceState.exists && !provenanceState.value) {
+    throw new Error("Managed paycheck budget provenance is invalid; refusing to overwrite it");
+  }
+  const requiredEnvelopeIds = new Set(
+    input.envelopePlans.filter(({ required }) => required).map(({ id }) => id),
   );
-  const alreadyFunded = existingAllocations.reduce(
-    (sum, allocation) => sum + allocation.funded,
-    0n,
-  );
-  let remainingFunding =
-    currentBudget.expectedIncome > alreadyFunded
-      ? currentBudget.expectedIncome - alreadyFunded
-      : 0n;
+  const requiredPerPaycheck = input.envelopePlans
+    .filter(({ required }) => required)
+    .reduce((sum, { targetPerPaycheck }) => sum + targetPerPaycheck, 0n);
+  const summarizeExisting = () => ({
+    budgetPeriods: 1,
+    status: currentBudget.status,
+    plannedTotal: existingAllocations.reduce((sum, allocation) => sum + allocation.planned, 0n),
+    expectedIncome: currentBudget.expectedIncome,
+    requiredPlannedTotal: existingAllocations
+      .filter(({ envelopeId }) => requiredEnvelopeIds.has(envelopeId))
+      .reduce((sum, allocation) => sum + allocation.planned, 0n),
+    requiredPerPaycheck,
+    budgetPeriodId: budgetId,
+    payCycleId,
+  });
+  if (
+    currentBudget.status !== "open" ||
+    currentCycleRow.status === "closed" ||
+    currentCycleRow.status === "skipped"
+  ) {
+    return summarizeExisting();
+  }
+
+  const provenance =
+    provenanceState.value?.budgetId === budgetId && provenanceState.value.payCycleId === payCycleId
+      ? provenanceState.value
+      : null;
+  const isNewManagedPeriod = insertedPayCycles.length === 1 && insertedBudgets.length === 1;
+  if (insertedPayCycles.length !== insertedBudgets.length) {
+    throw new Error("Managed paycheck budget provenance is incomplete; refusing partial repair");
+  }
+  if (provenance) {
+    const previousExpectedIncome = BigInt(provenance.expectedIncomeMinorUnits);
+    if (
+      currentBudget.expectedIncome !== previousExpectedIncome ||
+      currentCycleRow.expectedIncome !== previousExpectedIncome
+    ) {
+      throw new Error(
+        "Managed paycheck income was edited after generation; refusing to overwrite it",
+      );
+    }
+  } else if (!isNewManagedPeriod) {
+    const latestAudit = await input.db
+      .select({ metadata: auditEvents.metadata })
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.householdId, input.householdId),
+          eq(auditEvents.action, "planning.personalized"),
+        ),
+      )
+      .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
+      .get();
+    const parsedAudit = LegacyBudgetAuditSchema.safeParse(latestAudit?.metadata);
+    let previousExpectedIncome: bigint;
+    if (parsedAudit.success) {
+      if (
+        (parsedAudit.data.budgetPeriodId && parsedAudit.data.budgetPeriodId !== budgetId) ||
+        (parsedAudit.data.payCycleId && parsedAudit.data.payCycleId !== payCycleId)
+      ) {
+        throw new Error(
+          "Legacy paycheck budget has no trustworthy generation baseline; refusing to overwrite it",
+        );
+      }
+      previousExpectedIncome = BigInt(parsedAudit.data.expectedPaycheckMinorUnits);
+    } else {
+      const legacyMarker = await input.db
+        .select({ value: settings.value })
+        .from(settings)
+        .where(
+          and(
+            eq(settings.householdId, input.householdId),
+            eq(settings.scopeKey, "household"),
+            eq(settings.key, "planning.personalization"),
+          ),
+        )
+        .get();
+      if (!LegacyPersonalizationMarkerSchema.safeParse(legacyMarker?.value).success) {
+        throw new Error(
+          "Legacy paycheck budget has no trustworthy generation baseline; refusing to overwrite it",
+        );
+      }
+      // Early BetterWealth builds wrote the versioned marker and stable managed IDs but not a
+      // per-period baseline. Matching budget/pay-cycle values prove the pair is internally intact;
+      // allocation rows are still preserved below because their edit history is unknowable.
+      previousExpectedIncome = currentBudget.expectedIncome;
+    }
+    if (
+      currentBudget.expectedIncome !== previousExpectedIncome ||
+      currentCycleRow.expectedIncome !== previousExpectedIncome
+    ) {
+      throw new Error(
+        "Legacy paycheck income differs from its last generated value; refusing to overwrite it",
+      );
+    }
+  }
+  const detectedExpectedIncome = input.payroll.typicalAmount;
+  await input.db
+    .update(payCycles)
+    .set({
+      expectedIncome: detectedExpectedIncome,
+      actualIncome,
+      updatedAt: timestamp,
+    })
+    .where(and(eq(payCycles.householdId, input.householdId), eq(payCycles.id, payCycleId)));
+  await input.db
+    .update(budgetPeriods)
+    .set({
+      expectedIncome: detectedExpectedIncome,
+      actualIncome,
+      updatedAt: timestamp,
+    })
+    .where(and(eq(budgetPeriods.householdId, input.householdId), eq(budgetPeriods.id, budgetId)));
+
   const orderedPlans = [...input.envelopePlans].sort(
     (left, right) =>
       Number(right.required) - Number(left.required) ||
       right.priority - left.priority ||
       left.name.localeCompare(right.name),
   );
-  const managedAllocationIds = new Set(
-    orderedPlans.map((plan) => stableId("allocation", input.householdId, budgetId, plan.id)),
+  const managedIdByEnvelope = new Map(
+    orderedPlans.map((plan) => [
+      plan.id,
+      stableId("allocation", input.householdId, budgetId, plan.id),
+    ]),
   );
-  const existingPlannedTotal = existingAllocations.reduce(
-    (sum, allocation) => sum + allocation.planned,
-    0n,
+  const managedAllocationIds = new Set(managedIdByEnvelope.values());
+  const existingByEnvelope = new Map(
+    existingAllocations.map((allocation) => [allocation.envelopeId, allocation]),
   );
-  const repairManagedOverallocation = existingPlannedTotal > currentBudget.expectedIncome;
-  const nonManagedPlanned = existingAllocations
-    .filter(({ id }) => !managedAllocationIds.has(id))
+  const priorBaselines = provenance?.managedAllocationBaselines ?? {};
+  const preservedManagedIds = new Set(
+    input.rebaseManagedBudget ? [] : (provenance?.preservedAllocationIds ?? []),
+  );
+  const userEditedManagedIds = new Set<string>();
+  if (provenance && !input.rebaseManagedBudget) {
+    for (const plan of orderedPlans) {
+      const existing = existingByEnvelope.get(plan.id);
+      const managedId = managedIdByEnvelope.get(plan.id)!;
+      if (!existing || existing.id !== managedId) continue;
+      if (preservedManagedIds.has(managedId)) {
+        userEditedManagedIds.add(managedId);
+        continue;
+      }
+      const rawBaseline = priorBaselines[managedId];
+      if (rawBaseline === undefined) {
+        throw new Error(
+          "Managed paycheck allocation provenance is incomplete; refusing to overwrite it",
+        );
+      }
+      if (existing.planned !== BigInt(rawBaseline)) userEditedManagedIds.add(managedId);
+    }
+  } else if (!provenance && !isNewManagedPeriod && !input.rebaseManagedBudget) {
+    // Old releases did not store per-allocation baselines. A stable ID proves ownership of the
+    // row, not that the user never edited its value, so preserve it until the user opts back in.
+    for (const plan of orderedPlans) {
+      const existing = existingByEnvelope.get(plan.id);
+      const managedId = managedIdByEnvelope.get(plan.id)!;
+      if (!existing || existing.id !== managedId) continue;
+      preservedManagedIds.add(managedId);
+      userEditedManagedIds.add(managedId);
+    }
+  }
+  const lockedPlanned = existingAllocations
+    .filter(({ id }) => !managedAllocationIds.has(id) || userEditedManagedIds.has(id))
     .reduce((sum, allocation) => sum + allocation.planned, 0n);
   let managedPlannedCapacity =
-    currentBudget.expectedIncome > nonManagedPlanned
-      ? currentBudget.expectedIncome - nonManagedPlanned
-      : 0n;
+    detectedExpectedIncome > lockedPlanned ? detectedExpectedIncome - lockedPlanned : 0n;
   const safePlannedByEnvelope = new Map<string, bigint>();
   for (const plan of orderedPlans) {
+    const managedId = managedIdByEnvelope.get(plan.id)!;
+    if (userEditedManagedIds.has(managedId)) continue;
     const safePlanned =
       plan.plannedPerPaycheck < managedPlannedCapacity
         ? plan.plannedPerPaycheck
@@ -1808,32 +2449,31 @@ async function upsertBudget(input: {
     safePlannedByEnvelope.set(plan.id, safePlanned);
     managedPlannedCapacity -= safePlanned;
   }
-  const activityByEnvelope = new Map<string, bigint>();
-  for (const row of input.rows) {
-    const day = dateOnly(row.transactedOn);
-    const envelopeId = row.categoryId ? input.envelopeByCategory.get(row.categoryId) : undefined;
-    if (
-      !envelopeId ||
-      row.status !== "posted" ||
-      day < cycle.startsOn ||
-      day > cycle.endsOn ||
-      row.isTransfer ||
-      row.isExcluded ||
-      row.isIncome
-    ) {
-      continue;
-    }
-    activityByEnvelope.set(envelopeId, (activityByEnvelope.get(envelopeId) ?? 0n) + row.amount);
-  }
+  const activityByEnvelope = await calculateManagedBudgetActivity({
+    db: input.db,
+    householdId: input.householdId,
+    currency: input.currency,
+    startsOn: cycle.startsOn,
+    endsOn: cycle.endsOn,
+    eligibleEnvelopeIds: new Set(orderedPlans.map(({ id }) => id)),
+    envelopeByCategory: input.envelopeByCategory,
+  });
+  const alreadyFunded = existingAllocations.reduce(
+    (sum, allocation) => sum + allocation.funded,
+    0n,
+  );
+  let remainingFunding =
+    detectedExpectedIncome > alreadyFunded ? detectedExpectedIncome - alreadyFunded : 0n;
+  const nextBaselines: Record<string, string> = {};
   for (const plan of orderedPlans) {
     const activity = activityByEnvelope.get(plan.id) ?? 0n;
     const existing = existingByEnvelope.get(plan.id);
+    const managedId = managedIdByEnvelope.get(plan.id)!;
     if (existing) {
-      const managedId = stableId("allocation", input.householdId, budgetId, plan.id);
+      const isManaged = existing.id === managedId;
+      const userEdited = isManaged && userEditedManagedIds.has(managedId);
       const planned =
-        repairManagedOverallocation && existing.id === managedId
-          ? (safePlannedByEnvelope.get(plan.id) ?? 0n)
-          : existing.planned;
+        isManaged && !userEdited ? (safePlannedByEnvelope.get(plan.id) ?? 0n) : existing.planned;
       await input.db
         .update(envelopeAllocations)
         .set({
@@ -1850,31 +2490,48 @@ async function upsertBudget(input: {
             eq(envelopeAllocations.id, existing.id),
           ),
         );
+      if (isManaged) {
+        nextBaselines[managedId] =
+          userEdited && priorBaselines[managedId] !== undefined
+            ? priorBaselines[managedId]!
+            : planned.toString();
+      }
       continue;
     }
-    const funded =
-      remainingFunding > (safePlannedByEnvelope.get(plan.id) ?? 0n)
-        ? (safePlannedByEnvelope.get(plan.id) ?? 0n)
-        : remainingFunding;
+    const planned = safePlannedByEnvelope.get(plan.id) ?? 0n;
+    const funded = remainingFunding > planned ? planned : remainingFunding;
     remainingFunding -= funded;
-    await input.db
-      .insert(envelopeAllocations)
-      .values({
-        id: stableId("allocation", input.householdId, budgetId, plan.id),
-        householdId: input.householdId,
-        budgetPeriodId: budgetId,
-        envelopeId: plan.id,
-        planned: safePlannedByEnvelope.get(plan.id) ?? 0n,
-        funded,
-        activity,
-        transferredIn: 0n,
-        transferredOut: 0n,
-        availableSnapshot: funded + activity,
-        currency: input.currency,
-        calculatedAt: timestamp,
-      })
-      .onConflictDoNothing();
+    await input.db.insert(envelopeAllocations).values({
+      id: managedId,
+      householdId: input.householdId,
+      budgetPeriodId: budgetId,
+      envelopeId: plan.id,
+      planned,
+      funded,
+      activity,
+      transferredIn: 0n,
+      transferredOut: 0n,
+      availableSnapshot: funded + activity,
+      currency: input.currency,
+      calculatedAt: timestamp,
+    });
+    nextBaselines[managedId] = planned.toString();
   }
+  await saveBudgetProvenance(
+    input.db,
+    input.householdId,
+    {
+      version: PLAN_VERSION,
+      budgetId,
+      payCycleId,
+      expectedIncomeMinorUnits: detectedExpectedIncome.toString(),
+      managedAllocationBaselines: nextBaselines,
+      preservedAllocationIds: [...preservedManagedIds]
+        .filter((id) => managedAllocationIds.has(id))
+        .sort(),
+    },
+    timestamp,
+  );
   const finalAllocations = await input.db
     .select({ envelopeId: envelopeAllocations.envelopeId, planned: envelopeAllocations.planned })
     .from(envelopeAllocations)
@@ -1888,15 +2545,13 @@ async function upsertBudget(input: {
     budgetPeriods: 1,
     status: currentBudget.status,
     plannedTotal: finalAllocations.reduce((sum, allocation) => sum + allocation.planned, 0n),
-    expectedIncome: currentBudget.expectedIncome,
+    expectedIncome: detectedExpectedIncome,
     requiredPlannedTotal: finalAllocations
-      .filter((allocation) =>
-        input.envelopePlans.some((plan) => plan.required && plan.id === allocation.envelopeId),
-      )
+      .filter(({ envelopeId }) => requiredEnvelopeIds.has(envelopeId))
       .reduce((sum, allocation) => sum + allocation.planned, 0n),
-    requiredPerPaycheck: orderedPlans
-      .filter(({ required }) => required)
-      .reduce((sum, { targetPerPaycheck }) => sum + targetPerPaycheck, 0n),
+    requiredPerPaycheck,
+    budgetPeriodId: budgetId,
+    payCycleId,
   };
 }
 
@@ -1914,19 +2569,34 @@ function targetDateForAge(birthDate: string, targetAge: number) {
 }
 
 async function latestAccountState(db: BetterWealthDatabase, householdId: string) {
-  const [accountRows, snapshots] = await Promise.all([
+  const [accountRows, snapshots, assetRows, valuationRows] = await Promise.all([
     db.select().from(accounts).where(eq(accounts.householdId, householdId)),
     db
       .select()
       .from(balanceSnapshots)
       .where(eq(balanceSnapshots.householdId, householdId))
       .orderBy(desc(balanceSnapshots.asOf), desc(balanceSnapshots.createdAt)),
+    db
+      .select()
+      .from(assets)
+      .where(and(eq(assets.householdId, householdId), eq(assets.isActive, true))),
+    db
+      .select()
+      .from(assetValuations)
+      .where(eq(assetValuations.householdId, householdId))
+      .orderBy(desc(assetValuations.valuedOn), desc(assetValuations.createdAt)),
   ]);
   const latest = new Map<string, typeof balanceSnapshots.$inferSelect>();
   for (const snapshot of snapshots) {
     if (!latest.has(snapshot.accountId)) latest.set(snapshot.accountId, snapshot);
   }
-  return { accountRows, latest };
+  const latestValuations = new Map<string, typeof assetValuations.$inferSelect>();
+  for (const valuation of valuationRows) {
+    if (!latestValuations.has(valuation.assetId)) {
+      latestValuations.set(valuation.assetId, valuation);
+    }
+  }
+  return { accountRows, latest, assetRows, latestValuations };
 }
 
 async function upsertGoalsAndPreferences(input: {
@@ -1944,7 +2614,10 @@ async function upsertGoalsAndPreferences(input: {
   starterProfile: boolean;
   nowDate: string;
 }) {
-  const { accountRows, latest } = await latestAccountState(input.db, input.householdId);
+  const { accountRows, latest, assetRows, latestValuations } = await latestAccountState(
+    input.db,
+    input.householdId,
+  );
   const profile = await input.db
     .select({ birthDate: users.birthDate, targetAge: users.targetAge })
     .from(users)
@@ -1965,16 +2638,26 @@ async function upsertGoalsAndPreferences(input: {
       })
       .where(eq(users.id, input.userId));
   }
-  const payrollAccount = accountRows.find(({ id }) => id === input.payroll.rows[0]?.accountId);
+  const activeAccountRows = accountRows.filter(({ status }) => status === "active");
+  const payrollAccount = activeAccountRows.find(
+    ({ id }) => id === input.payroll.rows[0]?.accountId,
+  );
   const savingsAccounts = accountRows.filter(
     (account) =>
+      account.status === "active" &&
       account.group === "cash" &&
       /saving|money.?market/i.test(`${account.name} ${account.type} ${account.subtype ?? ""}`),
   );
   const savingsAccount = savingsAccounts[0];
-  const investmentAccount = accountRows.find(({ group }) => group === "investment");
+  const investmentAccount = activeAccountRows.find(
+    (account) => account.group === "investment" && !isRetirementAccount(account),
+  );
+  const cryptoAccount = activeAccountRows.find(
+    (account) => account.group === "crypto" && !account.isLiability,
+  );
   const emergencyFundingAccount = savingsAccount ?? payrollAccount;
-  const wealthFundingAccount = investmentAccount ?? savingsAccount ?? payrollAccount;
+  const wealthFundingAccount =
+    investmentAccount ?? cryptoAccount ?? savingsAccount ?? payrollAccount;
   const savingsBalance = savingsAccounts.reduce((sum, account) => {
     const snapshot = latest.get(account.id);
     if (!snapshot || snapshot.currency !== input.currency || snapshot.currentBalance <= 0n) {
@@ -1984,16 +2667,14 @@ async function upsertGoalsAndPreferences(input: {
   }, 0n);
   let liquidNetWorth = 0n;
   for (const account of accountRows) {
-    if (
-      !account.includeInNetWorth ||
-      !["cash", "credit", "loan", "investment", "crypto"].includes(account.group)
-    ) {
-      continue;
-    }
     const snapshot = latest.get(account.id);
     if (!snapshot || snapshot.currency !== input.currency) continue;
-    const balance = snapshot.currentBalance;
-    liquidNetWorth += account.isLiability && balance > 0n ? -balance : balance;
+    liquidNetWorth += liquidAccountContribution(account, snapshot.currentBalance);
+  }
+  for (const asset of assetRows) {
+    const valuation = latestValuations.get(asset.id);
+    if (!valuation || valuation.currency !== input.currency) continue;
+    liquidNetWorth += liquidAssetContribution(asset, valuation.amount);
   }
   const buffer =
     input.requiredPerPaycheck > STARTER_BUFFER_FLOOR
@@ -2087,6 +2768,40 @@ async function upsertGoalsAndPreferences(input: {
         ...(liquidNetWorth >= STARTER_LIQUID_TARGET ? { completedAt: timestamp } : {}),
       })
       .onConflictDoNothing();
+    const managedWealthGoal = await input.db
+      .select({
+        contributionPolicy: goals.contributionPolicy,
+        status: goals.status,
+        completedAt: goals.completedAt,
+      })
+      .from(goals)
+      .where(and(eq(goals.householdId, input.householdId), eq(goals.id, wealthGoalId)))
+      .get();
+    const contributionPolicy = managedWealthGoal?.contributionPolicy;
+    const isManagedGoal =
+      contributionPolicy !== null &&
+      typeof contributionPolicy === "object" &&
+      !Array.isArray(contributionPolicy) &&
+      contributionPolicy.managedBy === PLAN_VERSION;
+    if (managedWealthGoal && isManagedGoal) {
+      const computedStatus =
+        managedWealthGoal.status === "paused" || managedWealthGoal.status === "cancelled"
+          ? managedWealthGoal.status
+          : liquidNetWorth >= STARTER_LIQUID_TARGET
+            ? "completed"
+            : "active";
+      await input.db
+        .update(goals)
+        .set({
+          fundedAmount: liquidNetWorth > 0n ? liquidNetWorth : 0n,
+          fundingAccountId: wealthFundingAccount?.id ?? null,
+          status: computedStatus,
+          completedAt:
+            computedStatus === "completed" ? (managedWealthGoal.completedAt ?? timestamp) : null,
+          updatedAt: timestamp,
+        })
+        .where(and(eq(goals.householdId, input.householdId), eq(goals.id, wealthGoalId)));
+    }
     goalCount += 1;
   }
 
@@ -2278,6 +2993,24 @@ async function writePersonalizationJournal(
     });
 }
 
+async function withImmediateTransaction<T>(
+  db: BetterWealthDatabase,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (db.$client.inTransaction) {
+    throw new Error("Personalization requires exclusive ownership of its SQLite connection");
+  }
+  db.$client.exec("BEGIN IMMEDIATE");
+  try {
+    const result = await operation();
+    db.$client.exec("COMMIT");
+    return result;
+  } catch (error) {
+    if (db.$client.inTransaction) db.$client.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 async function runPersonalization(
   input: PersonalizeHouseholdInput,
 ): Promise<PersonalizationApplySummary> {
@@ -2350,33 +3083,40 @@ async function runPersonalization(
     aiBatches: requestedAiBatches,
   });
 
-  const local = await (async () => {
+  await loadPersonalizationPreflight(input.db, {
+    householdId: input.householdId,
+    userId: input.userId,
+    employerHint,
+    requirePayroll: true,
+  });
+  await writePersonalizationJournal(input.db, {
+    householdId: input.householdId,
+    userId: input.userId,
+    runId,
+    phase: "local_pending",
+    timestamp: new Date().toISOString(),
+    metadata: { atomic: true },
+  });
+  const local = await withImmediateTransaction(input.db, async () => {
     const db = input.db;
-    const preflight = await loadPersonalizationPreflight(db, {
+    const transactionalPreflight = await loadPersonalizationPreflight(db, {
       householdId: input.householdId,
       userId: input.userId,
       employerHint,
       requirePayroll: true,
     });
-    await writePersonalizationJournal(db, {
-      householdId: input.householdId,
-      userId: input.userId,
-      runId,
-      phase: "local_pending",
-      timestamp: new Date().toISOString(),
-      metadata: { restartSafe: true },
-    });
     const taxonomy = await ensureTaxonomy(db, input.householdId);
-    await repairHistoricalFlags(db, input.householdId, taxonomy.rows);
     const legacyTransfersDowngraded = await downgradeLegacyUnconfirmedTransfers(
       db,
       input.householdId,
     );
+    const refinedAiRules = await refineExistingAiRules(db, input.householdId, taxonomy.rows);
+    await repairHistoricalFlags(db, input.householdId, taxonomy.rows);
     let ledger = await loadLedgerRows(db, input.householdId);
     let analysis = analyzePersonalizationLedger(ledger.rows, {
       employerHint,
-      currency: preflight.household.currency,
-      transferPairs: preflight.analysis.transferPairs,
+      currency: transactionalPreflight.household.currency,
+      transferPairs: transactionalPreflight.analysis.transferPairs,
     });
     if (!analysis.payroll?.cadence) {
       throw new Error(
@@ -2400,10 +3140,11 @@ async function runPersonalization(
     const envelopeByCategory = await upsertEnvelopes(
       db,
       input.householdId,
-      preflight.household.currency,
+      transactionalPreflight.household.currency,
       envelopePlans,
       analysis,
       annualPaychecks,
+      input.rebaseManagedBudget ?? false,
     );
     const recurrence = await upsertRecurrences({
       db,
@@ -2412,7 +3153,7 @@ async function runPersonalization(
       categoryRows: ledger.categoryRows,
       envelopeByCategory,
       employerHint,
-      currency: preflight.household.currency,
+      currency: transactionalPreflight.household.currency,
       nowDate,
     });
     const generatedRules = await upsertPatternRules({
@@ -2427,8 +3168,8 @@ async function runPersonalization(
     ledger = await loadLedgerRows(db, input.householdId);
     analysis = analyzePersonalizationLedger(ledger.rows, {
       employerHint,
-      currency: preflight.household.currency,
-      transferPairs: preflight.analysis.transferPairs,
+      currency: transactionalPreflight.household.currency,
+      transferPairs: transactionalPreflight.analysis.transferPairs,
     });
     if (!recurrence.incomeSourceId || !analysis.payroll?.cadence) {
       throw new Error("The payroll income source could not be created");
@@ -2438,19 +3179,16 @@ async function runPersonalization(
       db,
       householdId: input.householdId,
       userId: input.userId,
-      currency: preflight.household.currency,
+      currency: transactionalPreflight.household.currency,
       payroll: analysis.payroll,
       incomeSourceId: recurrence.incomeSourceId,
       envelopePlans,
-      rows: ledger.rows,
       envelopeByCategory,
       nowDate,
+      rebaseManagedBudget: input.rebaseManagedBudget ?? false,
     });
     const expectedPaycheck = budget.expectedIncome;
     const plannedPerPaycheck = budget.plannedTotal;
-    if (budget.status === "open" && plannedPerPaycheck > expectedPaycheck) {
-      throw new Error("Generated budget allocations exceed expected payroll");
-    }
     const requiredTarget = envelopePlans
       .filter(({ required }) => required)
       .reduce((sum, plan) => sum + plan.targetPerPaycheck, 0n);
@@ -2466,7 +3204,7 @@ async function runPersonalization(
       db,
       householdId: input.householdId,
       userId: input.userId,
-      currency: preflight.household.currency,
+      currency: transactionalPreflight.household.currency,
       payroll: analysis.payroll,
       monthlyIncome,
       monthlyExpenses,
@@ -2482,21 +3220,6 @@ async function runPersonalization(
     const planOverallocated =
       plannedPerPaycheck > expectedPaycheck ? plannedPerPaycheck - expectedPaycheck : 0n;
     const timestamp = new Date().toISOString();
-    await writePersonalizationJournal(db, {
-      householdId: input.householdId,
-      userId: input.userId,
-      runId,
-      phase: "local_complete",
-      timestamp,
-      metadata: {
-        expectedPaycheckMinorUnits: expectedPaycheck.toString(),
-        plannedPerPaycheckMinorUnits: plannedPerPaycheck.toString(),
-        planSurplusMinorUnits: planSurplus.toString(),
-        planOverallocatedMinorUnits: planOverallocated.toString(),
-        requiredObligationShortfallMinorUnits: requiredShortfall.toString(),
-        legacyTransfersDowngraded,
-      },
-    });
     await db.insert(auditEvents).values({
       id: `autoplan_audit_${randomUUID()}`,
       householdId: input.householdId,
@@ -2520,8 +3243,13 @@ async function runPersonalization(
         planOverallocatedMinorUnits: planOverallocated.toString(),
         requiredObligationShortfallMinorUnits: requiredShortfall.toString(),
         legacyTransfersDowngraded,
+        aiMovementRulesRewritten: refinedAiRules.movementActionsRewritten,
+        managedBudgetRebased: input.rebaseManagedBudget ?? false,
+        budgetPeriodId: budget.budgetPeriodId,
+        payCycleId: budget.payCycleId,
       },
     });
+    await input.testHooks?.beforeLocalCommit?.();
     return {
       analysis,
       recurrence,
@@ -2534,8 +3262,26 @@ async function runPersonalization(
       planSurplus,
       planOverallocated,
       requiredShortfall,
+      legacyTransfersDowngraded,
+      refinedAiRules,
     };
-  })();
+  });
+  await writePersonalizationJournal(input.db, {
+    householdId: input.householdId,
+    userId: input.userId,
+    runId,
+    phase: "local_complete",
+    timestamp: new Date().toISOString(),
+    metadata: {
+      expectedPaycheckMinorUnits: local.expectedPaycheck.toString(),
+      plannedPerPaycheckMinorUnits: local.plannedPerPaycheck.toString(),
+      planSurplusMinorUnits: local.planSurplus.toString(),
+      planOverallocatedMinorUnits: local.planOverallocated.toString(),
+      requiredObligationShortfallMinorUnits: local.requiredShortfall.toString(),
+      legacyTransfersDowngraded: local.legacyTransfersDowngraded,
+      aiMovementRulesRewritten: local.refinedAiRules.movementActionsRewritten,
+    },
+  });
 
   const [readableAiRuleCount, suggestionStatuses] = await Promise.all([
     input.db

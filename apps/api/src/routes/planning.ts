@@ -68,6 +68,7 @@ import type { AppConfig } from "../config";
 import { parseTransactionFile } from "../imports/parsers";
 import { FieldCipher, sha256 } from "../lib/crypto";
 import { AppError, ConflictError, NotFoundError } from "../lib/errors";
+import { cappedConfirmedRefund, confirmedRefundAmounts } from "../lib/refunds";
 import { normalizeDescription, transactionFingerprint } from "../sync/reconcile";
 import type { AppEnv } from "../types";
 
@@ -759,57 +760,65 @@ async function calculateBudgetActivity(
   const addActivity = (envelopeId: string, amount: bigint) => {
     activity.set(envelopeId, (activity.get(envelopeId) ?? 0n) + amount);
   };
-  const refundByTransaction = new Map<string, (typeof confirmedRefunds)[number]>();
+  const refundsByTransaction = new Map<string, (typeof confirmedRefunds)[number][]>();
   for (const link of confirmedRefunds) {
-    if (!refundByTransaction.has(link.refundTransactionId)) {
-      refundByTransaction.set(link.refundTransactionId, link);
-    }
+    refundsByTransaction.set(link.refundTransactionId, [
+      ...(refundsByTransaction.get(link.refundTransactionId) ?? []),
+      link,
+    ]);
   }
   for (const transaction of currentTransactions) {
-    if (transaction.amount > 0n && !transaction.isReimbursement) continue;
-    const pieces = piecesFor(transaction);
-    const directlyMapped = pieces
-      .map((piece) => ({ piece, envelopeId: resolveEnvelope(piece.envelopeId, piece.categoryId) }))
-      .filter((item): item is { piece: BudgetActivityPiece; envelopeId: string } =>
-        Boolean(item.envelopeId),
-      );
-    if (directlyMapped.length) {
+    if (transaction.amount <= 0n) {
+      const directlyMapped = piecesFor(transaction)
+        .map((piece) => ({
+          piece,
+          envelopeId: resolveEnvelope(piece.envelopeId, piece.categoryId),
+        }))
+        .filter((item): item is { piece: BudgetActivityPiece; envelopeId: string } =>
+          Boolean(item.envelopeId),
+        );
       for (const item of directlyMapped) addActivity(item.envelopeId, item.piece.amount);
       continue;
     }
-    if (transaction.amount <= 0n) continue;
-    const refundLink = refundByTransaction.get(transaction.id);
-    const purchase = refundLink ? transactionById.get(refundLink.purchaseTransactionId) : undefined;
-    if (!refundLink || !purchase) continue;
-    const purchasePieces = piecesFor(purchase)
-      .map((piece) => ({ piece, envelopeId: resolveEnvelope(piece.envelopeId, piece.categoryId) }))
-      .filter((item): item is { piece: BudgetActivityPiece; envelopeId: string } =>
-        Boolean(item.envelopeId),
+    if (transaction.isIncome) continue;
+    let remainingCredit = transaction.amount;
+    for (const refundLink of refundsByTransaction.get(transaction.id) ?? []) {
+      if (remainingCredit <= 0n) break;
+      const purchase = transactionById.get(refundLink.purchaseTransactionId);
+      if (!purchase) continue;
+      const purchasePieces = piecesFor(purchase)
+        .map((piece) => ({
+          piece,
+          envelopeId: resolveEnvelope(piece.envelopeId, piece.categoryId),
+        }))
+        .filter((item): item is { piece: BudgetActivityPiece; envelopeId: string } =>
+          Boolean(item.envelopeId),
+        );
+      const denominator = purchasePieces.reduce(
+        (sum, item) => sum + (item.piece.amount < 0n ? -item.piece.amount : item.piece.amount),
+        0n,
       );
-    const denominator = purchasePieces.reduce(
-      (sum, item) => sum + (item.piece.amount < 0n ? -item.piece.amount : item.piece.amount),
-      0n,
-    );
-    if (denominator === 0n) continue;
-    const refundable =
-      refundLink.amount < transaction.amount ? refundLink.amount : transaction.amount;
-    const apportioned = purchasePieces.map((item) => {
-      const weight = item.piece.amount < 0n ? -item.piece.amount : item.piece.amount;
-      const numerator = refundable * weight;
-      return { ...item, amount: numerator / denominator, remainder: numerator % denominator };
-    });
-    let centsLeft = refundable - apportioned.reduce((sum, item) => sum + item.amount, 0n);
-    apportioned.sort((left, right) =>
-      left.remainder === right.remainder
-        ? left.piece.sequence - right.piece.sequence
-        : left.remainder > right.remainder
-          ? -1
-          : 1,
-    );
-    for (const item of apportioned) {
-      const extra = centsLeft > 0n ? 1n : 0n;
-      centsLeft -= extra;
-      addActivity(item.envelopeId, item.amount + extra);
+      if (denominator === 0n) continue;
+      const refundable = refundLink.amount < remainingCredit ? refundLink.amount : remainingCredit;
+      const apportioned = purchasePieces.map((item) => {
+        const weight = item.piece.amount < 0n ? -item.piece.amount : item.piece.amount;
+        const numerator = refundable * weight;
+        return { ...item, amount: numerator / denominator, remainder: numerator % denominator };
+      });
+      let centsLeft = refundable - apportioned.reduce((sum, item) => sum + item.amount, 0n);
+      apportioned.sort((left, right) =>
+        left.remainder === right.remainder
+          ? left.piece.sequence - right.piece.sequence
+          : left.remainder > right.remainder
+            ? -1
+            : 1,
+      );
+      for (const item of apportioned) {
+        const extra = centsLeft > 0n ? 1n : 0n;
+        centsLeft -= extra;
+        addActivity(item.envelopeId, item.amount + extra);
+      }
+      remainingCredit -= refundable;
     }
   }
   return activity;
@@ -1257,6 +1266,7 @@ async function comfortablePurchasePlans(
       .where(and(eq(incomeSources.householdId, householdId), eq(incomeSources.isActive, true))),
     db
       .select({
+        id: transactions.id,
         amount: transactions.amount,
         currency: transactions.currency,
         transactedOn: transactions.transactedOn,
@@ -1288,6 +1298,11 @@ async function comfortablePurchasePlans(
       .orderBy(desc(budgetPeriods.startsOn))
       .get(),
   ]);
+  const confirmedRefundByTransaction = await confirmedRefundAmounts(
+    db,
+    householdId,
+    activityRows.filter(({ amount }) => amount > 0n).map(({ id }) => id),
+  );
 
   const firstPurchase = purchaseRows[0];
   if (!firstPurchase) return new Map();
@@ -1303,7 +1318,11 @@ async function comfortablePurchasePlans(
   const configuredSpendableIds = defaults.preferences.spendableAccountIds;
   const budgetCashAccounts = accountRows.filter(
     (account) =>
-      account.group === "cash" && account.includeInBudget && account.currency === currency,
+      account.group === "cash" &&
+      account.includeInBudget &&
+      account.currency === currency &&
+      account.status !== "hidden" &&
+      account.status !== "closed",
   );
   const defaultCheckingAccounts = budgetCashAccounts.filter(
     (account) => !/saving|money.?market/i.test(`${account.type} ${account.subtype ?? ""}`),
@@ -1355,6 +1374,7 @@ async function comfortablePurchasePlans(
     (account) =>
       account.includeInNetWorth &&
       account.status !== "closed" &&
+      account.status !== "hidden" &&
       ["cash", "credit", "loan", "investment", "crypto"].includes(account.group),
   );
   if (liquidAccounts.length === 0) missing.add("Add an account included in liquid net worth");
@@ -1492,7 +1512,12 @@ async function comfortablePurchasePlans(
     for (const transaction of posted) {
       if (transaction.amount > 0n) {
         if (transaction.isIncome) income += transaction.amount;
-        else if (transaction.isReimbursement) expenses -= transaction.amount;
+        else {
+          expenses -= cappedConfirmedRefund(
+            transaction.amount,
+            confirmedRefundByTransaction.get(transaction.id),
+          );
+        }
       } else {
         expenses += -transaction.amount;
       }

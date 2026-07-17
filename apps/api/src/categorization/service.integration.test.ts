@@ -8,13 +8,14 @@ import {
   householdMembers,
   merchants,
   openDatabase,
+  refundLinks,
   ruleRuns,
   rules,
   runMigrations,
   settings,
   transactions,
 } from "@betterwealth/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { ulid } from "ulid";
 import { registerUser } from "../auth/service";
 import { loadConfig } from "../config";
@@ -205,6 +206,352 @@ describe("AI-first categorization becomes deterministic", () => {
       isIncome: false,
       isReimbursement: false,
     });
+  });
+
+  test("preserves confirmed refund reporting truth through AI and deterministic categorization", async () => {
+    const db = openDatabase(":memory:", { wal: false });
+    databases.push(db);
+    runMigrations(db);
+    const config = loadConfig({
+      APP_ENV: "test",
+      DATABASE_URL: ":memory:",
+      ENCRYPTION_KEY: "f".repeat(64),
+      WEB_ORIGIN: "http://localhost:5173",
+      REGISTRATION_MODE: "open",
+    });
+    const registered = await registerUser(
+      db,
+      {
+        email: "confirmed-refund-categorization@example.com",
+        password: "RefundTruthSurvives!2026",
+        householdName: "Confirmed refund test",
+      },
+      config,
+    );
+    const food = await db
+      .select({ id: categories.id })
+      .from(categories)
+      .where(and(eq(categories.householdId, registered.householdId), eq(categories.name, "Food")))
+      .get();
+    if (!food) throw new Error("Default Food category was not created");
+    await configureAiForUser(db, config, registered.householdId, registered.userId);
+    const accountId = ulid();
+    await db.insert(accounts).values({
+      id: accountId,
+      householdId: registered.householdId,
+      ownerUserId: registered.userId,
+      name: "Checking",
+      group: "cash",
+      type: "checking",
+      currency: "USD",
+      isLiability: false,
+      isManual: true,
+    });
+    const refundIds: string[] = [];
+    for (const [index, day] of ["2026-07-10", "2026-07-12"].entries()) {
+      const purchaseId = ulid();
+      const refundId = ulid();
+      refundIds.push(refundId);
+      await db.insert(transactions).values([
+        {
+          id: purchaseId,
+          householdId: registered.householdId,
+          accountId,
+          amount: -4_267n,
+          currency: "USD",
+          transactedOn: `2026-07-0${index + 1}`,
+          rawDescription: "MERCHANT PURCHASE",
+          normalizedDescription: "MERCHANT PURCHASE",
+          status: "posted",
+          source: "manual",
+          reviewState: "none",
+        },
+        {
+          id: refundId,
+          householdId: registered.householdId,
+          accountId,
+          amount: 4_267n,
+          currency: "USD",
+          transactedOn: day,
+          rawDescription: "MERCHANT REFUND",
+          normalizedDescription: "MERCHANT REFUND",
+          status: "posted",
+          source: "manual",
+          reviewState: "needs_review",
+          isReimbursement: true,
+        },
+      ]);
+      await db.insert(refundLinks).values({
+        id: ulid(),
+        householdId: registered.householdId,
+        refundTransactionId: refundId,
+        purchaseTransactionId: purchaseId,
+        amount: 4_267n,
+        confidenceBps: 10_000,
+        status: "confirmed",
+      });
+    }
+    let calls = 0;
+    const result = await categorizeHouseholdTransactions({
+      db,
+      config,
+      householdId: registered.householdId,
+      userId: registered.userId,
+      suggestCategory: async () => {
+        calls += 1;
+        return {
+          merchant: "Merchant",
+          categoryId: food.id,
+          confidence: 0.97,
+          rationale: "A confirmed merchant refund",
+          proposedRule: { descriptionContains: "MERCHANT REFUND", direction: "inflow" as const },
+        };
+      },
+    });
+    expect(result).toMatchObject({ aiCalls: 1, aiAccepted: 1, deterministic: 1 });
+    expect(calls).toBe(1);
+    const categorizedRefunds = await db
+      .select({
+        id: transactions.id,
+        categoryId: transactions.categoryId,
+        isIncome: transactions.isIncome,
+        isTransfer: transactions.isTransfer,
+        isExcluded: transactions.isExcluded,
+        isReimbursement: transactions.isReimbursement,
+      })
+      .from(transactions)
+      .where(inArray(transactions.id, refundIds));
+    expect(categorizedRefunds).toHaveLength(2);
+    expect(categorizedRefunds).toEqual(
+      expect.arrayContaining(
+        refundIds.map((id) => ({
+          id,
+          categoryId: food.id,
+          isIncome: false,
+          isTransfer: false,
+          isExcluded: false,
+          isReimbursement: true,
+        })),
+      ),
+    );
+  });
+
+  test("web-verifies a fresh result and expands a deduplicated parent/child taxonomy", async () => {
+    const db = openDatabase(":memory:", { wal: false });
+    databases.push(db);
+    runMigrations(db);
+    const config = loadConfig({
+      APP_ENV: "test",
+      DATABASE_URL: ":memory:",
+      ENCRYPTION_KEY: "a".repeat(64),
+      WEB_ORIGIN: "http://localhost:5173",
+      REGISTRATION_MODE: "open",
+    });
+    const registered = await registerUser(
+      db,
+      {
+        email: "verified-rules@example.com",
+        password: "WebGroundedRules!2026",
+        householdName: "Verification test",
+      },
+      config,
+    );
+    const fallback = await db
+      .select({ id: categories.id })
+      .from(categories)
+      .where(and(eq(categories.householdId, registered.householdId), eq(categories.name, "Food")))
+      .get();
+    if (!fallback) throw new Error("Default Food category was not created");
+    await configureAiForUser(db, config, registered.householdId, registered.userId);
+    const accountId = ulid();
+    const transactionId = ulid();
+    const parkedTransactionId = ulid();
+    await db.insert(accounts).values({
+      id: accountId,
+      householdId: registered.householdId,
+      ownerUserId: registered.userId,
+      name: "Checking",
+      group: "cash",
+      type: "checking",
+      currency: "USD",
+      isLiability: false,
+      isManual: true,
+    });
+    await db.insert(transactions).values([
+      {
+        id: parkedTransactionId,
+        householdId: registered.householdId,
+        accountId,
+        amount: -4_000n,
+        currency: "USD",
+        transactedOn: "2026-07-15",
+        rawDescription: "PARKED BEFORE TAXONOMY EXPANSION",
+        normalizedDescription: "PARKED BEFORE TAXONOMY EXPANSION",
+        status: "posted",
+        source: "manual",
+        reviewState: "needs_review",
+      },
+      {
+        id: transactionId,
+        householdId: registered.householdId,
+        accountId,
+        amount: -12_500n,
+        currency: "USD",
+        transactedOn: "2026-07-16",
+        rawDescription: "MYSTERY FLIGHT CLUB MEMBERSHIP",
+        normalizedDescription: "MYSTERY FLIGHT CLUB MEMBERSHIP",
+        status: "posted",
+        source: "manual",
+        reviewState: "needs_review",
+      },
+    ]);
+
+    const result = await categorizeHouseholdTransactions({
+      db,
+      config,
+      householdId: registered.householdId,
+      userId: registered.userId,
+      suggestCategory: async () => ({
+        merchant: "Mystery Flight Club",
+        categoryId: fallback.id,
+        confidence: 0.82,
+        rationale: "The first pass had no exact category.",
+      }),
+      verifyCategory: async (providerInput) => {
+        expect(providerInput.previousSuggestion.categoryId).toBe(fallback.id);
+        expect(providerInput.transaction).not.toHaveProperty("amount");
+        if (providerInput.transaction.normalizedDescription.startsWith("PARKED")) {
+          return {
+            merchant: "Parked Merchant",
+            categoryId: fallback.id,
+            confidence: 0.5,
+            rationale: "This transaction still needs a person.",
+            research: {
+              requested: true,
+              citationCount: 1,
+              citationHosts: ["parked-merchant.test"],
+            },
+          };
+        }
+        return {
+          merchant: "Mystery Flight Club",
+          proposedCategory: {
+            topLevelName: "Aviation",
+            childName: "Flight Training",
+            kind: "expense" as const,
+          },
+          confidence: 0.96,
+          rationale: "Independent public evidence identifies a flight-training membership.",
+          proposedRule: {
+            descriptionContains: "MYSTERY FLIGHT CLUB",
+            direction: "outflow" as const,
+          },
+          research: {
+            requested: true,
+            citationCount: 2,
+            citationHosts: ["example-flight-school.test"],
+          },
+        };
+      },
+    });
+
+    expect(result).toMatchObject({
+      aiCalls: 2,
+      aiVerificationCalls: 2,
+      aiVerified: 2,
+      aiVerificationFailed: 0,
+      aiResearchCitations: 3,
+      aiResearchHosts: ["example-flight-school.test", "parked-merchant.test"],
+      aiCreatedCategories: 2,
+      aiAccepted: 1,
+      aiPending: 1,
+    });
+    const created = await db
+      .select({ id: categories.id, name: categories.name, parentId: categories.parentId })
+      .from(categories)
+      .where(eq(categories.householdId, registered.householdId));
+    const parent = created.find(({ name }) => name === "Aviation");
+    const child = created.find(({ name }) => name === "Flight Training");
+    expect(parent?.parentId).toBeNull();
+    expect(child?.parentId).toBe(parent?.id);
+    if (!child) throw new Error("Verified child category was not materialized");
+    expect(
+      await db
+        .select({ categoryId: transactions.categoryId })
+        .from(transactions)
+        .where(eq(transactions.id, transactionId))
+        .get(),
+    ).toEqual({ categoryId: child.id });
+    expect((await db.select().from(rules)).some(({ origin }) => origin === "ai")).toBeTrue();
+
+    let duplicateCalls = 0;
+    expect(
+      await categorizeHouseholdTransactions({
+        db,
+        config,
+        householdId: registered.householdId,
+        userId: registered.userId,
+        suggestCategory: async () => {
+          duplicateCalls += 1;
+          return {
+            merchant: "Should not be called",
+            categoryId: fallback.id,
+            confidence: 0.5,
+            rationale: "Duplicate",
+          };
+        },
+      }),
+    ).toMatchObject({ aiCalls: 0, aiPreviouslyAttempted: 1 });
+    expect(duplicateCalls).toBe(0);
+    expect(
+      await db
+        .select({ id: aiSuggestions.id })
+        .from(aiSuggestions)
+        .where(eq(aiSuggestions.transactionId, parkedTransactionId)),
+    ).toHaveLength(1);
+
+    const laterTransactionId = ulid();
+    await db.insert(transactions).values({
+      id: laterTransactionId,
+      householdId: registered.householdId,
+      accountId,
+      amount: -8_000n,
+      currency: "USD",
+      transactedOn: "2026-07-17",
+      rawDescription: "AIRFIELD LESSON PACKAGE",
+      normalizedDescription: "AIRFIELD LESSON PACKAGE",
+      status: "posted",
+      source: "manual",
+      reviewState: "needs_review",
+    });
+    const secondResult = await categorizeHouseholdTransactions({
+      db,
+      config,
+      householdId: registered.householdId,
+      userId: registered.userId,
+      suggestCategory: async () => ({
+        merchant: "Airfield Lessons",
+        categoryId: fallback.id,
+        confidence: 0.75,
+        rationale: "First pass remained uncertain.",
+      }),
+      verifyCategory: async (providerInput) => {
+        expect(
+          providerInput.categories.some(
+            ({ id, path }) => id === child.id && path === "Aviation / Flight Training",
+          ),
+        ).toBeTrue();
+        return {
+          merchant: "Airfield Lessons",
+          categoryId: child.id,
+          confidence: 0.95,
+          rationale: "The expanded taxonomy now contains the exact category.",
+          research: { requested: true, citationCount: 1, citationHosts: ["airfield.test"] },
+        };
+      },
+    });
+    expect(secondResult).toMatchObject({ aiVerified: 1, aiCreatedCategories: 0, aiAccepted: 1 });
+    expect((await db.select().from(categories)).length).toBe(created.length);
   });
 
   test("skips a parked fingerprint so bounded AI batches keep moving", async () => {
@@ -1291,7 +1638,7 @@ describe("AI-first categorization becomes deterministic", () => {
     expect(calls).toBe(1);
   });
 
-  test("invalid provider output is persisted so later runs do not repeat it", async () => {
+  test("invalid provider output is parked by default and retried once per explicit recovery run", async () => {
     const db = openDatabase(":memory:", { wal: false });
     databases.push(db);
     runMigrations(db);
@@ -1340,7 +1687,13 @@ describe("AI-first categorization becomes deterministic", () => {
     let calls = 0;
     const invalidProvider = async (): Promise<never> => {
       calls += 1;
-      throw new AppError("Invalid output", 502, "ai_invalid_response");
+      throw new AppError("Invalid output", 502, "ai_invalid_response", {
+        validationReason: [
+          "rationale:too_big",
+          "categoryId:not_allowlisted",
+          "unsafe raw provider value <script>",
+        ],
+      });
     };
     const run = () =>
       categorizeHouseholdTransactions({
@@ -1355,7 +1708,28 @@ describe("AI-first categorization becomes deterministic", () => {
     expect(await run()).toMatchObject({ aiCalls: 0, aiPreviouslyAttempted: 1 });
     expect(calls).toBe(1);
     expect(await db.select().from(aiSuggestions)).toEqual([
-      expect.objectContaining({ status: "invalid", confidenceBps: 0 }),
+      expect.objectContaining({
+        status: "invalid",
+        confidenceBps: 0,
+        rationale:
+          "AI output rejected (ai_invalid_response: rationale:too_big, categoryId:not_allowlisted)",
+      }),
     ]);
+
+    const recoveryFingerprints = new Set<string>();
+    const recover = () =>
+      categorizeHouseholdTransactions({
+        db,
+        config,
+        householdId: registered.householdId,
+        userId: registered.userId,
+        suggestCategory: invalidProvider,
+        attemptedFingerprints: recoveryFingerprints,
+        retryInvalidSuggestions: true,
+      });
+    expect(await recover()).toMatchObject({ aiCalls: 1, aiFailed: 1 });
+    expect(await recover()).toMatchObject({ aiCalls: 0, aiPreviouslyAttempted: 1 });
+    expect(calls).toBe(2);
+    expect(await db.select().from(aiSuggestions)).toHaveLength(1);
   });
 });

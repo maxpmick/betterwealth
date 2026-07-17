@@ -1,7 +1,9 @@
 import type { BetterWealthDatabase } from "@betterwealth/db";
 import { transactions, transfers } from "@betterwealth/db/schema";
-import { and, desc, eq, inArray, isNull, ne, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, ne, or } from "drizzle-orm";
 import { ulid } from "ulid";
+
+const RECONCILIATION_PAGE_SIZE = 500;
 
 type Candidate = {
   id: string;
@@ -22,6 +24,10 @@ function daysApart(left: string, right: string): number {
   const leftTime = new Date(`${left.slice(0, 10)}T12:00:00.000Z`).getTime();
   const rightTime = new Date(`${right.slice(0, 10)}T12:00:00.000Z`).getTime();
   return Math.abs(leftTime - rightTime) / 86_400_000;
+}
+
+function pairKey(outflowTransactionId: string, inflowTransactionId: string) {
+  return `${outflowTransactionId}\u001f${inflowTransactionId}`;
 }
 
 async function persistMatch(
@@ -73,27 +79,67 @@ async function persistMatch(
  * until a user confirms them through the ledger API.
  */
 export async function reconcileAccountTransfers(db: BetterWealthDatabase, householdId: string) {
-  const rows: Candidate[] = await db
+  const existingRelationships = await db
     .select({
-      id: transactions.id,
-      accountId: transactions.accountId,
-      amount: transactions.amount,
-      currency: transactions.currency,
-      transactedOn: transactions.transactedOn,
-      providerMetadata: transactions.providerMetadata,
+      outflowTransactionId: transfers.outflowTransactionId,
+      inflowTransactionId: transfers.inflowTransactionId,
+      status: transfers.status,
     })
-    .from(transactions)
-    .where(
-      and(
-        eq(transactions.householdId, householdId),
-        eq(transactions.status, "posted"),
-        eq(transactions.isTransfer, false),
-        eq(transactions.isExcluded, false),
-        isNull(transactions.userOverrideAt),
+    .from(transfers)
+    .where(eq(transfers.householdId, householdId));
+  const occupiedTransactionIds = new Set(
+    existingRelationships
+      .filter(({ status }) => status !== "rejected")
+      .flatMap(({ outflowTransactionId, inflowTransactionId }) => [
+        outflowTransactionId,
+        inflowTransactionId,
+      ]),
+  );
+  const rejectedPairs = new Set(
+    existingRelationships
+      .filter(({ status }) => status === "rejected")
+      .map(({ outflowTransactionId, inflowTransactionId }) =>
+        pairKey(outflowTransactionId, inflowTransactionId),
       ),
-    )
-    .orderBy(desc(transactions.transactedOn), desc(transactions.id))
-    .limit(2_000);
+  );
+  const rows: Candidate[] = [];
+  let cursor: { transactedOn: string; id: string } | undefined;
+  while (true) {
+    const page: Candidate[] = await db
+      .select({
+        id: transactions.id,
+        accountId: transactions.accountId,
+        amount: transactions.amount,
+        currency: transactions.currency,
+        transactedOn: transactions.transactedOn,
+        providerMetadata: transactions.providerMetadata,
+      })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.householdId, householdId),
+          eq(transactions.status, "posted"),
+          eq(transactions.isTransfer, false),
+          eq(transactions.isExcluded, false),
+          isNull(transactions.userOverrideAt),
+          cursor
+            ? or(
+                lt(transactions.transactedOn, cursor.transactedOn),
+                and(
+                  eq(transactions.transactedOn, cursor.transactedOn),
+                  lt(transactions.id, cursor.id),
+                ),
+              )
+            : undefined,
+        ),
+      )
+      .orderBy(desc(transactions.transactedOn), desc(transactions.id))
+      .limit(RECONCILIATION_PAGE_SIZE);
+    rows.push(...page.filter(({ id }) => !occupiedTransactionIds.has(id)));
+    if (page.length < RECONCILIATION_PAGE_SIZE) break;
+    const last = page.at(-1)!;
+    cursor = { transactedOn: last.transactedOn, id: last.id };
+  }
   const used = new Set<string>();
   let matched = 0;
 
@@ -114,7 +160,8 @@ export async function reconcileAccountTransfers(db: BetterWealthDatabase, househ
       !inflow ||
       outflow.accountId === inflow.accountId ||
       outflow.currency !== inflow.currency ||
-      outflow.amount + inflow.amount !== 0n
+      outflow.amount + inflow.amount !== 0n ||
+      rejectedPairs.has(pairKey(outflow.id, inflow.id))
     ) {
       continue;
     }
@@ -129,13 +176,18 @@ export async function reconcileAccountTransfers(db: BetterWealthDatabase, househ
   const inflows = rows.filter(({ id, amount }) => amount > 0n && !used.has(id));
   const candidatesForOutflow = new Map<string, Candidate[]>();
   const candidatesForInflow = new Map<string, Candidate[]>();
+  const inflowsByAmount = new Map<string, Candidate[]>();
+  for (const inflow of inflows) {
+    const key = `${inflow.currency}\u001f${inflow.amount.toString()}`;
+    inflowsByAmount.set(key, [...(inflowsByAmount.get(key) ?? []), inflow]);
+  }
   for (const outflow of outflows) {
-    for (const inflow of inflows) {
+    const amountKey = `${outflow.currency}\u001f${(-outflow.amount).toString()}`;
+    for (const inflow of inflowsByAmount.get(amountKey) ?? []) {
       if (
         outflow.accountId === inflow.accountId ||
-        outflow.currency !== inflow.currency ||
-        outflow.amount + inflow.amount !== 0n ||
-        daysApart(outflow.transactedOn, inflow.transactedOn) > 3
+        daysApart(outflow.transactedOn, inflow.transactedOn) > 3 ||
+        rejectedPairs.has(pairKey(outflow.id, inflow.id))
       ) {
         continue;
       }

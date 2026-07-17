@@ -1,19 +1,15 @@
 import {
   AccountBalanceRounded,
-  AddRounded,
   BackupRounded,
   CheckCircleRounded,
   CloudDownloadRounded,
   CloudSyncRounded,
-  CodeRounded,
   CurrencyExchangeRounded,
   DataObjectRounded,
   DevicesRounded,
   DownloadRounded,
   GroupRounded,
   HistoryRounded,
-  KeyRounded,
-  LanguageRounded,
   PaletteRounded,
   PersonRounded,
   RefreshRounded,
@@ -67,6 +63,19 @@ const settingsNavigation = [
   { id: "audit", label: "Audit log", icon: HistoryRounded },
   { id: "health", label: "Diagnostics", icon: DataObjectRounded },
 ];
+
+const trustedAiProviderHosts = new Set([
+  "api.deepinfra.com",
+  "api.deepseek.com",
+  "api.groq.com",
+  "api.mistral.ai",
+  "api.openai.com",
+  "api.together.xyz",
+  "api.x.ai",
+  "generativelanguage.googleapis.com",
+  "inference.cerebras.ai",
+  "openrouter.ai",
+]);
 
 function SettingsCard({
   title,
@@ -128,6 +137,7 @@ function ProfileSettings() {
   const [householdName, setHouseholdName] = useState("");
   const [baseCurrency, setBaseCurrency] = useState("USD");
   const [timezone, setTimezone] = useState("America/New_York");
+  const [demoSaved, setDemoSaved] = useState(false);
   useEffect(() => {
     if (!profile.data) return;
     setDisplayName(profile.data.user.displayName ?? "");
@@ -192,26 +202,35 @@ function ProfileSettings() {
             <TextField
               label="Name"
               value={displayName}
-              onChange={(event) => setDisplayName(event.target.value)}
+              onChange={(event) => {
+                setDisplayName(event.target.value);
+                setDemoSaved(false);
+              }}
             />
             <TextField
               label="Email"
               value={profile.data.user.email}
               type="email"
-              disabled
-              helperText="Email changes are not available yet."
+              inputProps={{ readOnly: true }}
+              helperText="Sign-in identifier. A verified email-change workflow is not included in this self-hosted release."
             />
             <TextField
               label="Birth date"
               value={birthDate}
-              onChange={(event) => setBirthDate(event.target.value)}
+              onChange={(event) => {
+                setBirthDate(event.target.value);
+                setDemoSaved(false);
+              }}
               type="date"
               slotProps={{ inputLabel: { shrink: true } }}
             />
             <TextField
               label="Target age"
               value={targetAge}
-              onChange={(event) => setTargetAge(event.target.value)}
+              onChange={(event) => {
+                setTargetAge(event.target.value);
+                setDemoSaved(false);
+              }}
               type="number"
               inputProps={{ min: 18, max: 120 }}
             />
@@ -229,7 +248,10 @@ function ProfileSettings() {
             label="Household name"
             value={householdName}
             disabled={!canManageHousehold}
-            onChange={(event) => setHouseholdName(event.target.value)}
+            onChange={(event) => {
+              setHouseholdName(event.target.value);
+              setDemoSaved(false);
+            }}
           />
           <FormControl size="small" disabled={!canManageHousehold}>
             <InputLabel id="profile-base-currency">Base currency</InputLabel>
@@ -237,7 +259,10 @@ function ProfileSettings() {
               labelId="profile-base-currency"
               label="Base currency"
               value={baseCurrency}
-              onChange={(event) => setBaseCurrency(event.target.value)}
+              onChange={(event) => {
+                setBaseCurrency(event.target.value);
+                setDemoSaved(false);
+              }}
             >
               {["USD", "CAD", "EUR", "GBP"].map((currency) => (
                 <MenuItem key={currency} value={currency}>
@@ -250,10 +275,17 @@ function ProfileSettings() {
             label="Timezone"
             value={timezone}
             disabled={!canManageHousehold}
-            onChange={(event) => setTimezone(event.target.value)}
+            onChange={(event) => {
+              setTimezone(event.target.value);
+              setDemoSaved(false);
+            }}
             helperText="Use an IANA timezone, such as America/New_York."
           />
-          <TextField label="Household role" value={profile.data.role} disabled />
+          <TextField
+            label="Household role"
+            value={profile.data.role}
+            inputProps={{ readOnly: true }}
+          />
         </Box>
         <Alert severity="info" sx={{ mt: 4 }}>
           Your birth date and target age drive the age-30 forecast horizon. Financial targets are
@@ -264,16 +296,16 @@ function ProfileSettings() {
             {save.error.message}
           </Alert>
         ) : null}
-        {save.isSuccess ? (
+        {save.isSuccess || demoSaved ? (
           <Alert severity="success" sx={{ mt: 3 }}>
-            Profile saved.
+            {demo ? "Profile preview updated for this demo session." : "Profile saved."}
           </Alert>
         ) : null}
         <Button
           variant="contained"
           sx={{ mt: 4 }}
           disabled={save.isPending || !displayName.trim() || !householdName.trim()}
-          onClick={() => (demo ? undefined : save.mutate())}
+          onClick={() => (demo ? setDemoSaved(true) : save.mutate())}
         >
           {save.isPending ? "Saving…" : "Save profile"}
         </Button>
@@ -317,7 +349,7 @@ function HouseholdSettings() {
     <Stack gap={4}>
       <SettingsCard
         title="Household members"
-        description="Live, read-only membership. Roles are enforced by the API on every household-scoped row."
+        description="This single-user release still enforces household-scoped roles and data isolation on every API row."
       >
         <Stack divider={<Divider />}>
           {members.data?.data.map((member) => {
@@ -346,18 +378,6 @@ function HouseholdSettings() {
             );
           })}
         </Stack>
-      </SettingsCard>
-      <SettingsCard
-        title="Membership administration"
-        description="Invitations, role edits, and registration-policy controls are not enabled in this build."
-      >
-        <Alert severity="info">
-          The current API exposes household membership read-only. No invitation or role control is
-          shown until it can be enforced end to end.
-        </Alert>
-        <Button disabled startIcon={<AddRounded />} sx={{ mt: 3 }}>
-          Invite member
-        </Button>
       </SettingsCard>
     </Stack>
   );
@@ -405,24 +425,21 @@ function CurrencySettings() {
         title="Reporting currency"
         description="Reports use the household base currency; imported accounts retain their native currency."
       >
-        <TextField
-          label="Base / reporting currency"
-          value={profile.data.household.baseCurrency}
-          disabled
-          fullWidth
-        />
+        <Stack direction="row" alignItems="center" justifyContent="space-between" gap={3}>
+          <Box>
+            <Typography variant="body2" fontWeight={700}>
+              Base / reporting currency
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Change this from Profile & target.
+            </Typography>
+          </Box>
+          <Chip label={profile.data.household.baseCurrency} color="primary" variant="outlined" />
+        </Stack>
         <Alert severity="info" sx={{ mt: 3 }}>
-          Change the base currency in Profile & target. Automated exchange-rate conversion is not
-          enabled yet, so cross-currency totals remain explicitly limited.
+          Accounts keep their native currencies. Cross-currency totals are intentionally omitted
+          without verified exchange-rate data.
         </Alert>
-      </SettingsCard>
-      <SettingsCard
-        title="Exchange-rate provider"
-        description="Provider configuration is planned but not exposed until converted reports are implemented end to end."
-      >
-        <Button disabled startIcon={<AddRounded />}>
-          Configure provider
-        </Button>
       </SettingsCard>
     </Stack>
   );
@@ -473,9 +490,13 @@ function IntegrationCard({
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             {description}
           </Typography>
-          <Button variant="outlined" sx={{ mt: 3 }} onClick={onAction} disabled={!onAction}>
-            {action}
-          </Button>
+          {onAction ? (
+            <Button variant="outlined" sx={{ mt: 3 }} onClick={onAction}>
+              {action}
+            </Button>
+          ) : (
+            <Chip label={action} size="small" variant="outlined" sx={{ mt: 3 }} />
+          )}
         </Box>
       </Stack>
     </Box>
@@ -497,6 +518,7 @@ function IntegrationsSettings() {
     baseUrl: "https://openrouter.ai/api/v1",
     model: "tencent/hy3:free",
     confidenceThreshold: 0.9,
+    webResearchEnabled: false,
   };
   const settings = useQuery({
     queryKey: ["integration-settings"],
@@ -525,12 +547,14 @@ function IntegrationsSettings() {
   const [aiModel, setAiModel] = useState(demoAiConfig.model ?? "");
   const [aiKey, setAiKey] = useState("");
   const [aiThreshold, setAiThreshold] = useState("90");
+  const [aiWebResearchEnabled, setAiWebResearchEnabled] = useState(false);
   const [simpleFinOpen, setSimpleFinOpen] = useState(false);
   const [setupToken, setSetupToken] = useState("");
   const closeAiConfig = () => {
     setAiConfigOpen(false);
     setAiKey("");
     setAiConsent(Boolean(settings.data?.ai.enabled));
+    setAiWebResearchEnabled(Boolean(aiConfig.data?.webResearchEnabled));
   };
   useEffect(() => setAiConsent(Boolean(settings.data?.ai.enabled)), [settings.data?.ai.enabled]);
   useEffect(() => {
@@ -538,6 +562,7 @@ function IntegrationsSettings() {
     setAiBaseUrl(aiConfig.data.baseUrl);
     setAiModel(aiConfig.data.model ?? "");
     setAiThreshold(String(Math.round(aiConfig.data.confidenceThreshold * 100)));
+    setAiWebResearchEnabled(Boolean(aiConfig.data.webResearchEnabled));
   }, [aiConfig.data]);
   const saveAi = useMutation({
     mutationFn: (enabled: boolean) =>
@@ -577,6 +602,7 @@ function IntegrationsSettings() {
         model: aiModel.trim(),
         ...(aiKey.trim() ? { apiKey: aiKey.trim() } : {}),
         confidenceThreshold: Number(aiThreshold) / 100,
+        webResearchEnabled: aiWebResearchEnabled,
       }),
     onSuccess: async () => {
       setAiConfigOpen(false);
@@ -593,7 +619,11 @@ function IntegrationsSettings() {
   let validAiUrl = false;
   try {
     const parsed = new URL(aiBaseUrl);
-    validAiUrl = parsed.protocol === "https:";
+    validAiUrl =
+      parsed.protocol === "https:" &&
+      !parsed.username &&
+      !parsed.password &&
+      trustedAiProviderHosts.has(parsed.hostname.toLowerCase());
   } catch {
     validAiUrl = false;
   }
@@ -646,12 +676,12 @@ function IntegrationsSettings() {
       </SettingsCard>
       <SettingsCard
         title="Optional providers"
-        description="Configure supported providers here; unavailable adapters remain visibly disabled."
+        description="Configure supported providers here; roadmap-only adapters are shown as non-interactive status."
       >
         <Stack gap={3}>
           <IntegrationCard
             icon={<SmartToyRounded />}
-            title="OpenRouter-compatible AI"
+            title="Supported AI providers"
             description={`${aiConfig.data?.model ?? "No model selected"} · the API key is encrypted per user and is never returned to this browser.`}
             status={
               settings.data?.ai.enabled
@@ -664,16 +694,9 @@ function IntegrationsSettings() {
             onAction={() => setAiConfigOpen(true)}
           />
           <IntegrationCard
-            icon={<LanguageRounded />}
-            title="Exchange rates"
-            description="Native values are preserved. Automatic converted reporting is not enabled yet."
-            status="Planned"
-            action="Coming soon"
-          />
-          <IntegrationCard
             icon={<AccountBalanceRounded />}
             title="Asset valuations"
-            description="Manual valuations work today; property and vehicle provider adapters are planned."
+            description="Record dated manual value points for homes, vehicles, and other assets in Net worth."
             status="Manual"
             action="Use Net worth"
             onAction={() => navigate("/net-worth")}
@@ -729,6 +752,7 @@ function IntegrationsSettings() {
               "Account type",
               "Allowed categories",
               "Limited examples",
+              ...(aiConfig.data?.webResearchEnabled ? ["Public merchant web research"] : []),
             ].map((field) => (
               <Chip key={field} label={field} size="small" />
             ))}
@@ -747,17 +771,20 @@ function IntegrationsSettings() {
         <DialogContent>
           <Stack gap={3} sx={{ mt: 1 }}>
             <Alert severity="info">
-              The key is sent only to your BetterWealth API, encrypted at rest, and never returned.
-              Provider requests use the consented transaction fields listed on this page.
+              {demo
+                ? "This applies an in-browser preview only. Sign in to encrypt and store a provider key."
+                : "The key is sent only to your BetterWealth API, encrypted at rest, and never returned. Provider requests use the consented transaction fields listed on this page."}
             </Alert>
             <TextField
-              label="OpenAI-compatible base URL"
+              label="Supported AI provider base URL"
               type="url"
               value={aiBaseUrl}
               onChange={(event) => setAiBaseUrl(event.target.value)}
               error={Boolean(aiBaseUrl) && !validAiUrl}
               helperText={
-                validAiUrl ? "HTTPS is required for provider egress." : "Enter a valid HTTPS URL."
+                validAiUrl
+                  ? "Trusted public provider host. Requests are restricted to this exact host."
+                  : "Use HTTPS with OpenRouter, OpenAI, Groq, Together, DeepInfra, Mistral, DeepSeek, Google, Cerebras, or xAI."
               }
               fullWidth
             />
@@ -792,6 +819,30 @@ function IntegrationsSettings() {
               inputProps={{ min: 0, max: 100, step: 1 }}
               fullWidth
             />
+            <FormControlLabel
+              sx={{ alignItems: "flex-start", m: 0 }}
+              control={
+                <Switch
+                  checked={aiWebResearchEnabled}
+                  onChange={(event) => setAiWebResearchEnabled(event.target.checked)}
+                  inputProps={{
+                    "aria-label": "Automatically research uncertain merchants on the public web",
+                  }}
+                />
+              }
+              label={
+                <Box sx={{ pt: 0.5 }}>
+                  <Typography variant="body2" fontWeight={700}>
+                    Automatically research uncertain merchants on the public web
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Only the merchant name or statement descriptor may be used as the public search
+                    query—never the amount, account, or personal details. OpenRouter may charge
+                    separately for web search.
+                  </Typography>
+                </Box>
+              }
+            />
           </Stack>
         </DialogContent>
         {saveAiConfig.error instanceof Error ? (
@@ -806,7 +857,11 @@ function IntegrationsSettings() {
             disabled={!canSaveAiConfig || saveAiConfig.isPending}
             onClick={() => (demo ? setAiConfigOpen(false) : saveAiConfig.mutate())}
           >
-            {saveAiConfig.isPending ? "Saving…" : "Save encrypted configuration"}
+            {saveAiConfig.isPending
+              ? "Saving…"
+              : demo
+                ? "Apply configuration preview"
+                : "Save encrypted configuration"}
           </Button>
         </DialogActions>
       </Dialog>
@@ -816,6 +871,11 @@ function IntegrationsSettings() {
           {simpleFin ? (
             <Alert severity="success">
               Connected. Sync runs use the durable idempotent job queue.
+            </Alert>
+          ) : demo ? (
+            <Alert severity="info">
+              Sign in to connect SimpleFIN. Credentials are never accepted or retained by the
+              read-only example session.
             </Alert>
           ) : (
             <Stack gap={3} sx={{ mt: 1 }}>
@@ -840,11 +900,11 @@ function IntegrationsSettings() {
         ) : null}
         <DialogActions>
           <Button onClick={() => setSimpleFinOpen(false)}>Close</Button>
-          {!simpleFin ? (
+          {!simpleFin && !demo ? (
             <Button
               variant="contained"
               disabled={!setupToken.trim() || claim.isPending}
-              onClick={() => (demo ? setSimpleFinOpen(false) : claim.mutate())}
+              onClick={() => claim.mutate()}
             >
               {claim.isPending ? "Claiming…" : "Claim & queue sync"}
             </Button>
@@ -904,46 +964,54 @@ function SecuritySettings() {
   return (
     <Stack gap={4}>
       <SettingsCard
-        title="Password"
+        title="Change password"
         description="Changing your password revokes every other active session."
       >
-        <Stack direction={{ xs: "column", sm: "row" }} gap={3}>
-          <TextField
-            label="Current password"
-            type="password"
-            autoComplete="current-password"
-            value={currentPassword}
-            onChange={(event) => setCurrentPassword(event.target.value)}
-            fullWidth
-          />
-          <TextField
-            label="New password"
-            type="password"
-            autoComplete="new-password"
-            value={newPassword}
-            onChange={(event) => setNewPassword(event.target.value)}
-            helperText="At least 12 characters"
-            fullWidth
-          />
-        </Stack>
-        {password.error instanceof Error ? (
-          <Alert severity="error" sx={{ mt: 3 }}>
-            {password.error.message}
+        {demo ? (
+          <Alert severity="info">
+            Password changes apply to a signed-in self-hosted account, not this example session.
           </Alert>
-        ) : null}
-        {password.isSuccess ? (
-          <Alert severity="success" sx={{ mt: 3 }}>
-            Password changed. Other sessions were revoked.
-          </Alert>
-        ) : null}
-        <Button
-          variant="contained"
-          disabled={currentPassword.length < 1 || newPassword.length < 12 || password.isPending}
-          onClick={() => (demo ? undefined : password.mutate())}
-          sx={{ mt: 4 }}
-        >
-          {password.isPending ? "Changing…" : "Change password"}
-        </Button>
+        ) : (
+          <>
+            <Stack direction={{ xs: "column", sm: "row" }} gap={3}>
+              <TextField
+                label="Current password"
+                type="password"
+                autoComplete="current-password"
+                value={currentPassword}
+                onChange={(event) => setCurrentPassword(event.target.value)}
+                fullWidth
+              />
+              <TextField
+                label="New password"
+                type="password"
+                autoComplete="new-password"
+                value={newPassword}
+                onChange={(event) => setNewPassword(event.target.value)}
+                helperText="At least 12 characters"
+                fullWidth
+              />
+            </Stack>
+            {password.error instanceof Error ? (
+              <Alert severity="error" sx={{ mt: 3 }}>
+                {password.error.message}
+              </Alert>
+            ) : null}
+            {password.isSuccess ? (
+              <Alert severity="success" sx={{ mt: 3 }}>
+                Password changed. Other sessions were revoked.
+              </Alert>
+            ) : null}
+            <Button
+              variant="contained"
+              disabled={currentPassword.length < 1 || newPassword.length < 12 || password.isPending}
+              onClick={() => password.mutate()}
+              sx={{ mt: 4 }}
+            >
+              {password.isPending ? "Changing…" : "Change password"}
+            </Button>
+          </>
+        )}
       </SettingsCard>
       <SettingsCard
         title="Active sessions"
@@ -964,15 +1032,15 @@ function SecuritySettings() {
               </Box>
               {session.current ? (
                 <StatusChip label="Current" tone="positive" />
-              ) : (
+              ) : !demo ? (
                 <Button
                   color="error"
                   disabled={revoke.isPending}
-                  onClick={() => (demo ? undefined : revoke.mutate(session.id))}
+                  onClick={() => revoke.mutate(session.id)}
                 >
                   Revoke
                 </Button>
-              )}
+              ) : null}
             </Stack>
           ))}
         </Stack>
@@ -981,45 +1049,23 @@ function SecuritySettings() {
             {revoke.error.message}
           </Alert>
         ) : null}
-        <Button
-          color="error"
-          variant="outlined"
-          disabled={revoke.isPending || !sessions.some((session) => !session.current)}
-          onClick={() => {
-            if (!demo)
+        {!demo && sessions.some((session) => !session.current) ? (
+          <Button
+            color="error"
+            variant="outlined"
+            disabled={revoke.isPending}
+            onClick={() => {
               sessions
                 .filter((session) => !session.current)
                 .forEach((session) => {
                   revoke.mutate(session.id);
                 });
-          }}
-          sx={{ mt: 4 }}
-        >
-          Revoke all other sessions
-        </Button>
-      </SettingsCard>
-      <SettingsCard
-        title="Personal access tokens"
-        description="Programmatic tokens are not available in this build."
-      >
-        <Alert severity="info">
-          No token controls are exposed until scoped authorization, one-time display, rotation, and
-          audit coverage are complete.
-        </Alert>
-        <Button disabled startIcon={<AddRounded />} sx={{ mt: 3 }}>
-          Create token
-        </Button>
-      </SettingsCard>
-      <SettingsCard
-        title="Future sign-in methods"
-        description="Passkeys and external OAuth are planned, but not enabled in this build."
-      >
-        <Stack direction="row" gap={2}>
-          <Button disabled startIcon={<KeyRounded />}>
-            Add passkey
+            }}
+            sx={{ mt: 4 }}
+          >
+            Revoke all other sessions
           </Button>
-          <Button disabled>Connect OAuth</Button>
-        </Stack>
+        ) : null}
       </SettingsCard>
     </Stack>
   );
@@ -1095,56 +1141,28 @@ function AppearanceSettings() {
           ))}
         </Box>
       </SettingsCard>
-      <SettingsCard title="Privacy & motion">
-        <Stack gap={4}>
-          <FormControlLabel
-            control={
-              <Switch
-                checked={privacyEnabled}
-                onChange={(event) => setPrivacyEnabled(event.target.checked)}
-              />
-            }
-            label={
-              <Box>
-                <Typography variant="body2" fontWeight={700}>
-                  Mask money by default
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  Visual values become dots and accessible labels say “Amount hidden.”
-                </Typography>
-              </Box>
-            }
-          />
-          <FormControlLabel
-            control={<Switch />}
-            label={
-              <Box>
-                <Typography variant="body2" fontWeight={700}>
-                  Reduce motion
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  Also follows the operating system reduced-motion preference.
-                </Typography>
-              </Box>
-            }
-          />
-        </Stack>
-      </SettingsCard>
-      <SettingsCard title="Formats">
-        <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" }, gap: 3 }}>
-          <FormControl size="small">
-            <InputLabel id="number-format">Number format</InputLabel>
-            <Select labelId="number-format" label="Number format" value="us">
-              <MenuItem value="us">1,234.56</MenuItem>
-            </Select>
-          </FormControl>
-          <FormControl size="small">
-            <InputLabel id="date-format">Date format</InputLabel>
-            <Select labelId="date-format" label="Date format" value="mdy">
-              <MenuItem value="mdy">Jul 16, 2026</MenuItem>
-            </Select>
-          </FormControl>
-        </Box>
+      <SettingsCard
+        title="Privacy"
+        description="Your display preferences are stored on this device and applied immediately."
+      >
+        <FormControlLabel
+          control={
+            <Switch
+              checked={privacyEnabled}
+              onChange={(event) => setPrivacyEnabled(event.target.checked)}
+            />
+          }
+          label={
+            <Box>
+              <Typography variant="body2" fontWeight={700}>
+                Mask money by default
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                Visual values become dots and accessible labels say “Amount hidden.”
+              </Typography>
+            </Box>
+          }
+        />
       </SettingsCard>
     </Stack>
   );
@@ -1164,14 +1182,20 @@ function DataSettings() {
           The export contains sensitive financial data and is not encrypted. Store it somewhere
           private.
         </Alert>
-        <Button
-          variant="contained"
-          startIcon={<DownloadRounded />}
-          disabled={demo || exportDownload.isPending}
-          onClick={() => exportDownload.mutate()}
-        >
-          {exportDownload.isPending ? "Preparing…" : "Download JSON export"}
-        </Button>
+        {demo ? (
+          <Alert severity="info">
+            Exports apply to your live self-hosted household, not example data.
+          </Alert>
+        ) : (
+          <Button
+            variant="contained"
+            startIcon={<DownloadRounded />}
+            disabled={exportDownload.isPending}
+            onClick={() => exportDownload.mutate()}
+          >
+            {exportDownload.isPending ? "Preparing…" : "Download JSON export"}
+          </Button>
+        )}
         {exportDownload.error instanceof Error ? (
           <Alert severity="error" sx={{ mt: 3 }}>
             {exportDownload.error.message}
@@ -1188,16 +1212,20 @@ function DataSettings() {
         title="SQLite database backup"
         description="Owners can download a consistent snapshot of the live SQLite database."
       >
-        <Stack direction={{ xs: "column", sm: "row" }} gap={2}>
-          <Button
-            variant="outlined"
-            startIcon={<BackupRounded />}
-            disabled={demo || databaseDownload.isPending}
-            onClick={() => databaseDownload.mutate()}
-          >
-            {databaseDownload.isPending ? "Preparing…" : "Download database backup"}
-          </Button>
-        </Stack>
+        {demo ? (
+          <Alert severity="info">Database snapshots apply to a live self-hosted instance.</Alert>
+        ) : (
+          <Stack direction={{ xs: "column", sm: "row" }} gap={2}>
+            <Button
+              variant="outlined"
+              startIcon={<BackupRounded />}
+              disabled={databaseDownload.isPending}
+              onClick={() => databaseDownload.mutate()}
+            >
+              {databaseDownload.isPending ? "Preparing…" : "Download database backup"}
+            </Button>
+          </Stack>
+        )}
         {databaseDownload.error instanceof Error ? (
           <Alert severity="error" sx={{ mt: 3 }}>
             {databaseDownload.error.message}
@@ -1210,10 +1238,9 @@ function DataSettings() {
           </Alert>
         ) : null}
         <Alert severity="info" sx={{ mt: 4 }}>
-          Hot restore is intentionally disabled. To restore safely, stop BetterWealth, keep a copy
-          of the current database, place the chosen SQLite backup at the configured{" "}
-          <code>DATABASE_URL</code>, run <code>bun run db:migrate</code>, then restart and verify
-          diagnostics.
+          Restore is an offline operator procedure: stop BetterWealth, keep a copy of the current
+          database, place the chosen SQLite backup at the configured <code>DATABASE_URL</code>, run{" "}
+          <code>bun run db:migrate</code>, then restart and verify diagnostics.
         </Alert>
       </SettingsCard>
       <SettingsCard
@@ -1235,18 +1262,6 @@ function DataSettings() {
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}>
           The bundled systemd timer can run this independently of any browser session.
         </Typography>
-      </SettingsCard>
-      <SettingsCard
-        title="Delete household"
-        description="Household deletion is not exposed until step-up authentication, verified export, and recovery-window handling are complete."
-      >
-        <Alert severity="info">
-          Use the data export now if you need portability. Destructive deletion controls are
-          disabled in this build.
-        </Alert>
-        <Button color="error" variant="outlined" disabled sx={{ mt: 3 }}>
-          Delete household
-        </Button>
       </SettingsCard>
     </Stack>
   );
@@ -1424,17 +1439,6 @@ function HealthSettings() {
           sx={{ mt: 4 }}
         >
           Run health check
-        </Button>
-      </SettingsCard>
-      <SettingsCard
-        title="Support bundle"
-        description="Sanitized diagnostic bundle generation is not available yet."
-      >
-        <Alert severity="info">
-          Use the live health check above and server logs for diagnostics.
-        </Alert>
-        <Button variant="outlined" startIcon={<CodeRounded />} disabled sx={{ mt: 3 }}>
-          Create sanitized bundle
         </Button>
       </SettingsCard>
     </Stack>

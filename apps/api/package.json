@@ -11,7 +11,8 @@
     "db:seed": "bun src/cli/seed.ts",
     "db:backup": "bun src/cli/backup.ts",
     "bootstrap": "bun src/cli/bootstrap.ts",
-    "personalize": "bun src/cli/personalize.ts"
+    "personalize": "bun src/cli/personalize.ts",
+    "recategorize": "bun src/cli/recategorize.ts"
   },
   "dependencies": {
     "@betterwealth/db": "workspace:*",

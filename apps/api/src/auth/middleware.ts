@@ -11,6 +11,23 @@ export const SESSION_COOKIE = "bw_session";
 export const CSRF_COOKIE = "bw_csrf";
 export const HOUSEHOLD_COOKIE = "bw_household";
 
+const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]"] as const;
+
+/** Exact configured web origin plus same-port literal loopback aliases for local self-hosting. */
+export function trustedWebOrigins(config: Pick<AppConfig, "WEB_ORIGIN">): ReadonlySet<string> {
+  const configured = new URL(config.WEB_ORIGIN);
+  const trusted = new Set([configured.origin]);
+  if (LOOPBACK_HOSTS.includes(configured.hostname as (typeof LOOPBACK_HOSTS)[number])) {
+    const port = configured.port ? `:${configured.port}` : "";
+    for (const host of LOOPBACK_HOSTS) trusted.add(`${configured.protocol}//${host}${port}`);
+  }
+  return trusted;
+}
+
+export function isTrustedWebOrigin(config: Pick<AppConfig, "WEB_ORIGIN">, origin: string): boolean {
+  return trustedWebOrigins(config).has(origin);
+}
+
 export function clientIp(context: Context<AppEnv>, config: AppConfig): string | undefined {
   if (config.TRUST_PROXY) {
     const forwarded = context.req.header("x-forwarded-for")?.split(",")[0]?.trim();
@@ -25,7 +42,7 @@ export function clientIp(context: Context<AppEnv>, config: AppConfig): string | 
 export function requireTrustedOrigin(config: AppConfig): MiddlewareHandler<AppEnv> {
   return async (context, next) => {
     const origin = context.req.header("origin");
-    if (origin && origin !== config.WEB_ORIGIN) {
+    if (origin && !isTrustedWebOrigin(config, origin)) {
       throw new ForbiddenError("Request origin was rejected");
     }
     await next();
@@ -69,7 +86,7 @@ export function requireCsrf(config: AppConfig): MiddlewareHandler<AppEnv> {
       return;
     }
     const origin = context.req.header("origin");
-    if (origin && origin !== config.WEB_ORIGIN)
+    if (origin && !isTrustedWebOrigin(config, origin))
       throw new ForbiddenError("Request origin was rejected");
     const cookieToken = getCookie(context, CSRF_COOKIE);
     const headerToken = context.req.header("x-csrf-token");

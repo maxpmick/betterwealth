@@ -45,17 +45,19 @@ import {
   useMediaQuery,
   useTheme,
 } from "@mui/material";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   type ApiAccount,
   type ApiCategory,
   type ApiEnvelope,
+  type ApiRefundLinkMatch,
   type ApiRule,
   type ApiTransaction,
   type ApiTransactionDetail,
   type ApiTransactionImportResult,
+  type ApiTransferMatch,
   api,
   type CursorPage,
 } from "../api";
@@ -69,17 +71,23 @@ import {
 import { isDemoMode } from "../demo";
 
 export interface TransactionView extends LedgerItem {
+  accountId: string;
   effectiveDate: string;
   amountMinorUnits: string;
   currency: string;
+  status: ApiTransaction["status"];
+  source: ApiTransaction["source"];
+  tags: string[];
   isTransfer: boolean;
   isIncome: boolean;
   hasSplits: boolean;
   transferId?: string;
   refundLinkIds: string[];
+  transferMatch?: ApiTransferMatch;
+  refundLinkMatches: ApiRefundLinkMatch[];
 }
 
-interface LedgerRangeFilters {
+export interface LedgerRangeFilters {
   minimum: string;
   maximum: string;
   fromDate: string;
@@ -107,6 +115,8 @@ export interface RulePreview {
 const demoApiTransactions: CursorPage<ApiTransaction> = {
   data: fixtureTransactions.map((transaction) => ({
     id: transaction.id,
+    accountId:
+      fixtureAccounts.find(({ name }) => name === transaction.account)?.id ?? "demo-account",
     effectiveDate: "2026-07-16",
     description: transaction.rawDescription,
     merchant: transaction.merchant,
@@ -220,11 +230,12 @@ function readableDate(value: string, fallbackIndex: number) {
   }).format(parsed);
 }
 
-function displayItems(page: CursorPage<ApiTransaction>): TransactionView[] {
+export function displayItems(page: CursorPage<ApiTransaction>): TransactionView[] {
   return page.data.map((item, index) => {
     const fallback = fixtureTransactions.find((candidate) => candidate.id === item.id);
     return {
       id: item.id,
+      accountId: item.accountId,
       effectiveDate: item.effectiveDate,
       date: fallback?.date ?? readableDate(item.effectiveDate, index),
       merchant: item.merchant,
@@ -232,22 +243,32 @@ function displayItems(page: CursorPage<ApiTransaction>): TransactionView[] {
       account: item.accountName,
       accountMask: fallback?.accountMask ?? "••••",
       category: item.categoryName,
-      envelope: fallback?.envelope ?? "None",
+      envelope: item.envelopeName ?? "Unassigned",
       amount: Number(item.amount.minorUnits) / 100,
       amountMinorUnits: item.amount.minorUnits,
       currency: item.amount.currency,
+      status: item.status,
+      source: item.source,
+      tags: item.tags,
       pending: item.status === "pending",
       needsReview: item.reviewState === "needs_review",
-      recurring: fallback?.recurring ?? false,
+      recurring: item.isRecurring ?? false,
       excluded: item.isExcluded ?? fallback?.excluded ?? false,
       isTransfer: item.isTransfer ?? false,
       isIncome: item.isIncome ?? false,
       hasSplits: item.hasSplits ?? false,
       ...(item.transferId ? { transferId: item.transferId } : {}),
       refundLinkIds: item.refundLinkIds ?? [],
+      ...(item.transfer ? { transferMatch: item.transfer } : {}),
+      refundLinkMatches: item.refundLinks ?? [],
       note: item.note ?? "",
-      confidence: fallback?.confidence ?? 0,
-      provenance: fallback?.provenance ?? `${item.source} import`,
+      provenance:
+        item.provenance ??
+        (item.source === "simplefin"
+          ? "SimpleFIN provider import"
+          : item.source === "import"
+            ? "Reviewed file import"
+            : "Manual entry"),
     };
   });
 }
@@ -280,6 +301,87 @@ function candidateLabel(item: TransactionView) {
   return `${item.merchant} · ${item.account} · ${formatMinorUnits(BigInt(item.amountMinorUnits), item.currency)}`;
 }
 
+function hasSuggestedMatch(item: TransactionView) {
+  return (
+    item.transferMatch?.status === "suggested" ||
+    item.refundLinkMatches.some(({ status }) => status === "suggested")
+  );
+}
+
+export function matchesTransactionFilters(
+  item: TransactionView,
+  options: {
+    query: string;
+    tab: string;
+    filters: string[];
+    range: LedgerRangeFilters;
+  },
+) {
+  const { query, tab, filters, range } = options;
+  const matchesSearch =
+    `${item.merchant} ${item.rawDescription} ${item.category} ${item.account} ${item.note ?? ""} ${item.amount} ${formatMinorUnits(BigInt(item.amountMinorUnits), item.currency)}`
+      .toLowerCase()
+      .includes(query.toLowerCase());
+  const matchesTab =
+    (tab === "all" && item.status !== "removed") ||
+    (tab === "review" &&
+      item.status !== "removed" &&
+      (item.needsReview || hasSuggestedMatch(item))) ||
+    (tab === "removed" && item.status === "removed");
+  const absoluteAmount = Math.abs(Number(item.amountMinorUnits)) / 100;
+  const minimum = Number(range.minimum);
+  const maximum = Number(range.maximum);
+  const effectiveDay = item.effectiveDate.slice(0, 10);
+  const matchesRange =
+    (!range.minimum || absoluteAmount >= minimum) &&
+    (!range.maximum || absoluteAmount <= maximum) &&
+    (!range.fromDate || effectiveDay >= range.fromDate) &&
+    (!range.toDate || effectiveDay <= range.toDate);
+  const selectedStatuses = filters.filter((filter) =>
+    ["Needs review", "Suggested match", "Pending", "Posted", "Removed", "Excluded"].includes(
+      filter,
+    ),
+  );
+  const selectedTypes = filters.filter((filter) =>
+    ["Income", "Expense", "Transfer", "Refund", "Recurring"].includes(filter),
+  );
+  const selectedSources = filters.filter((filter) =>
+    ["SimpleFIN", "Manual", "CSV import"].includes(filter),
+  );
+  const matchesStatus =
+    !selectedStatuses.length ||
+    selectedStatuses.some(
+      (filter) =>
+        (filter === "Needs review" && item.needsReview) ||
+        (filter === "Suggested match" && hasSuggestedMatch(item)) ||
+        (filter === "Pending" && item.status === "pending") ||
+        (filter === "Posted" && item.status === "posted") ||
+        (filter === "Removed" && item.status === "removed") ||
+        (filter === "Excluded" && Boolean(item.excluded)),
+    );
+  const matchesType =
+    !selectedTypes.length ||
+    selectedTypes.some(
+      (filter) =>
+        (filter === "Income" && item.isIncome) ||
+        (filter === "Expense" && BigInt(item.amountMinorUnits) < 0n && !item.isTransfer) ||
+        (filter === "Transfer" && item.isTransfer) ||
+        (filter === "Refund" && item.refundLinkIds.length > 0) ||
+        (filter === "Recurring" && Boolean(item.recurring)),
+    );
+  const matchesSource =
+    !selectedSources.length ||
+    selectedSources.some(
+      (filter) =>
+        (filter === "SimpleFIN" && item.source === "simplefin") ||
+        (filter === "Manual" && item.source === "manual") ||
+        (filter === "CSV import" && item.source === "import"),
+    );
+  return (
+    matchesSearch && matchesTab && matchesStatus && matchesType && matchesSource && matchesRange
+  );
+}
+
 function FilterContent({
   selected,
   setSelected,
@@ -292,7 +394,7 @@ function FilterContent({
   setRange: (filters: LedgerRangeFilters) => void;
 }) {
   const groups = [
-    ["Status", ["Needs review", "Pending", "Posted", "Excluded"]],
+    ["Status", ["Needs review", "Suggested match", "Pending", "Posted", "Removed", "Excluded"]],
     ["Type", ["Income", "Expense", "Transfer", "Refund", "Recurring"]],
     ["Source", ["SimpleFIN", "Manual", "CSV import"]],
   ];
@@ -370,13 +472,23 @@ function FilterContent({
 }
 
 function TransactionBadges({ item }: { item: TransactionView }) {
+  const confirmedTransfer = item.transferMatch
+    ? item.transferMatch.status === "confirmed"
+    : item.isTransfer;
+  const suggestedTransfer = item.transferMatch?.status === "suggested";
+  const confirmedRefund = item.refundLinkMatches.some(({ status }) => status === "confirmed");
+  const suggestedRefund = item.refundLinkMatches.some(({ status }) => status === "suggested");
   return (
     <Stack direction="row" justifyContent="flex-end" gap={1} flexWrap="wrap">
+      {item.status === "removed" ? <StatusChip label="Removed" tone="neutral" /> : null}
+      {item.status === "void" ? <StatusChip label="Void" tone="neutral" /> : null}
       {item.pending ? <StatusChip label="Pending" tone="warning" /> : null}
       {item.needsReview ? <StatusChip label="Review" tone="warning" /> : null}
-      {item.isTransfer ? <StatusChip label="Transfer" tone="neutral" /> : null}
+      {confirmedTransfer ? <StatusChip label="Transfer" tone="neutral" /> : null}
+      {suggestedTransfer ? <StatusChip label="Transfer suggestion" tone="warning" /> : null}
       {item.hasSplits ? <StatusChip label="Split" tone="info" /> : null}
-      {item.refundLinkIds.length ? <StatusChip label="Refund" tone="positive" /> : null}
+      {confirmedRefund ? <StatusChip label="Refund" tone="positive" /> : null}
+      {suggestedRefund ? <StatusChip label="Refund suggestion" tone="warning" /> : null}
       {item.excluded && !item.isTransfer ? <StatusChip label="Excluded" tone="neutral" /> : null}
     </Stack>
   );
@@ -408,12 +520,16 @@ function TransactionRow({
         "&:hover": { bgcolor: "action.hover" },
       }}
     >
-      <Checkbox
-        size="small"
-        checked={checked}
-        onChange={(event) => onCheck(event.target.checked)}
-        inputProps={{ "aria-label": `Select ${item.merchant}` }}
-      />
+      {item.status === "removed" ? (
+        <RemoveCircleOutlineRounded color="disabled" aria-label="Removed transaction" />
+      ) : (
+        <Checkbox
+          size="small"
+          checked={checked}
+          onChange={(event) => onCheck(event.target.checked)}
+          inputProps={{ "aria-label": `Select ${item.merchant}` }}
+        />
+      )}
       <Button
         color="inherit"
         onClick={onOpen}
@@ -427,12 +543,13 @@ function TransactionRow({
             flex: "0 0 auto",
             display: "grid",
             placeItems: "center",
-            bgcolor: item.needsReview ? alpha("#D98B2B", 0.12) : "action.hover",
-            color: item.needsReview ? "warning.main" : "text.secondary",
+            bgcolor:
+              item.needsReview || hasSuggestedMatch(item) ? alpha("#D98B2B", 0.12) : "action.hover",
+            color: item.needsReview || hasSuggestedMatch(item) ? "warning.main" : "text.secondary",
             mr: 2.5,
           }}
         >
-          {item.needsReview ? (
+          {item.needsReview || hasSuggestedMatch(item) ? (
             <WarningAmberRounded fontSize="small" />
           ) : (
             <ReceiptLongRounded fontSize="small" />
@@ -487,13 +604,17 @@ function MobileTransactionRow({
   return (
     <Paper variant="outlined" sx={{ p: 3, borderRadius: 3 }}>
       <Stack direction="row" gap={2} alignItems="flex-start">
-        <Checkbox
-          size="small"
-          checked={checked}
-          onChange={(event) => onCheck(event.target.checked)}
-          inputProps={{ "aria-label": `Select ${item.merchant}` }}
-          sx={{ mt: -1, ml: -1 }}
-        />
+        {item.status === "removed" ? (
+          <RemoveCircleOutlineRounded color="disabled" aria-label="Removed transaction" />
+        ) : (
+          <Checkbox
+            size="small"
+            checked={checked}
+            onChange={(event) => onCheck(event.target.checked)}
+            inputProps={{ "aria-label": `Select ${item.merchant}` }}
+            sx={{ mt: -1, ml: -1 }}
+          />
+        )}
         <Button
           color="inherit"
           fullWidth
@@ -1167,7 +1288,7 @@ export function MatchTransferDialog({
         candidate.id !== item.id &&
         candidate.currency === item.currency &&
         BigInt(candidate.amountMinorUnits) === -currentAmount &&
-        candidate.account !== item.account &&
+        candidate.accountId !== item.accountId &&
         !candidate.transferId,
     );
   }, [item, transactions]);
@@ -1293,6 +1414,7 @@ export function LinkRefundDialog({
       const other = BigInt(candidate.amountMinorUnits);
       if (
         candidate.id === item.id ||
+        candidate.accountId !== item.accountId ||
         candidate.currency !== item.currency ||
         candidate.isTransfer ||
         (current < 0n ? other <= 0n : other >= 0n)
@@ -1357,7 +1479,7 @@ export function LinkRefundDialog({
             label={BigInt(item.amountMinorUnits) > 0n ? "Original purchase" : "Refund credit"}
             value={candidateId}
             onChange={(event) => setCandidateId(event.target.value)}
-            helperText="Candidates use the opposite direction, same currency, and enough unlinked value."
+            helperText="Candidates use the same account and currency, opposite direction, and enough unlinked value."
           >
             <MenuItem value="">Choose a transaction</MenuItem>
             {candidates.map((candidate) => (
@@ -1591,28 +1713,44 @@ export function CreateTransactionRuleDialog({
   );
 }
 
-function TransactionDetail({
+export function TransactionDetail({
   item,
   details,
+  transactions,
   detailLoading,
   detailError,
   categories,
   open,
   onClose,
   onSave,
+  onSaveTags,
+  onRemove,
+  onRestore,
   onAction,
+  onConfirmTransferSuggestion,
+  onRejectTransferSuggestion,
+  onConfirmRefundSuggestion,
+  onRejectRefundSuggestion,
   saving,
   saveError,
 }: {
   item: TransactionView | null;
   details: ApiTransactionDetail | undefined;
+  transactions: TransactionView[];
   detailLoading: boolean;
   detailError: string | null;
   categories: ApiCategory[];
   open: boolean;
   onClose: () => void;
   onSave: (item: TransactionView, patch: Partial<ApiTransaction>) => Promise<void>;
+  onSaveTags: (item: TransactionView, tags: string[]) => Promise<void>;
+  onRemove: (item: TransactionView) => Promise<void>;
+  onRestore: (item: TransactionView) => Promise<void>;
   onAction: (action: TransactionAction) => void;
+  onConfirmTransferSuggestion: (match: ApiTransferMatch) => Promise<void>;
+  onRejectTransferSuggestion: (id: string) => Promise<void>;
+  onConfirmRefundSuggestion: (match: ApiRefundLinkMatch) => Promise<void>;
+  onRejectRefundSuggestion: (id: string) => Promise<void>;
   saving: boolean;
   saveError: string | null;
 }) {
@@ -1622,25 +1760,103 @@ function TransactionDetail({
   const [category, setCategory] = useState(item?.category ?? "Uncategorized");
   const [note, setNote] = useState(item?.note ?? "");
   const [excluded, setExcluded] = useState(Boolean(item?.excluded));
+  const [tagDraft, setTagDraft] = useState<string[]>(item?.tags ?? []);
+  const [newTag, setNewTag] = useState("");
   const [saved, setSaved] = useState(false);
+  const [reviewingMatch, setReviewingMatch] = useState("");
+  const [reviewError, setReviewError] = useState("");
+  const [removeOpen, setRemoveOpen] = useState(false);
+  const [statusWorking, setStatusWorking] = useState<"remove" | "restore" | "">("");
+  const [statusError, setStatusError] = useState("");
 
   useEffect(() => {
     setMerchant(item?.merchant ?? "");
     setCategory(item?.category ?? "Uncategorized");
     setNote(item?.note ?? "");
     setExcluded(Boolean(item?.excluded));
+    setTagDraft(item?.tags ?? []);
+    setNewTag("");
     setSaved(false);
+    setReviewingMatch("");
+    setReviewError("");
+    setRemoveOpen(false);
+    setStatusWorking("");
+    setStatusError("");
   }, [item]);
+
+  useEffect(() => {
+    if (details?.tags) setTagDraft(details.tags);
+  }, [details?.tags]);
 
   if (!item) return null;
   const save = async () => {
     await onSave(item, { merchant, categoryName: category, note, isExcluded: excluded });
+    const originalTags = details?.tags ?? item.tags;
+    if (JSON.stringify(tagDraft) !== JSON.stringify(originalTags)) {
+      await onSaveTags(item, tagDraft);
+    }
     setSaved(true);
     window.setTimeout(onClose, 350);
   };
-  const transferMatched = Boolean(details?.transfer ?? item.transferId);
+  const addTag = () => {
+    const value = newTag.normalize("NFKC").trim().replace(/\s+/g, " ");
+    if (!value || value.length > 40 || tagDraft.length >= 20) return;
+    if (tagDraft.some((tag) => tag.toLocaleLowerCase() === value.toLocaleLowerCase())) {
+      setNewTag("");
+      return;
+    }
+    setTagDraft((current) => [...current, value]);
+    setNewTag("");
+  };
+  const changeStatus = async (action: "remove" | "restore") => {
+    setStatusWorking(action);
+    setStatusError("");
+    try {
+      if (action === "remove") await onRemove(item);
+      else await onRestore(item);
+      setRemoveOpen(false);
+    } catch (caught) {
+      setStatusError(
+        caught instanceof Error ? caught.message : "The transaction status could not be changed.",
+      );
+    } finally {
+      setStatusWorking("");
+    }
+  };
+  const readOnly = item.status === "removed" || item.status === "void";
+  const transferMatch = details?.transfer ?? item.transferMatch ?? null;
+  const transferMatched = transferMatch
+    ? transferMatch.status === "confirmed"
+    : Boolean(item.isTransfer);
+  const transferSuggested = transferMatch?.status === "suggested";
   const splitCount = details?.splits.length ?? (item.hasSplits ? 2 : 0);
-  const refundCount = details?.refundLinks.length ?? item.refundLinkIds.length;
+  const refundMatches = details?.refundLinks ?? item.refundLinkMatches;
+  const confirmedRefunds = refundMatches.filter(({ status }) => status === "confirmed");
+  const suggestedRefunds = refundMatches.filter(({ status }) => status === "suggested");
+  const itemMinorUnits = BigInt(item.amountMinorUnits);
+  const absoluteItemMinorUnits = itemMinorUnits < 0n ? -itemMinorUnits : itemMinorUnits;
+  const transferCounterpart = transferMatch
+    ? transactions.find(
+        ({ id }) =>
+          id ===
+          (transferMatch.outflowTransactionId === item.id
+            ? transferMatch.inflowTransactionId
+            : transferMatch.outflowTransactionId),
+      )
+    : undefined;
+  const runMatchReview = async (key: string, action: () => Promise<void>) => {
+    setReviewingMatch(key);
+    setReviewError("");
+    try {
+      await action();
+    } catch (caught) {
+      setReviewError(
+        caught instanceof Error ? caught.message : "The match review could not be saved.",
+      );
+    } finally {
+      setReviewingMatch("");
+    }
+  };
 
   return (
     <Drawer
@@ -1683,24 +1899,30 @@ function TransactionDetail({
             </Typography>
           </Stack>
           <Stack direction="row" gap={1.5} sx={{ mt: 3 }} flexWrap="wrap">
-            {item.pending ? (
+            {item.status === "removed" ? (
+              <StatusChip label="Removed" tone="neutral" />
+            ) : item.status === "void" ? (
+              <StatusChip label="Void" tone="neutral" />
+            ) : item.pending ? (
               <StatusChip label="Pending" tone="warning" />
             ) : (
               <StatusChip label="Posted" tone="positive" />
             )}
-            {item.needsReview ? (
-              <StatusChip
-                label={`${Math.round((item.confidence ?? 0.7) * 100)}% confidence`}
-                tone="warning"
-              />
-            ) : null}
+            {item.needsReview ? <StatusChip label="Needs review" tone="warning" /> : null}
             {item.recurring ? <StatusChip label="Recurring" tone="info" /> : null}
             {splitCount ? <StatusChip label={`${splitCount}-part split`} tone="info" /> : null}
             {transferMatched ? <StatusChip label="Matched transfer" tone="neutral" /> : null}
-            {refundCount ? (
+            {transferSuggested ? <StatusChip label="Transfer suggestion" tone="warning" /> : null}
+            {confirmedRefunds.length ? (
               <StatusChip
-                label={`${refundCount} refund ${refundCount === 1 ? "link" : "links"}`}
+                label={`${confirmedRefunds.length} refund ${confirmedRefunds.length === 1 ? "link" : "links"}`}
                 tone="positive"
+              />
+            ) : null}
+            {suggestedRefunds.length ? (
+              <StatusChip
+                label={`${suggestedRefunds.length} refund ${suggestedRefunds.length === 1 ? "suggestion" : "suggestions"}`}
+                tone="warning"
               />
             ) : null}
           </Stack>
@@ -1712,6 +1934,16 @@ function TransactionDetail({
           {detailError ? (
             <Alert severity="warning" sx={{ mt: 3 }}>
               {detailError}
+            </Alert>
+          ) : null}
+          {item.status === "removed" ? (
+            <Alert severity="info" sx={{ mt: 3 }}>
+              This entry is excluded from reports but its imported fact, tags, links, and audit
+              history are intact. Restore it to edit or include it again.
+            </Alert>
+          ) : item.status === "void" ? (
+            <Alert severity="info" sx={{ mt: 3 }}>
+              This provider-voided entry is retained as read-only ledger history.
             </Alert>
           ) : null}
           {details?.splits.length ? (
@@ -1734,154 +1966,337 @@ function TransactionDetail({
               </Stack>
             </Paper>
           ) : null}
-          <Divider sx={{ my: 5 }} />
-          <Stack gap={4}>
-            <TextField
-              label="Merchant"
-              value={merchant}
-              onChange={(event) => setMerchant(event.target.value)}
-              fullWidth
-            />
-            <TextField
-              select
-              label="Category"
-              value={category}
-              onChange={(event) => setCategory(event.target.value)}
-              fullWidth
-              disabled={Boolean(splitCount)}
-              helperText={splitCount ? "Edit the split to change its categories." : undefined}
+          {!readOnly && transferSuggested && transferMatch ? (
+            <Paper
+              variant="outlined"
+              aria-label="Suggested transfer match"
+              sx={{ p: 3, borderRadius: 3, mt: 3, borderColor: "warning.main" }}
             >
-              <MenuItem value="Uncategorized">Uncategorized</MenuItem>
-              {categories
-                .filter(({ active }) => active)
-                .map((option) => (
-                  <MenuItem key={option.id} value={option.name}>
-                    {option.name}
-                  </MenuItem>
-                ))}
-            </TextField>
-            <TextField
-              label="Envelope"
-              value={details?.splits.length ? "Defined per split" : item.envelope}
-              disabled
-              helperText="Use Split transaction to allocate this entry across envelopes."
-              fullWidth
-            />
-            <TextField
-              label="Notes"
-              value={note}
-              onChange={(event) => setNote(event.target.value)}
-              multiline
-              minRows={3}
-              fullWidth
-            />
-            <Box>
-              <Typography variant="caption" color="text.secondary">
-                Tags
-              </Typography>
-              <Stack direction="row" gap={1.5} sx={{ mt: 2 }}>
-                <Chip icon={<LocalOfferRounded />} label="Add tag" variant="outlined" disabled />
-                {item.recurring ? <Chip label="subscription" /> : null}
-              </Stack>
-            </Box>
-            <FormControlLabel
-              control={
-                <Checkbox
-                  checked={excluded}
-                  onChange={(event) => setExcluded(event.target.checked)}
-                />
-              }
-              label={
+              <Stack direction="row" justifyContent="space-between" gap={2} alignItems="center">
                 <Box>
-                  <Typography variant="body2" fontWeight={700}>
-                    Exclude from reports
+                  <Typography variant="overline" color="warning.main">
+                    Suggested transfer match
                   </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    Transaction remains in the ledger and audit history.
+                  <Typography variant="body2" fontWeight={750} sx={{ mt: 0.5 }}>
+                    Exact {formatMinorUnits(absoluteItemMinorUnits, item.currency)} opposite entry
                   </Typography>
                 </Box>
-              }
-            />
-          </Stack>
-          <Divider sx={{ my: 5 }} />
-          <Typography variant="h3">Tools</Typography>
-          <Box sx={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 2, mt: 3 }}>
-            <Button
-              variant="outlined"
-              color="inherit"
-              startIcon={<CallSplitRounded />}
-              sx={{ justifyContent: "flex-start", minWidth: 0 }}
-              onClick={() => onAction("split")}
-            >
-              {splitCount ? "Edit split" : "Split transaction"}
-            </Button>
-            <Tooltip
-              title={
-                transferMatched
-                  ? "This transaction already has a confirmed transfer pair."
-                  : "Match an exact opposite entry from another account."
-              }
-            >
-              <span>
+                <StatusChip label="Needs confirmation" tone="warning" />
+              </Stack>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
+                {transferCounterpart
+                  ? `${transferCounterpart.merchant} · ${transferCounterpart.account} · ${transferCounterpart.date}`
+                  : "The matching entry is outside the currently loaded ledger page."}
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+                Evidence:{" "}
+                {transferMatch.matchedBy === "provider"
+                  ? "provider pairing metadata"
+                  : "unique exact amount, currency, account, and date fingerprint"}
+                . Nothing is excluded from reports until you confirm.
+              </Typography>
+              <Stack direction="row" justifyContent="flex-end" gap={2} sx={{ mt: 3 }}>
                 <Button
+                  color="inherit"
+                  disabled={Boolean(reviewingMatch)}
+                  onClick={() =>
+                    void runMatchReview(`transfer:${transferMatch.id}:reject`, () =>
+                      onRejectTransferSuggestion(transferMatch.id),
+                    )
+                  }
+                >
+                  Reject match
+                </Button>
+                <Button
+                  variant="contained"
+                  disabled={Boolean(reviewingMatch)}
+                  onClick={() =>
+                    void runMatchReview(`transfer:${transferMatch.id}:confirm`, () =>
+                      onConfirmTransferSuggestion(transferMatch),
+                    )
+                  }
+                >
+                  {reviewingMatch === `transfer:${transferMatch.id}:confirm`
+                    ? "Confirming…"
+                    : "Confirm transfer"}
+                </Button>
+              </Stack>
+            </Paper>
+          ) : null}
+          {!readOnly &&
+            suggestedRefunds.map((match) => {
+              const counterpartId =
+                match.refundTransactionId === item.id
+                  ? match.purchaseTransactionId
+                  : match.refundTransactionId;
+              const counterpart = transactions.find(({ id }) => id === counterpartId);
+              return (
+                <Paper
+                  key={match.id}
+                  variant="outlined"
+                  aria-label="Suggested refund match"
+                  sx={{ p: 3, borderRadius: 3, mt: 3, borderColor: "warning.main" }}
+                >
+                  <Stack direction="row" justifyContent="space-between" gap={2} alignItems="center">
+                    <Box>
+                      <Typography variant="overline" color="warning.main">
+                        Suggested refund match
+                      </Typography>
+                      <Typography variant="body2" fontWeight={750} sx={{ mt: 0.5 }}>
+                        Link{" "}
+                        {formatMinorUnits(BigInt(match.amount.minorUnits), match.amount.currency)}{" "}
+                        to the original purchase
+                      </Typography>
+                    </Box>
+                    <StatusChip label="Needs confirmation" tone="warning" />
+                  </Stack>
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
+                    {counterpart
+                      ? `${counterpart.merchant} · ${counterpart.account} · ${counterpart.date}`
+                      : "The matching entry is outside the currently loaded ledger page."}
+                  </Typography>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ display: "block", mt: 1 }}
+                  >
+                    Evidence: same account and currency, exact opposite amount, and merchant/date
+                    context. Budgets change only after confirmation.
+                  </Typography>
+                  <Stack direction="row" justifyContent="flex-end" gap={2} sx={{ mt: 3 }}>
+                    <Button
+                      color="inherit"
+                      disabled={Boolean(reviewingMatch)}
+                      onClick={() =>
+                        void runMatchReview(`refund:${match.id}:reject`, () =>
+                          onRejectRefundSuggestion(match.id),
+                        )
+                      }
+                    >
+                      Reject match
+                    </Button>
+                    <Button
+                      variant="contained"
+                      disabled={Boolean(reviewingMatch)}
+                      onClick={() =>
+                        void runMatchReview(`refund:${match.id}:confirm`, () =>
+                          onConfirmRefundSuggestion(match),
+                        )
+                      }
+                    >
+                      {reviewingMatch === `refund:${match.id}:confirm`
+                        ? "Confirming…"
+                        : "Confirm refund"}
+                    </Button>
+                  </Stack>
+                </Paper>
+              );
+            })}
+          {reviewError ? (
+            <Alert severity="error" sx={{ mt: 3 }}>
+              {reviewError}
+            </Alert>
+          ) : null}
+          {!readOnly ? (
+            <>
+              <Divider sx={{ my: 5 }} />
+              <Stack gap={4}>
+                <TextField
+                  label="Merchant"
+                  value={merchant}
+                  onChange={(event) => setMerchant(event.target.value)}
                   fullWidth
+                />
+                <TextField
+                  select
+                  label="Category"
+                  value={category}
+                  onChange={(event) => setCategory(event.target.value)}
+                  fullWidth
+                  disabled={Boolean(splitCount)}
+                  helperText={splitCount ? "Edit the split to change its categories." : undefined}
+                >
+                  <MenuItem value="Uncategorized">Uncategorized</MenuItem>
+                  {categories
+                    .filter(({ active }) => active)
+                    .map((option) => (
+                      <MenuItem key={option.id} value={option.name}>
+                        {option.name}
+                      </MenuItem>
+                    ))}
+                </TextField>
+                <TextField
+                  label="Envelope"
+                  value={details?.splits.length ? "Defined per split" : item.envelope}
+                  inputProps={{ readOnly: true }}
+                  helperText="Use Split transaction to allocate this entry across envelopes."
+                  fullWidth
+                />
+                <TextField
+                  label="Notes"
+                  value={note}
+                  onChange={(event) => setNote(event.target.value)}
+                  multiline
+                  minRows={3}
+                  fullWidth
+                />
+                <Box>
+                  <Typography variant="caption" color="text.secondary">
+                    Tags
+                  </Typography>
+                  {tagDraft.length ? (
+                    <Stack direction="row" gap={1.5} flexWrap="wrap" sx={{ mt: 2 }}>
+                      {tagDraft.map((tag) => (
+                        <Chip
+                          key={tag.toLocaleLowerCase()}
+                          label={tag}
+                          onDelete={() =>
+                            setTagDraft((current) => current.filter((value) => value !== tag))
+                          }
+                        />
+                      ))}
+                    </Stack>
+                  ) : (
+                    <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                      No tags yet.
+                    </Typography>
+                  )}
+                  <Stack direction={{ xs: "column", sm: "row" }} gap={2} sx={{ mt: 2 }}>
+                    <TextField
+                      label="Add transaction tag"
+                      value={newTag}
+                      onChange={(event) => setNewTag(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key !== "Enter") return;
+                        event.preventDefault();
+                        addTag();
+                      }}
+                      inputProps={{ maxLength: 40 }}
+                      helperText="Press Enter or Add tag. Up to 20 tags."
+                      fullWidth
+                    />
+                    <Button
+                      variant="outlined"
+                      startIcon={<LocalOfferRounded />}
+                      onClick={addTag}
+                      disabled={
+                        !newTag.trim() ||
+                        newTag.normalize("NFKC").trim().length > 40 ||
+                        tagDraft.length >= 20
+                      }
+                      aria-label="Add tag to transaction"
+                      sx={{ alignSelf: { sm: "flex-start" }, minHeight: 40 }}
+                    >
+                      Add tag
+                    </Button>
+                  </Stack>
+                </Box>
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={excluded}
+                      onChange={(event) => setExcluded(event.target.checked)}
+                    />
+                  }
+                  label={
+                    <Box>
+                      <Typography variant="body2" fontWeight={700}>
+                        Exclude from reports
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        Transaction remains in the ledger and audit history.
+                      </Typography>
+                    </Box>
+                  }
+                />
+              </Stack>
+              <Divider sx={{ my: 5 }} />
+              <Typography variant="h3">Tools</Typography>
+              <Box sx={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 2, mt: 3 }}>
+                <Button
                   variant="outlined"
                   color="inherit"
-                  startIcon={<SwapHorizRounded />}
+                  startIcon={<CallSplitRounded />}
                   sx={{ justifyContent: "flex-start", minWidth: 0 }}
-                  disabled={transferMatched}
-                  onClick={() => onAction("transfer")}
+                  onClick={() => onAction("split")}
                 >
-                  {transferMatched ? "Transfer matched" : "Match transfer"}
+                  {splitCount ? "Edit split" : "Split transaction"}
                 </Button>
-              </span>
-            </Tooltip>
-            <Button
-              variant="outlined"
-              color="inherit"
-              startIcon={<LinkRounded />}
-              sx={{ justifyContent: "flex-start", minWidth: 0 }}
-              onClick={() => onAction("refund")}
-            >
-              Link refund
-            </Button>
-            <Button
-              variant="outlined"
-              color="inherit"
-              startIcon={<RuleRounded />}
-              sx={{ justifyContent: "flex-start", minWidth: 0 }}
-              onClick={() => onAction("rule")}
-            >
-              Create rule
-            </Button>
-          </Box>
-          <Accordion
-            disableGutters
-            elevation={0}
-            sx={{
-              mt: 5,
-              border: "1px solid",
-              borderColor: "divider",
-              "&::before": { display: "none" },
-            }}
-          >
-            <AccordionSummary expandIcon={<ExpandMoreRounded />}>
-              <Stack direction="row" gap={2} alignItems="center">
-                <CloudDownloadRounded fontSize="small" />
-                <Typography variant="body2" fontWeight={700}>
-                  Audit & provenance
-                </Typography>
-              </Stack>
-            </AccordionSummary>
-            <AccordionDetails>
-              <Stack gap={2}>
-                <Typography variant="body2">{item.provenance}</Typography>
-                <Typography variant="caption" color="text.secondary">
-                  Raw source retained · User changes are audited · Linked facts stay traceable
-                </Typography>
-              </Stack>
-            </AccordionDetails>
-          </Accordion>
+                <Tooltip
+                  title={
+                    transferMatched
+                      ? "This transaction already has a confirmed transfer pair."
+                      : transferSuggested
+                        ? "Confirm or reject the suggested pair above before matching manually."
+                        : "Match an exact opposite entry from another account."
+                  }
+                >
+                  <span>
+                    <Button
+                      fullWidth
+                      variant="outlined"
+                      color="inherit"
+                      startIcon={<SwapHorizRounded />}
+                      sx={{ justifyContent: "flex-start", minWidth: 0 }}
+                      disabled={transferMatched || transferSuggested}
+                      onClick={() => onAction("transfer")}
+                    >
+                      {transferMatched
+                        ? "Transfer matched"
+                        : transferSuggested
+                          ? "Review transfer suggestion"
+                          : "Match transfer"}
+                    </Button>
+                  </span>
+                </Tooltip>
+                <Button
+                  variant="outlined"
+                  color="inherit"
+                  startIcon={<LinkRounded />}
+                  sx={{ justifyContent: "flex-start", minWidth: 0 }}
+                  onClick={() => onAction("refund")}
+                >
+                  Link refund
+                </Button>
+                <Button
+                  variant="outlined"
+                  color="inherit"
+                  startIcon={<RuleRounded />}
+                  sx={{ justifyContent: "flex-start", minWidth: 0 }}
+                  onClick={() => onAction("rule")}
+                >
+                  Create rule
+                </Button>
+              </Box>
+              <Accordion
+                disableGutters
+                elevation={0}
+                sx={{
+                  mt: 5,
+                  border: "1px solid",
+                  borderColor: "divider",
+                  "&::before": { display: "none" },
+                }}
+              >
+                <AccordionSummary expandIcon={<ExpandMoreRounded />}>
+                  <Stack direction="row" gap={2} alignItems="center">
+                    <CloudDownloadRounded fontSize="small" />
+                    <Typography variant="body2" fontWeight={700}>
+                      Audit & provenance
+                    </Typography>
+                  </Stack>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <Stack gap={2}>
+                    <Typography variant="body2">{item.provenance}</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Raw source retained · User changes are audited · Linked facts stay traceable
+                    </Typography>
+                  </Stack>
+                </AccordionDetails>
+              </Accordion>
+            </>
+          ) : null}
         </Box>
         <Stack
           direction="row"
@@ -1895,29 +2310,44 @@ function TransactionDetail({
             pb: { xs: "max(12px, env(safe-area-inset-bottom))", sm: 4 },
           }}
         >
-          <Tooltip title="Transaction deletion will be added with an audited restore flow.">
-            <span>
-              <Button disabled color="inherit" startIcon={<DeleteOutlineRounded />}>
-                Delete
-              </Button>
-            </span>
-          </Tooltip>
-          <Stack direction="row" gap={2}>
-            <Button onClick={onClose}>Cancel</Button>
+          {item.status === "removed" ? (
             <Button
-              variant="contained"
-              onClick={() => void save()}
-              disabled={saving || !merchant.trim()}
-              startIcon={<CheckCircleRounded />}
+              variant="outlined"
+              startIcon={<ReceiptLongRounded />}
+              onClick={() => void changeStatus("restore")}
+              disabled={Boolean(statusWorking)}
             >
-              {saving
-                ? "Saving…"
-                : saved
-                  ? "Saved"
-                  : item.needsReview
-                    ? "Save & approve"
-                    : "Save changes"}
+              {statusWorking === "restore" ? "Restoring…" : "Restore transaction"}
             </Button>
+          ) : item.status === "void" ? (
+            <Box />
+          ) : (
+            <Button
+              color="error"
+              startIcon={<DeleteOutlineRounded />}
+              onClick={() => setRemoveOpen(true)}
+            >
+              Remove transaction
+            </Button>
+          )}
+          <Stack direction="row" gap={2}>
+            <Button onClick={onClose}>{readOnly ? "Close" : "Cancel"}</Button>
+            {!readOnly ? (
+              <Button
+                variant="contained"
+                onClick={() => void save()}
+                disabled={saving || !merchant.trim()}
+                startIcon={<CheckCircleRounded />}
+              >
+                {saving
+                  ? "Saving…"
+                  : saved
+                    ? "Saved"
+                    : item.needsReview
+                      ? "Save & approve"
+                      : "Save changes"}
+              </Button>
+            ) : null}
           </Stack>
         </Stack>
         {saveError ? (
@@ -1925,6 +2355,39 @@ function TransactionDetail({
             {saveError}
           </Alert>
         ) : null}
+        {statusError ? (
+          <Alert severity="error" sx={{ m: 3, mt: 0 }}>
+            {statusError}
+          </Alert>
+        ) : null}
+        <Dialog
+          open={removeOpen}
+          onClose={() => (statusWorking ? undefined : setRemoveOpen(false))}
+          fullWidth
+          maxWidth="xs"
+          aria-labelledby="remove-transaction-title"
+        >
+          <DialogTitle id="remove-transaction-title">Remove {item.merchant}?</DialogTitle>
+          <DialogContent>
+            <Alert severity="warning">
+              This hides the entry from reports without deleting imported history. You can restore
+              it from the Removed tab at any time.
+            </Alert>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setRemoveOpen(false)} disabled={Boolean(statusWorking)}>
+              Keep transaction
+            </Button>
+            <Button
+              color="error"
+              variant="contained"
+              onClick={() => void changeStatus("remove")}
+              disabled={Boolean(statusWorking)}
+            >
+              {statusWorking === "remove" ? "Removing…" : "Confirm removal"}
+            </Button>
+          </DialogActions>
+        </Dialog>
       </Box>
     </Drawer>
   );
@@ -1934,11 +2397,25 @@ export function TransactionsPage() {
   const demo = isDemoMode();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [demoTransactionData, setDemoTransactionData] = useState<ApiTransaction[]>(
+    demoApiTransactions.data,
+  );
+  const [demoRemovedStatuses, setDemoRemovedStatuses] = useState<
+    Record<string, "pending" | "posted" | "void">
+  >({});
+  const [query, setQuery] = useState("");
   const queryClient = useQueryClient();
-  const result = useQuery({
-    queryKey: ["transactions"],
-    queryFn: () => api.transactions(),
-    initialData: demo ? demoApiTransactions : undefined,
+  const result = useInfiniteQuery({
+    queryKey: ["transactions", query],
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: "100" });
+      if (query.trim()) params.set("query", query.trim());
+      if (pageParam) params.set("cursor", pageParam);
+      return api.transactions(params.toString());
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) =>
+      lastPage.page.hasMore ? (lastPage.page.cursor ?? undefined) : undefined,
     enabled: !demo,
     retry: 1,
   });
@@ -1973,12 +2450,25 @@ export function TransactionsPage() {
       api.bulkTransactions({ ids, patch }),
     onSuccess: async () => queryClient.invalidateQueries({ queryKey: ["transactions"] }),
   });
-  const allItems = result.data ? displayItems(result.data) : [];
+  const replaceTags = useMutation({
+    mutationFn: ({ id, tags }: { id: string; tags: string[] }) =>
+      api.replaceTransactionTags(id, tags),
+  });
+  const removeEntry = useMutation({ mutationFn: api.removeTransaction });
+  const restoreEntry = useMutation({ mutationFn: api.restoreTransaction });
+  const transactionPage = demo
+    ? { data: demoTransactionData, page: { cursor: null, hasMore: false } }
+    : result.data
+      ? {
+          data: result.data.pages.flatMap(({ data }) => data),
+          page: result.data.pages.at(-1)?.page ?? { cursor: null, hasMore: false },
+        }
+      : undefined;
+  const allItems = transactionPage ? displayItems(transactionPage) : [];
   const categories = categoriesQuery.data?.data ?? [];
   const envelopes = envelopesQuery.data?.data ?? [];
   const accounts = accountsQuery.data?.data ?? [];
   const [tab, setTab] = useState("all");
-  const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<string[]>([]);
   const [rangeFilters, setRangeFilters] = useState<LedgerRangeFilters>({
     minimum: "",
@@ -2006,50 +2496,59 @@ export function TransactionsPage() {
     enabled: !demo && Boolean(detailId),
     retry: 1,
   });
+  const movementCandidatesQuery = useQuery({
+    queryKey: [
+      "movement-candidates",
+      action,
+      detail?.id,
+      detail?.accountId,
+      detail?.amountMinorUnits,
+    ],
+    queryFn: () => {
+      if (!detail) throw new Error("Choose a transaction first.");
+      if (action === "transfer") {
+        const oppositeAmount = -BigInt(detail.amountMinorUnits);
+        const query = new URLSearchParams({
+          limit: "250",
+          query: `${oppositeAmount < 0n ? "-" : ""}${minorUnitsToInput(oppositeAmount)}`,
+        });
+        return api.transactions(query.toString());
+      }
+      return api.accountTransactions(detail.accountId, 250);
+    },
+    enabled: !demo && Boolean(detail) && (action === "transfer" || action === "refund"),
+    retry: 1,
+  });
+  const movementCandidateItems = useMemo(() => {
+    if (demo || !movementCandidatesQuery.data) return allItems;
+    const merged = new Map(allItems.map((item) => [item.id, item]));
+    for (const item of displayItems(movementCandidatesQuery.data)) merged.set(item.id, item);
+    return [...merged.values()];
+  }, [allItems, demo, movementCandidatesQuery.data]);
 
   useEffect(() => {
     const requestedAction = searchParams.get("action");
-    if (requestedAction !== "add" && requestedAction !== "import") return;
+    const requestedReview = searchParams.get("review") === "true";
+    if (requestedAction !== "add" && requestedAction !== "import" && !requestedReview) return;
     if (requestedAction === "add") setManualOpen(true);
     if (requestedAction === "import") setImportOpen(true);
+    if (requestedReview) setTab("review");
     const next = new URLSearchParams(searchParams);
     next.delete("action");
+    next.delete("review");
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
   const items = useMemo(
     () =>
-      allItems.filter((item) => {
-        const matchesSearch =
-          `${item.merchant} ${item.rawDescription} ${item.category} ${item.account} ${item.note ?? ""}`
-            .toLowerCase()
-            .includes(query.toLowerCase());
-        const matchesTab = tab === "all" || item.needsReview;
-        const absoluteAmount = Math.abs(Number(item.amountMinorUnits)) / 100;
-        const minimum = Number(rangeFilters.minimum);
-        const maximum = Number(rangeFilters.maximum);
-        const effectiveDay = item.effectiveDate.slice(0, 10);
-        const matchesRange =
-          (!rangeFilters.minimum || absoluteAmount >= minimum) &&
-          (!rangeFilters.maximum || absoluteAmount <= maximum) &&
-          (!rangeFilters.fromDate || effectiveDay >= rangeFilters.fromDate) &&
-          (!rangeFilters.toDate || effectiveDay <= rangeFilters.toDate);
-        const matchesFilter =
-          !filters.length ||
-          (filters.includes("Needs review") && item.needsReview) ||
-          (filters.includes("Pending") && item.pending) ||
-          (filters.includes("Posted") && !item.pending) ||
-          (filters.includes("Excluded") && item.excluded) ||
-          (filters.includes("Transfer") && item.isTransfer) ||
-          (filters.includes("Refund") && item.refundLinkIds.length > 0) ||
-          (filters.includes("Income") && item.isIncome) ||
-          (filters.includes("Expense") && BigInt(item.amountMinorUnits) < 0n && !item.isTransfer) ||
-          (filters.includes("Recurring") && item.recurring) ||
-          filters.some((filter) =>
-            item.provenance.toLowerCase().includes(filter.toLowerCase().split(" ")[0] ?? ""),
-          );
-        return matchesSearch && matchesTab && matchesFilter && matchesRange;
-      }),
+      allItems.filter((item) =>
+        matchesTransactionFilters(item, {
+          query,
+          tab,
+          filters,
+          range: rangeFilters,
+        }),
+      ),
     [allItems, filters, query, rangeFilters, tab],
   );
 
@@ -2059,6 +2558,18 @@ export function TransactionsPage() {
   const groups = [...new Set(items.map((item) => item.date))];
   const activeFilterCount =
     filters.length + Object.values(rangeFilters).filter((value) => Boolean(value)).length;
+  const suggestedMatchCount = new Set(
+    allItems.flatMap((item) =>
+      item.status === "removed"
+        ? []
+        : [
+            ...(item.transferMatch?.status === "suggested" ? [item.transferMatch.id] : []),
+            ...item.refundLinkMatches
+              .filter(({ status }) => status === "suggested")
+              .map(({ id }) => id),
+          ],
+    ),
+  ).size;
   const toggleAll = (checked: boolean) => setSelected(checked ? items.map((item) => item.id) : []);
   const saveTransaction = async (item: TransactionView, patch: Partial<ApiTransaction>) => {
     if (!demo) {
@@ -2066,6 +2577,21 @@ export function TransactionsPage() {
         id: item.id,
         patch: item.needsReview ? { ...patch, reviewState: "approved" } : patch,
       });
+    } else {
+      setDemoTransactionData((current) =>
+        current.map((transaction) =>
+          transaction.id === item.id
+            ? {
+                ...transaction,
+                merchant: patch.merchant ?? transaction.merchant,
+                categoryName: patch.categoryName ?? transaction.categoryName,
+                ...(patch.note !== undefined ? { note: patch.note } : {}),
+                ...(patch.isExcluded !== undefined ? { isExcluded: patch.isExcluded } : {}),
+                reviewState: item.needsReview ? "approved" : transaction.reviewState,
+              }
+            : transaction,
+        ),
+      );
     }
     setToast(`${item.merchant} saved${item.needsReview ? " and approved" : ""}`);
   };
@@ -2075,6 +2601,15 @@ export function TransactionsPage() {
     if (!category) return;
     if (!demo) {
       await bulkTransactions.mutateAsync({ ids: selected, patch: { categoryName: category.name } });
+    } else {
+      const selectedIds = new Set(selected);
+      setDemoTransactionData((current) =>
+        current.map((transaction) =>
+          selectedIds.has(transaction.id)
+            ? { ...transaction, categoryName: category.name }
+            : transaction,
+        ),
+      );
     }
     setBulkOpen(false);
     setSelected([]);
@@ -2088,6 +2623,63 @@ export function TransactionsPage() {
       queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
       queryClient.invalidateQueries({ queryKey: ["net-worth"] }),
     ]);
+  };
+  const saveTransactionTags = async (item: TransactionView, tags: string[]) => {
+    const savedTags = demo ? tags : (await replaceTags.mutateAsync({ id: item.id, tags })).tags;
+    if (demo) {
+      setDemoTransactionData((current) =>
+        current.map((transaction) =>
+          transaction.id === item.id ? { ...transaction, tags: savedTags } : transaction,
+        ),
+      );
+    }
+    setDetail((current) => (current?.id === item.id ? { ...current, tags: savedTags } : current));
+    await invalidateLedgerAction();
+    setToast(`${savedTags.length} tag${savedTags.length === 1 ? "" : "s"} saved`);
+  };
+  const removeTransaction = async (item: TransactionView) => {
+    if (demo) {
+      if (item.status !== "removed") {
+        setDemoRemovedStatuses((current) => ({
+          ...current,
+          [item.id]: item.status === "void" ? "void" : item.pending ? "pending" : "posted",
+        }));
+      }
+      setDemoTransactionData((current) =>
+        current.map((transaction) =>
+          transaction.id === item.id ? { ...transaction, status: "removed" } : transaction,
+        ),
+      );
+    } else {
+      await removeEntry.mutateAsync(item.id);
+    }
+    setDetail((current) =>
+      current?.id === item.id ? { ...current, status: "removed", pending: false } : current,
+    );
+    setSelected((current) => current.filter((id) => id !== item.id));
+    setTab("removed");
+    await invalidateLedgerAction();
+    setToast(`${item.merchant} removed from reports · restore remains available`);
+  };
+  const restoreTransaction = async (item: TransactionView) => {
+    const restoredStatus = demo
+      ? (demoRemovedStatuses[item.id] ?? "posted")
+      : (await restoreEntry.mutateAsync(item.id)).status;
+    if (demo) {
+      setDemoTransactionData((current) =>
+        current.map((transaction) =>
+          transaction.id === item.id ? { ...transaction, status: restoredStatus } : transaction,
+        ),
+      );
+    }
+    setDetail((current) =>
+      current?.id === item.id
+        ? { ...current, status: restoredStatus, pending: restoredStatus === "pending" }
+        : current,
+    );
+    setTab("all");
+    await invalidateLedgerAction();
+    setToast(`${item.merchant} restored to the ledger`);
   };
   const saveSplits = async (splits: SplitDraft[]) => {
     if (!detail) return;
@@ -2125,6 +2717,40 @@ export function TransactionsPage() {
     await invalidateLedgerAction();
     setToast("Refund linked · net spending updated");
   };
+  const confirmTransferSuggestion = (match: ApiTransferMatch) =>
+    matchTransfer({
+      outflowTransactionId: match.outflowTransactionId,
+      inflowTransactionId: match.inflowTransactionId,
+    });
+  const rejectTransferSuggestion = async (id: string) => {
+    if (!demo) await api.removeTransfer(id);
+    setDetail((current) => {
+      if (!current) return current;
+      const { transferId: _transferId, transferMatch: _transferMatch, ...remaining } = current;
+      return { ...remaining, isTransfer: false, excluded: false };
+    });
+    await invalidateLedgerAction();
+    setToast("Transfer suggestion rejected · it will not be suggested again");
+  };
+  const confirmRefundSuggestion = (match: ApiRefundLinkMatch) =>
+    linkRefund({
+      refundTransactionId: match.refundTransactionId,
+      purchaseTransactionId: match.purchaseTransactionId,
+    });
+  const rejectRefundSuggestion = async (id: string) => {
+    if (!demo) await api.removeRefundLink(id);
+    setDetail((current) =>
+      current
+        ? {
+            ...current,
+            refundLinkIds: current.refundLinkIds.filter((linkId) => linkId !== id),
+            refundLinkMatches: current.refundLinkMatches.filter((match) => match.id !== id),
+          }
+        : current,
+    );
+    await invalidateLedgerAction();
+    setToast("Refund suggestion rejected · it will not be suggested again");
+  };
   const previewRule = (input: Pick<ApiRule, "conditions" | "actions">): Promise<RulePreview> => {
     if (!demo) return api.previewRule(input);
     return Promise.resolve({
@@ -2142,7 +2768,36 @@ export function TransactionsPage() {
     setToast(`Rule “${input.name}” created after preview`);
   };
   const createManualTransaction = async (input: Parameters<typeof api.createTransaction>[0]) => {
-    if (!demo) await api.createTransaction(input);
+    if (!demo) {
+      await api.createTransaction(input);
+    } else {
+      const account = accounts.find(({ id }) => id === input.accountId);
+      const category = categories.find(({ id }) => id === input.categoryId);
+      setDemoTransactionData((current) => [
+        {
+          id: `demo-transaction-${Date.now()}`,
+          accountId: input.accountId,
+          effectiveDate: input.effectiveDate,
+          description: input.description,
+          merchant: input.description,
+          amount: { minorUnits: input.amountMinorUnits, currency: input.currency },
+          accountName: account?.name ?? "Manual account",
+          categoryName: category?.name ?? "Uncategorized",
+          status: "posted",
+          reviewState: category ? "approved" : "needs_review",
+          source: "manual",
+          note: input.note ?? "",
+          tags: [],
+          isTransfer: false,
+          isExcluded: false,
+          isIncome: BigInt(input.amountMinorUnits) > 0n,
+          hasSplits: false,
+          refundLinkIds: [],
+          refundLinks: [],
+        },
+        ...current,
+      ]);
+    }
     await invalidateLedgerAction();
     setToast("Manual transaction added to the reviewable ledger");
   };
@@ -2168,7 +2823,7 @@ export function TransactionsPage() {
     setDetail(null);
   };
 
-  if (result.isPending) {
+  if (!demo && result.isPending) {
     return (
       <Stack gap={4}>
         <PageHeader
@@ -2180,7 +2835,7 @@ export function TransactionsPage() {
       </Stack>
     );
   }
-  if (result.isError) {
+  if (!demo && result.isError) {
     return (
       <Stack gap={4}>
         <PageHeader
@@ -2218,6 +2873,32 @@ export function TransactionsPage() {
           </>
         }
       />
+      {suggestedMatchCount ? (
+        <Alert
+          severity="warning"
+          action={
+            <Button
+              color="inherit"
+              size="small"
+              onClick={() => {
+                setTab("review");
+                setFilters((current) =>
+                  current.includes("Suggested match") ? current : [...current, "Suggested match"],
+                );
+              }}
+            >
+              Review matches
+            </Button>
+          }
+        >
+          <strong>
+            {suggestedMatchCount} transfer or refund{" "}
+            {suggestedMatchCount === 1 ? "match" : "matches"}
+          </strong>{" "}
+          need confirmation. Suggestions do not change spending, income, or budgets until you
+          approve them.
+        </Alert>
+      ) : null}
       <Paper variant="outlined" sx={{ overflow: "hidden", borderRadius: 3.5 }}>
         <Stack
           direction={{ xs: "column", md: "row" }}
@@ -2232,10 +2913,17 @@ export function TransactionsPage() {
             aria-label="Transaction views"
             sx={{ minHeight: 44 }}
           >
-            <Tab value="all" label={`All ${allItems.length}`} />
+            <Tab
+              value="all"
+              label={`Loaded ${allItems.filter(({ status }) => status !== "removed").length}`}
+            />
             <Tab
               value="review"
-              label={`Review ${allItems.filter((item) => item.needsReview).length}`}
+              label={`Loaded review ${allItems.filter((item) => item.status !== "removed" && (item.needsReview || hasSuggestedMatch(item))).length}`}
+            />
+            <Tab
+              value="removed"
+              label={`Loaded removed ${allItems.filter(({ status }) => status === "removed").length}`}
             />
           </Tabs>
           <Stack direction="row" gap={2}>
@@ -2333,13 +3021,17 @@ export function TransactionsPage() {
                 borderColor: "divider",
               }}
             >
-              <Checkbox
-                size="small"
-                checked={items.length > 0 && selected.length === items.length}
-                indeterminate={selected.length > 0 && selected.length < items.length}
-                onChange={(event) => toggleAll(event.target.checked)}
-                inputProps={{ "aria-label": "Select all visible transactions" }}
-              />
+              {tab === "removed" ? (
+                <RemoveCircleOutlineRounded color="disabled" aria-label="Removed transactions" />
+              ) : (
+                <Checkbox
+                  size="small"
+                  checked={items.length > 0 && selected.length === items.length}
+                  indeterminate={selected.length > 0 && selected.length < items.length}
+                  onChange={(event) => toggleAll(event.target.checked)}
+                  inputProps={{ "aria-label": "Select all visible transactions" }}
+                />
+              )}
               {["Merchant", "Category / envelope", "Account", "Amount"].map((header, index) => (
                 <Typography
                   key={header}
@@ -2422,6 +3114,26 @@ export function TransactionsPage() {
             </Box>
           ))}
         </Stack>
+        {!demo && result.hasNextPage ? (
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            justifyContent="space-between"
+            alignItems={{ xs: "stretch", sm: "center" }}
+            gap={2}
+            sx={{ px: 4, py: 3, borderTop: "1px solid", borderColor: "divider" }}
+          >
+            <Typography variant="caption" color="text.secondary">
+              {allItems.length} transactions loaded. Older ledger history remains available.
+            </Typography>
+            <Button
+              variant="outlined"
+              onClick={() => void result.fetchNextPage()}
+              disabled={result.isFetchingNextPage}
+            >
+              {result.isFetchingNextPage ? "Loading older…" : "Load older transactions"}
+            </Button>
+          </Stack>
+        ) : null}
         {!items.length ? (
           <Stack alignItems="center" textAlign="center" sx={{ py: 12, px: 4 }}>
             <SearchRounded sx={{ fontSize: 36, color: "text.disabled" }} />
@@ -2510,16 +3222,28 @@ export function TransactionsPage() {
       <TransactionDetail
         item={detail}
         details={detailQuery.data}
+        transactions={allItems}
         detailLoading={detailQuery.isPending && !demo && Boolean(detail)}
         detailError={detailQuery.error instanceof Error ? detailQuery.error.message : null}
         categories={categories}
         open={Boolean(detail)}
         onClose={closeDetail}
         onSave={saveTransaction}
+        onSaveTags={saveTransactionTags}
+        onRemove={removeTransaction}
+        onRestore={restoreTransaction}
         onAction={setAction}
-        saving={updateTransaction.isPending}
+        onConfirmTransferSuggestion={confirmTransferSuggestion}
+        onRejectTransferSuggestion={rejectTransferSuggestion}
+        onConfirmRefundSuggestion={confirmRefundSuggestion}
+        onRejectRefundSuggestion={rejectRefundSuggestion}
+        saving={updateTransaction.isPending || replaceTags.isPending}
         saveError={
-          updateTransaction.error instanceof Error ? updateTransaction.error.message : null
+          updateTransaction.error instanceof Error
+            ? updateTransaction.error.message
+            : replaceTags.error instanceof Error
+              ? replaceTags.error.message
+              : null
         }
       />
       <SplitTransactionDialog
@@ -2534,14 +3258,14 @@ export function TransactionsPage() {
       <MatchTransferDialog
         open={action === "transfer"}
         item={detail}
-        transactions={allItems}
+        transactions={movementCandidateItems}
         onClose={() => setAction(null)}
         onSubmit={matchTransfer}
       />
       <LinkRefundDialog
         open={action === "refund"}
         item={detail}
-        transactions={allItems}
+        transactions={movementCandidateItems}
         onClose={() => setAction(null)}
         onSubmit={linkRefund}
       />

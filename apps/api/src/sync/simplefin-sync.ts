@@ -2,6 +2,7 @@ import type { BetterWealthDatabase } from "@betterwealth/db";
 import { createHouseholdRepositories } from "@betterwealth/db";
 import {
   accounts,
+  auditEvents,
   balanceSnapshots,
   connections,
   merchants,
@@ -10,7 +11,7 @@ import {
   transactions,
 } from "@betterwealth/db/schema";
 import { parseDecimalToMinorUnits } from "@betterwealth/shared";
-import { and, eq } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, or } from "drizzle-orm";
 import { ulid } from "ulid";
 import { categorizeHouseholdTransactions } from "../categorization/service";
 import type { AppConfig } from "../config";
@@ -23,6 +24,7 @@ import {
   reconcilePendingTransactions,
   transactionFingerprint,
 } from "./reconcile";
+import { reconcileAccountRefunds } from "./refund-reconcile";
 import { reconcileAccountTransfers } from "./transfer-reconcile";
 
 type SyncCounts = {
@@ -70,7 +72,7 @@ function parseProviderMoney(value: string, currency: string): bigint {
   return parseDecimalToMinorUnits(value, fractionDigits(currency), "half-even");
 }
 
-function inferAccountType(name: string, extra: Record<string, unknown> | undefined) {
+export function inferAccountType(name: string, extra: Record<string, unknown> | undefined) {
   const hint = [
     name,
     typeof extra?.["account-type"] === "string" ? extra["account-type"] : "",
@@ -80,11 +82,15 @@ function inferAccountType(name: string, extra: Record<string, unknown> | undefin
   ]
     .join(" ")
     .toLowerCase();
-  if (/credit|card/.test(hint))
+  if (
+    /credit|card|visa|mastercard|amex|discover|chase\s+(?:freedom|sapphire|slate)|freedom\s+(?:unlimited|flex)/.test(
+      hint,
+    )
+  )
     return { group: "credit" as const, type: "credit_card", isLiability: true };
   if (/loan|mortgage|student|auto debt/.test(hint))
     return { group: "loan" as const, type: "loan", isLiability: true };
-  if (/401|403|ira|retire|broker|invest|stock|securit/.test(hint)) {
+  if (/401|403|ira|retire|broker|invest|stock|securit|\btod\b|managed account/.test(hint)) {
     return { group: "investment" as const, type: "investment", isLiability: false };
   }
   if (/crypto|bitcoin|ethereum/.test(hint))
@@ -192,6 +198,7 @@ async function syncAccount(
   syncRunId: string,
   account: SimpleFinAccountSet["accounts"][number],
   response: SimpleFinAccountSet,
+  requestedStartDate: number,
   counts: SyncCounts,
 ) {
   const institutionId = await institutionForAccount(
@@ -208,11 +215,24 @@ async function syncAccount(
     .from(accounts)
     .where(and(eq(accounts.connectionId, connectionId), eq(accounts.externalId, account.id)))
     .get();
+  const existingProviderMetadata =
+    localAccount?.providerMetadata &&
+    typeof localAccount.providerMetadata === "object" &&
+    !Array.isArray(localAccount.providerMetadata)
+      ? localAccount.providerMetadata
+      : {};
+  const classificationOverride = existingProviderMetadata.classificationOverride === true;
+  const nameOverride = existingProviderMetadata.nameOverride === true;
+  const statusOverride = existingProviderMetadata.statusOverride === true;
   const providerMetadata = {
     ...account.extra,
     ...(currencyInfo.originalCurrency
       ? { simplefinCustomCurrency: currencyInfo.originalCurrency }
       : {}),
+    ...(classificationOverride ? { classificationOverride: true } : {}),
+    ...(nameOverride ? { nameOverride: true } : {}),
+    ...(statusOverride ? { statusOverride: true } : {}),
+    simplefinAccountName: account.name,
   };
   if (!localAccount) {
     const id = ulid();
@@ -237,10 +257,13 @@ async function syncAccount(
       .update(accounts)
       .set({
         institutionId,
-        name: account.name,
+        name: nameOverride ? localAccount.name : account.name,
+        group: classificationOverride ? localAccount.group : inferred.group,
+        type: classificationOverride ? localAccount.type : inferred.type,
+        isLiability: classificationOverride ? localAccount.isLiability : inferred.isLiability,
         currency: currencyInfo.currency,
         providerMetadata,
-        status: "active",
+        status: statusOverride ? localAccount.status : "active",
         updatedAt: new Date().toISOString(),
       })
       .where(and(eq(accounts.householdId, householdId), eq(accounts.id, localAccount.id)));
@@ -298,11 +321,43 @@ async function syncAccount(
       and(
         eq(transactions.householdId, householdId),
         eq(transactions.accountId, localAccount.id),
-        eq(transactions.status, "pending"),
+        or(
+          eq(transactions.status, "pending"),
+          and(eq(transactions.status, "removed"), isNull(transactions.postedAt)),
+        ),
       ),
     );
-  const incomingCandidates = account.transactions
+  const requestedSince = isoFromEpoch(requestedStartDate, 0);
+  const postedProviderIds = account.transactions
     .filter((transaction) => !transaction.pending && transaction.posted > 0)
+    .map(({ id }) => id);
+  const existingProviderIds = new Set<string>();
+  // Keep well below SQLite's bind-parameter ceiling even for unusually large provider windows.
+  for (let offset = 0; offset < postedProviderIds.length; offset += 500) {
+    const idBatch = postedProviderIds.slice(offset, offset + 500);
+    const rows = await db
+      .select({ externalId: transactions.externalId })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.householdId, householdId),
+          eq(transactions.accountId, localAccount.id),
+          eq(transactions.connectionId, connectionId),
+          inArray(transactions.externalId, idBatch),
+        ),
+      );
+    for (const { externalId } of rows) {
+      if (externalId) existingProviderIds.add(externalId);
+    }
+  }
+  const incomingCandidates = account.transactions
+    // Reconciliation is only for a provider's genuinely new posted IDs. Including an already
+    // imported posted transaction can pair a stale pending row with that existing ID and make the
+    // pending-to-posted update violate the provider identity uniqueness constraint on repeat sync.
+    .filter(
+      (transaction) =>
+        !transaction.pending && transaction.posted > 0 && !existingProviderIds.has(transaction.id),
+    )
     .map((transaction) => {
       const occurredAt = isoFromEpoch(transaction.transacted_at ?? transaction.posted);
       return {
@@ -330,6 +385,7 @@ async function syncAccount(
   const pendingMatchByPosted = new Map(
     reconciliation.matches.map((match) => [match.postedId, match.pendingId]),
   );
+  const seenLocalTransactionIds = new Set<string>();
 
   for (const providerTransaction of account.transactions) {
     const amount = parseProviderMoney(providerTransaction.amount, currencyInfo.currency);
@@ -381,8 +437,8 @@ async function syncAccount(
           transactedOn,
           rawDescription: providerTransaction.description,
           normalizedDescription: normalized,
-          merchantId,
-          status: pending ? "pending" : "posted",
+          merchantId: existing.userOverrideAt ? existing.merchantId : merchantId,
+          status: existing.status === "removed" ? "removed" : pending ? "pending" : "posted",
           providerCategory:
             typeof providerTransaction.extra?.category === "string"
               ? providerTransaction.extra.category
@@ -395,9 +451,11 @@ async function syncAccount(
         })
         .where(and(eq(transactions.householdId, householdId), eq(transactions.id, existing.id)));
       counts.transactionsUpdated += 1;
+      seenLocalTransactionIds.add(existing.id);
     } else {
+      const transactionId = ulid();
       await db.insert(transactions).values({
-        id: ulid(),
+        id: transactionId,
         householdId,
         accountId: localAccount.id,
         connectionId,
@@ -422,6 +480,56 @@ async function syncAccount(
         fingerprint,
       });
       counts.transactionsCreated += 1;
+      seenLocalTransactionIds.add(transactionId);
+    }
+  }
+
+  if (response.errors.length === 0 && response.errlist.length === 0) {
+    const disappeared = await db
+      .select({ id: transactions.id, status: transactions.status })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.householdId, householdId),
+          eq(transactions.accountId, localAccount.id),
+          eq(transactions.connectionId, connectionId),
+          inArray(transactions.status, ["pending", "posted"]),
+          gte(transactions.transactedOn, requestedSince),
+        ),
+      );
+    const missing = disappeared.filter(({ id }) => !seenLocalTransactionIds.has(id));
+    if (missing.length) {
+      const now = new Date().toISOString();
+      db.transaction((transaction) => {
+        transaction
+          .update(transactions)
+          .set({ status: "void", removedUpstreamAt: now, updatedAt: now })
+          .where(
+            and(
+              eq(transactions.householdId, householdId),
+              inArray(
+                transactions.id,
+                missing.map(({ id }) => id),
+              ),
+              inArray(transactions.status, ["pending", "posted"]),
+            ),
+          )
+          .run();
+        transaction
+          .insert(auditEvents)
+          .values(
+            missing.map(({ id, status }) => ({
+              id: ulid(),
+              householdId,
+              actorType: "system" as const,
+              action: "transaction.removed_upstream",
+              entityType: "transaction",
+              entityId: id,
+              metadata: { previousStatus: status, syncRunId },
+            })),
+          )
+          .run();
+      });
     }
   }
 }
@@ -434,6 +542,7 @@ export async function syncSimpleFinConnection(input: {
   trigger?: "manual" | "scheduled" | "initial" | "retry";
   jobId?: string;
   fetchAccounts?: typeof fetchSimpleFinAccounts;
+  categorizationAiLimit?: number;
 }) {
   const repositories = createHouseholdRepositories(input.db, input.householdId);
   const connection = repositories.connections.findById(input.connectionId);
@@ -486,8 +595,73 @@ export async function syncSimpleFinConnection(input: {
         runId,
         account,
         response,
+        startDate,
         counts,
       );
+    }
+    if (response.errors.length === 0 && response.errlist.length === 0) {
+      const seenAccountIds = new Set(response.accounts.map(({ id }) => id));
+      const connectedAccounts = await input.db
+        .select({
+          id: accounts.id,
+          externalId: accounts.externalId,
+          status: accounts.status,
+          providerMetadata: accounts.providerMetadata,
+        })
+        .from(accounts)
+        .where(
+          and(
+            eq(accounts.householdId, input.householdId),
+            eq(accounts.connectionId, connection.id),
+          ),
+        );
+      const missingAccounts = connectedAccounts.filter((account) => {
+        const metadata =
+          account.providerMetadata &&
+          typeof account.providerMetadata === "object" &&
+          !Array.isArray(account.providerMetadata)
+            ? account.providerMetadata
+            : {};
+        return (
+          account.status === "active" &&
+          metadata.statusOverride !== true &&
+          Boolean(account.externalId) &&
+          !seenAccountIds.has(account.externalId!)
+        );
+      });
+      if (missingAccounts.length) {
+        const now = new Date().toISOString();
+        input.db.transaction((transaction) => {
+          transaction
+            .update(accounts)
+            .set({ status: "stale", updatedAt: now })
+            .where(
+              and(
+                eq(accounts.householdId, input.householdId),
+                inArray(
+                  accounts.id,
+                  missingAccounts.map(({ id }) => id),
+                ),
+                eq(accounts.status, "active"),
+              ),
+            )
+            .run();
+          transaction
+            .insert(auditEvents)
+            .values(
+              missingAccounts.map((account) => ({
+                id: ulid(),
+                householdId: input.householdId,
+                actorType: "system" as const,
+                action: "account.missing_upstream",
+                entityType: "account",
+                entityId: account.id,
+                metadata: { externalId: account.externalId, syncRunId: runId },
+              })),
+            )
+            .run();
+        });
+      }
     }
     const transferReconciliation = await reconcileAccountTransfers(input.db, input.householdId);
     const categorization = await categorizeHouseholdTransactions({
@@ -495,7 +669,11 @@ export async function syncSimpleFinConnection(input: {
       config: input.config,
       householdId: input.householdId,
       userId: connection.ownerUserId,
+      ...(input.categorizationAiLimit === undefined
+        ? {}
+        : { aiLimit: input.categorizationAiLimit }),
     });
+    const refundReconciliation = await reconcileAccountRefunds(input.db, input.householdId);
     const checkpointAfter = Math.floor(Date.now() / 1_000).toString();
     const providerErrors = [
       ...response.errlist.map(({ code, msg }) => `${code}: ${sanitizeProviderMessage(msg)}`),
@@ -532,6 +710,7 @@ export async function syncSimpleFinConnection(input: {
       ...counts,
       categorization,
       transferReconciliation,
+      refundReconciliation,
       providerErrors,
     };
   } catch (error) {

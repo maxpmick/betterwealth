@@ -76,4 +76,146 @@ describe("durable job worker", () => {
       worker.stop();
     }
   });
+
+  test("renews the fenced lease while a long-running job is active and stops after completion", async () => {
+    await db.insert(jobs).values({
+      id: "long-running-job",
+      householdId: ALEX_IDS.household,
+      type: "unsupported.test",
+      payload: {},
+      state: "queued",
+      maxAttempts: 1,
+      scheduledAt: new Date(Date.now() - 1_000).toISOString(),
+      lastErrorCode: "transient_failure",
+      lastErrorMessage: "A previous attempt failed",
+    });
+
+    let releaseJob: (() => void) | undefined;
+    const executionStarted = new Promise<void>((resolve) => {
+      releaseJob = resolve;
+    });
+    let markStarted: (() => void) | undefined;
+    const jobStarted = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const worker = startJobWorker(db, config, {
+      intervalMs: 60_000,
+      leaseDurationMs: 80,
+      heartbeatIntervalMs: 10,
+      jobExecutor: async () => {
+        markStarted?.();
+        await executionStarted;
+      },
+    });
+
+    try {
+      await jobStarted;
+      const initiallyLeased = await db
+        .select()
+        .from(jobs)
+        .where(eq(jobs.id, "long-running-job"))
+        .get();
+      expect(initiallyLeased?.state).toBe("leased");
+      expect(initiallyLeased?.leaseOwner).toBe(worker.workerId);
+
+      await Bun.sleep(110);
+      const renewed = await db.select().from(jobs).where(eq(jobs.id, "long-running-job")).get();
+      expect(renewed?.state).toBe("leased");
+      expect(renewed?.leaseEpoch).toBe(initiallyLeased?.leaseEpoch);
+      expect(Date.parse(renewed?.heartbeatAt ?? "")).toBeGreaterThan(
+        Date.parse(initiallyLeased?.heartbeatAt ?? ""),
+      );
+      expect(Date.parse(renewed?.leaseExpiresAt ?? "")).toBeGreaterThan(
+        Date.parse(initiallyLeased?.leaseExpiresAt ?? ""),
+      );
+      expect(Date.parse(renewed?.leaseExpiresAt ?? "")).toBeGreaterThan(Date.now());
+
+      releaseJob?.();
+      let completed = renewed;
+      for (let attempt = 0; attempt < 40 && completed?.state !== "succeeded"; attempt += 1) {
+        await Bun.sleep(5);
+        completed = await db.select().from(jobs).where(eq(jobs.id, "long-running-job")).get();
+      }
+      expect(completed).toMatchObject({
+        state: "succeeded",
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        lastErrorCode: null,
+        lastErrorMessage: null,
+      });
+      const completedHeartbeat = completed?.heartbeatAt;
+      await Bun.sleep(40);
+      const unchanged = await db.select().from(jobs).where(eq(jobs.id, "long-running-job")).get();
+      expect(unchanged?.heartbeatAt).toBe(completedHeartbeat);
+    } finally {
+      worker.stop();
+      releaseJob?.();
+    }
+  });
+
+  test("stop cancels an active job heartbeat without leaking its timer", async () => {
+    await db.insert(jobs).values({
+      id: "stopped-long-running-job",
+      householdId: ALEX_IDS.household,
+      type: "unsupported.test",
+      payload: {},
+      state: "queued",
+      maxAttempts: 1,
+      scheduledAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+
+    let releaseJob: (() => void) | undefined;
+    const executionStarted = new Promise<void>((resolve) => {
+      releaseJob = resolve;
+    });
+    let markStarted: (() => void) | undefined;
+    const jobStarted = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const worker = startJobWorker(db, config, {
+      intervalMs: 60_000,
+      leaseDurationMs: 100,
+      heartbeatIntervalMs: 10,
+      jobExecutor: async () => {
+        markStarted?.();
+        await executionStarted;
+      },
+    });
+
+    try {
+      await jobStarted;
+      await Bun.sleep(25);
+      worker.stop();
+      const stoppedHeartbeat = await db
+        .select()
+        .from(jobs)
+        .where(eq(jobs.id, "stopped-long-running-job"))
+        .get();
+      expect(stoppedHeartbeat?.state).toBe("leased");
+
+      await Bun.sleep(45);
+      const unchanged = await db
+        .select()
+        .from(jobs)
+        .where(eq(jobs.id, "stopped-long-running-job"))
+        .get();
+      expect(unchanged?.heartbeatAt).toBe(stoppedHeartbeat?.heartbeatAt);
+      expect(unchanged?.leaseExpiresAt).toBe(stoppedHeartbeat?.leaseExpiresAt);
+
+      releaseJob?.();
+      let completed = unchanged;
+      for (let attempt = 0; attempt < 40 && completed?.state !== "succeeded"; attempt += 1) {
+        await Bun.sleep(5);
+        completed = await db
+          .select()
+          .from(jobs)
+          .where(eq(jobs.id, "stopped-long-running-job"))
+          .get();
+      }
+      expect(completed?.state).toBe("succeeded");
+    } finally {
+      worker.stop();
+      releaseJob?.();
+    }
+  });
 });

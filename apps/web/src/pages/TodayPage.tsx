@@ -116,6 +116,7 @@ const demoEnvelopes: CursorPage<ApiEnvelope> = {
 const demoTransactions: CursorPage<ApiTransaction> = {
   data: recentActivity.map((transaction, index) => ({
     id: transaction.id,
+    accountId: `demo-account-${index}`,
     effectiveDate: new Date(2026, 6, 16 - index).toISOString(),
     description: transaction.rawDescription,
     merchant: transaction.merchant,
@@ -928,7 +929,10 @@ function ActivityAndBills({
   billsQuery: UseQueryResult<CursorPage<ApiBill> | undefined, Error>;
   report: DashboardReport;
 }) {
-  const recent = transactionsQuery.data?.data.slice(0, 5) ?? [];
+  const recent =
+    transactionsQuery.data?.data
+      .filter((transaction) => transaction.status !== "removed")
+      .slice(0, 5) ?? [];
   const today = new Date().toISOString().slice(0, 10);
   const through = report.coveredThrough.slice(0, 10);
   const upcoming = (billsQuery.data?.data ?? [])
@@ -1265,7 +1269,8 @@ export function TodayPage() {
       : BigInt(currentBudget.plannedIncome.minorUnits) -
         budgetEnvelopes.reduce((sum, envelope) => sum + BigInt(envelope.planned.minorUnits), 0n)
     : 0n;
-  const latestTransactions = transactionsQuery.data?.data ?? [];
+  const latestTransactions =
+    transactionsQuery.data?.data.filter((transaction) => transaction.status !== "removed") ?? [];
   const categorizedTransactions = latestTransactions.filter(
     (transaction) => transaction.categoryName.toLocaleLowerCase() !== "uncategorized",
   ).length;

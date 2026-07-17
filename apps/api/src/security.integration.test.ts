@@ -116,8 +116,29 @@ describe("production security boundaries", () => {
     expect(suspended.status).toBe(403);
   });
 
-  test("browser auth rejects hostile origins and non-JSON bodies", async () => {
+  test("browser auth accepts literal loopback aliases but rejects hostile origins and non-JSON bodies", async () => {
     await register("origin-security@example.com", "Origin test");
+    const loopbackAlias = await application.app.request("/api/v1/auth/login", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "http://127.0.0.1:5173",
+        cookie: "bw_household=stale-household-from-an-older-local-instance",
+      },
+      body: JSON.stringify({
+        email: "origin-security@example.com",
+        password: "SecurityBoundary!2026",
+      }),
+    });
+    expect(loopbackAlias.status).toBe(200);
+    expect(loopbackAlias.headers.get("access-control-allow-origin")).toBe("http://127.0.0.1:5173");
+    const aliasCookies = cookies(loopbackAlias);
+    expect(aliasCookies.bw_household).toBe("");
+    const aliasSession = await application.app.request("/api/v1/auth/session", {
+      headers: { cookie: cookieHeader(aliasCookies) },
+    });
+    expect(aliasSession.status).toBe(200);
+
     const hostile = await application.app.request("/api/v1/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json", origin: "https://attacker.example" },

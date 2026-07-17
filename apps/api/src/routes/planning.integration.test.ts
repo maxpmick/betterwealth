@@ -529,11 +529,12 @@ describe("planning routes", () => {
       {
         ...baseTransaction,
         id: refundId,
-        amount: 3_000n,
+        amount: 5_000n,
         postedAt: "2026-07-15T12:00:00.000Z",
         transactedOn: "2026-07-15",
         rawDescription: "BIG BOX REFUND",
         normalizedDescription: "BIG BOX REFUND",
+        categoryId: food!.id,
         isReimbursement: true,
       },
       {

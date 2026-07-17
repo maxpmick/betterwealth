@@ -26,12 +26,19 @@ export async function loginAsAlex(page: Page, options: { forceNewSession?: boole
     if (!options.forceNewSession) reusableAlexCookies = await page.context().cookies();
   }
 
-  const session = await page.evaluate(async () => {
-    const response = await fetch("/api/v1/auth/session", { credentials: "same-origin" });
-    return { status: response.status, body: await response.json() };
-  });
-  expect(session.status).toBe(200);
-  expect(session.body.user.email).toBe(alexCredentials.email);
+  await expect
+    .poll(async () => {
+      try {
+        return await page.evaluate(async () => {
+          const response = await fetch("/api/v1/auth/session", { credentials: "same-origin" });
+          const body = await response.json();
+          return { status: response.status, email: body.user?.email ?? null };
+        });
+      } catch {
+        return { status: 0, email: null };
+      }
+    })
+    .toEqual({ status: 200, email: alexCredentials.email });
 }
 
 export async function expectNoHorizontalOverflow(page: Page) {
