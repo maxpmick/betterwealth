@@ -1,0 +1,32 @@
+.git
+.gitattributes
+.gitignore
+
+# Secrets never enter the build context or images.
+.env
+.env.*
+!.env.example
+
+node_modules/
+**/node_modules
+dist/
+**/dist
+coverage/
+reports/
+playwright-report/
+test-results/
+
+data/
+backups/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Not needed to build or run the app.
+docs/
+e2e/
+deploy/
+.githooks/
+.github/
+playwright.config.ts
+biome.json

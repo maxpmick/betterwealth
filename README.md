@@ -53,6 +53,26 @@ sudo bash deploy/preflight.sh /etc/betterwealth.env
 
 The supplied systemd services keep the API and web processes on loopback, apply migrations before API start, perform readiness checks, remove bootstrap secrets from the long-running environment, and expose only Caddy on HTTPS. Run initial setup through the one-shot bootstrap unit, then clear the bootstrap password and provider tokens from `/etc/betterwealth.env`.
 
+## Docker Compose
+
+`docker-compose.yml` builds both Bun images (`apps/api/Dockerfile`, `apps/web/Dockerfile`), applies migrations every time the API container starts, and publishes only the web process on `127.0.0.1:4173`. The API stays on the internal network; the web server proxies `/api/v1` to it.
+
+```bash
+printf 'ENCRYPTION_KEY=%s\n' "$(openssl rand -hex 32)" > .env
+docker compose up --build -d
+```
+
+Open [http://localhost:4173](http://localhost:4173). Optional one-shot bootstrap (owner account, SimpleFIN claim, first sync):
+
+```bash
+docker compose run --rm \
+  -e BOOTSTRAP_USER_EMAIL=you@example.com \
+  -e BOOTSTRAP_USER_PASSWORD='a-long-password' \
+  api bun apps/api/src/cli/bootstrap.ts
+```
+
+SQLite lives in the `betterwealth-data` volume and backup snapshots in `betterwealth-backups`. For a public deployment, keep the published port on loopback, put a TLS proxy such as Caddy in front, and set `WEB_ORIGIN`, `COOKIE_SECURE=true`, and `TRUST_PROXY=true` in `.env`.
+
 ## Core workflow
 
 - Connect SimpleFIN or create/import accounts manually.
