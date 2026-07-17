@@ -138,7 +138,7 @@ export function StatusChip({
   label,
   tone = "neutral",
 }: {
-  label: string;
+  label: ReactNode;
   tone?: "positive" | "warning" | "risk" | "info" | "neutral";
 }) {
   const palette = {

@@ -242,7 +242,7 @@ describe("Today weekly action", () => {
     expect(
       within(moneyLoop).getByText(/funding projection, not purchase permission/i),
     ).toBeInTheDocument();
-    expect(within(moneyLoop).getByText(/plan surplus \$150/i)).toBeInTheDocument();
+    expect(within(moneyLoop).getByText(/plan surplus/i)).toHaveTextContent("Plan surplus $150");
     expect(screen.getByText(/this week: earmark/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /preview impact/i }));
 
@@ -262,5 +262,6 @@ describe("Today weekly action", () => {
       expect(screen.getAllByLabelText("Amount hidden").length).toBeGreaterThan(8),
     );
     expect(screen.queryByText("$150")).not.toBeInTheDocument();
+    expect(screen.getByText(/plan surplus/i)).toHaveTextContent("Plan surplus ••••");
   });
 });

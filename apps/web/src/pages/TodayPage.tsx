@@ -1434,9 +1434,18 @@ export function TodayPage() {
             </Typography>
             <StatusChip
               label={
-                currentBudget
-                  ? `${budgetSurplus >= 0n ? "Plan surplus" : "Plan gap"} ${new Intl.NumberFormat("en-US", { style: "currency", currency: currentBudget.plannedIncome.currency, maximumFractionDigits: 0 }).format(Number(budgetSurplus < 0n ? -budgetSurplus : budgetSurplus) / 100)}`
-                  : `${setupGapCount} setup gap${setupGapCount === 1 ? "" : "s"}`
+                currentBudget ? (
+                  <>
+                    {budgetSurplus >= 0n ? "Plan surplus " : "Plan gap "}
+                    <Money
+                      value={Number(budgetSurplus < 0n ? -budgetSurplus : budgetSurplus) / 100}
+                      currency={currentBudget.plannedIncome.currency}
+                      compact
+                    />
+                  </>
+                ) : (
+                  `${setupGapCount} setup gap${setupGapCount === 1 ? "" : "s"}`
+                )
               }
               tone={currentBudget ? (budgetSurplus >= 0n ? "positive" : "risk") : "warning"}
             />
