@@ -98,6 +98,11 @@ const documentedOperations = [
     "Convert an approximate monthly plan into exact paycheck funding",
   ],
   ["POST", "/allocations", "Move money between envelope allocations"],
+  ["GET", "/budget-periods", "List budget periods"],
+  ["POST", "/budget-periods", "Create a budget period"],
+  ["PATCH", "/budget-periods/{id}", "Update a budget period"],
+  ["PUT", "/budget-periods/{id}/allocations", "Replace a budget period's allocations"],
+  ["POST", "/budgets/{id}/build-from-monthly-spend", "Build envelopes from monthly spend"],
   ["GET", "/bills", "List planned bills"],
   ["POST", "/bills", "Create a planned bill"],
   ["PATCH", "/bills/{id}", "Update a planned bill"],
@@ -119,6 +124,10 @@ const documentedOperations = [
   ["POST", "/scenarios", "Create a forecast scenario"],
   ["PATCH", "/scenarios/{id}", "Update a forecast scenario"],
   ["DELETE", "/scenarios/{id}", "Archive a forecast scenario"],
+  ["GET", "/forecast-scenarios", "List engine-shaped forecast scenarios"],
+  ["POST", "/forecast-scenarios", "Create an engine-shaped forecast scenario"],
+  ["PATCH", "/forecast-scenarios/{id}", "Update an engine-shaped forecast scenario"],
+  ["DELETE", "/forecast-scenarios/{id}", "Delete an engine-shaped forecast scenario"],
   ["GET", "/forecasts", "List forecast runs"],
   ["POST", "/forecasts", "Run a deterministic or Monte Carlo forecast"],
   ["GET", "/forecast-runs/{id}", "Read full forecast output"],
@@ -173,9 +182,60 @@ function openApiPaths() {
       ...(parameters.length ? { parameters } : {}),
       responses: {
         "200": { description: "Successful response" },
-        "400": { description: "Invalid request" },
-        "401": { description: "Authentication required" },
-        "422": { description: "Validation failed" },
+        "400": {
+          description: "Invalid request (bad JSON, domain validation, or payload too large)",
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/Error" } },
+          },
+        },
+        "401": {
+          description: "Authentication required",
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/Error" } },
+          },
+        },
+        "403": {
+          description: "Forbidden (origin, CSRF, or role check failed)",
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/Error" } },
+          },
+        },
+        "404": {
+          description: "Resource not found",
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/Error" } },
+          },
+        },
+        "409": {
+          description: "Conflict with current state",
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/Error" } },
+          },
+        },
+        "413": {
+          description: "Request body exceeds the size limit",
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/Error" } },
+          },
+        },
+        "415": {
+          description: "Unsupported media type (JSON required)",
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/Error" } },
+          },
+        },
+        "422": {
+          description: "Validation failed",
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/Error" } },
+          },
+        },
+        "429": {
+          description: "Rate limit exceeded",
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/Error" } },
+          },
+        },
       },
     };
     paths[path] = pathOperations;
@@ -317,7 +377,13 @@ export function createApp(
       paths: openApiPaths(),
       components: {
         securitySchemes: {
-          sessionCookie: { type: "apiKey", in: "cookie", name: "bw_session" },
+          sessionCookie: {
+            type: "apiKey",
+            in: "cookie",
+            name: "bw_session",
+            description:
+              "Session cookie from POST /auth/login. Non-browser clients call POST /auth/login, store the Set-Cookie values (bw_session, bw_csrf), send them as a Cookie header on every request, and mirror the bw_csrf value in the X-CSRF-Token header on every mutation. Requests without an Origin header are allowed so native clients are not origin-checked.",
+          },
         },
         schemas: {
           Money: {
@@ -326,7 +392,7 @@ export function createApp(
             required: ["minorUnits", "currency"],
             properties: {
               minorUnits: { type: "string", pattern: "^-?\\d+$" },
-              currency: { type: "string", pattern: "^[A-Z]{3}$" },
+              currency: { type: "string", pattern: "^[A-Za-z][A-Za-z0-9_-]{2,11}$" },
             },
           },
           Error: {
