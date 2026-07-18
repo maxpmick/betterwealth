@@ -29,13 +29,12 @@ import { ulid } from "ulid";
 import { z } from "zod";
 import { requireCsrf } from "../../auth/middleware";
 import type { AppConfig } from "../../config";
-import { AppError, ConflictError, NotFoundError } from "../../lib/errors";
+import { AppError, NotFoundError } from "../../lib/errors";
 import type { AppEnv } from "../../types";
 import {
   averageMonthlyAmount,
   cadenceFromDueRule,
   cadencePeriodsPerYear,
-  currencySchema,
   dbJson,
   goalMonthlyAmount,
   loadPlanningForecastDefaults,
