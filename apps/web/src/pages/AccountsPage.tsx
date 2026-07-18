@@ -55,6 +55,7 @@ import {
   ChartMaskedState,
   EmptyState,
   ErrorState,
+  formatMoney,
   LoadingCard,
   MetricCard,
   Money,
@@ -65,6 +66,7 @@ import {
 import { usePrivacy } from "../contexts";
 import { type AccountItem, accounts as accountFixtures } from "../data";
 import { isDemoMode } from "../demo";
+import { chartTickFormatter, minorToMajor } from "../lib/money";
 
 const groupLabels: Record<ApiAccount["group"], string> = {
   cash: "Cash",
@@ -191,7 +193,7 @@ function toAccountItem(account: ApiAccount): AccountView {
       : groupLabels[account.group],
     group: groupLabels[account.group],
     mask: account.mask,
-    balance: Number(account.balance.minorUnits) / 100,
+    balance: minorToMajor(account.balance.minorUnits, account.balance.currency),
     change: 0,
     status:
       account.syncStatus === "healthy"
@@ -337,8 +339,9 @@ function AccountDetail({
         day: snapshot.asOf.slice(8, 10) === "01" ? undefined : "numeric",
         year: (balanceQuery.data?.data.length ?? 0) > 12 ? "2-digit" : undefined,
       }),
-      balance: Number(snapshot.current.minorUnits) / 100,
+      balance: minorToMajor(snapshot.current.minorUnits, snapshot.current.currency),
     })) ?? [];
+  const balanceCurrency = balanceQuery.data?.summary.current.currency ?? "USD";
   const activity =
     transactionsQuery.data?.data.filter((transaction) => transaction.status !== "removed") ?? [];
   const recordedBalanceMinorUnits = parseSignedCurrencyMinorUnits(recordedBalance);
@@ -407,10 +410,13 @@ function AccountDetail({
                   <Money
                     value={
                       balanceQuery.data
-                        ? Number(balanceQuery.data.summary.current.minorUnits) / 100
+                        ? minorToMajor(
+                            balanceQuery.data.summary.current.minorUnits,
+                            balanceQuery.data.summary.current.currency,
+                          )
                         : account.balance
                     }
-                    currency={balanceQuery.data?.summary.current.currency ?? "USD"}
+                    currency={balanceCurrency}
                   />
                 </Typography>
               </Box>
@@ -442,7 +448,7 @@ function AccountDetail({
                   xAxis={[{ dataKey: "date", scaleType: "point" }]}
                   yAxis={[
                     {
-                      valueFormatter: (value: number) => `$${Math.round(value / 1000)}k`,
+                      valueFormatter: chartTickFormatter(balanceCurrency),
                       width: 50,
                     },
                   ]}
@@ -454,7 +460,7 @@ function AccountDetail({
                       showMark: history.length < 12,
                       color: "#1F9D72",
                       valueFormatter: (value: number | null) =>
-                        `$${Number(value ?? 0).toLocaleString()}`,
+                        formatMoney(Number(value ?? 0), balanceCurrency),
                     },
                   ]}
                   margin={{ left: 4, right: 12, top: 10, bottom: 4 }}
@@ -595,7 +601,10 @@ function AccountDetail({
                   </Box>
                   <Typography variant="body2" fontWeight={750}>
                     <Money
-                      value={Number(transaction.amount.minorUnits) / 100}
+                      value={minorToMajor(
+                        transaction.amount.minorUnits,
+                        transaction.amount.currency,
+                      )}
                       currency={transaction.amount.currency}
                       sign
                     />
@@ -757,7 +766,10 @@ export function AccountsPage() {
         activeAccountItems
           .filter((item) => item.balance > 0)
           .reduce((sum, item) => sum + item.balance, 0) +
-        (assetData.reduce((sum, asset) => sum + Number(asset.value.minorUnits) / 100, 0) ?? 0),
+        (assetData.reduce(
+          (sum, asset) => sum + minorToMajor(asset.value.minorUnits, asset.value.currency),
+          0,
+        ) ?? 0),
       liabilities: Math.abs(
         activeAccountItems
           .filter((item) => item.balance < 0)
@@ -1130,7 +1142,10 @@ export function AccountsPage() {
                   </Box>
                 </Stack>
                 <Typography sx={{ mt: 4, fontSize: 27, fontWeight: 760 }}>
-                  <Money value={Number(asset.value.minorUnits) / 100} />
+                  <Money
+                    value={minorToMajor(asset.value.minorUnits, asset.value.currency)}
+                    currency={asset.value.currency}
+                  />
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
                   Valued {new Date(asset.valuedAt).toLocaleDateString()} · {asset.liquidityClass}

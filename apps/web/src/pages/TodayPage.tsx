@@ -56,6 +56,7 @@ import {
   ChartMaskedState,
   EmptyState,
   ErrorState,
+  formatMoney,
   HelpTip,
   LoadingCard,
   Money,
@@ -73,6 +74,7 @@ import {
   recentActivity,
 } from "../data";
 import { isDemoMode } from "../demo";
+import { chartTickFormatter, minorToMajor } from "../lib/money";
 
 const demoDashboard: DashboardReport = {
   safeToSpend: { minorUnits: "61200", currency: "USD" },
@@ -233,8 +235,8 @@ function asMoney(amount: number, currency = "USD") {
   return { minorUnits: String(Math.round(amount * 100)), currency };
 }
 
-function minor(money: { minorUnits: string }) {
-  return Number(money.minorUnits) / 100;
+function minor(money: { minorUnits: string; currency: string }) {
+  return minorToMajor(money.minorUnits, money.currency);
 }
 
 function formatDate(value: string, options: Intl.DateTimeFormatOptions) {
@@ -320,9 +322,9 @@ function SafeToSpendHero({
 }) {
   const [impactOpen, setImpactOpen] = useState(false);
   const action = deriveWeeklyGoalAction(goal, report.goalContributions, contributions);
-  const suggested = Number(action.suggestedMinorUnits) / 100;
-  const remaining = Number(action.remainingMinorUnits) / 100;
-  const recorded = Number(action.recordedMinorUnits) / 100;
+  const suggested = minorToMajor(action.suggestedMinorUnits, report.safeToSpend.currency);
+  const remaining = minorToMajor(action.remainingMinorUnits, report.safeToSpend.currency);
+  const recorded = minorToMajor(action.recordedMinorUnits, report.safeToSpend.currency);
   const hasAction = Boolean(goal && BigInt(action.suggestedMinorUnits) > 0n && !actionError);
   const rawSafeToSpend =
     BigInt(report.availableCash.minorUnits) -
@@ -462,7 +464,7 @@ function SafeToSpendHero({
                 <>
                   The raw formula is{" "}
                   <Money
-                    value={Number(rawSafeToSpend) / 100}
+                    value={minorToMajor(rawSafeToSpend, report.safeToSpend.currency)}
                     currency={report.safeToSpend.currency}
                   />
                   . Safe to spend is deliberately floored at{" "}
@@ -720,7 +722,7 @@ function WealthChart({
                   ]}
                   yAxis={[
                     {
-                      valueFormatter: (value: number) => `$${Math.round(Number(value) / 1000)}k`,
+                      valueFormatter: chartTickFormatter(currency),
                       width: 48,
                     },
                   ]}
@@ -731,14 +733,14 @@ function WealthChart({
                       color: "#1F3A5F",
                       area: true,
                       showMark: false,
-                      valueFormatter: (value) => `$${Number(value ?? 0).toLocaleString()}`,
+                      valueFormatter: (value) => formatMoney(Number(value ?? 0), currency),
                     },
                     {
                       dataKey: "liquid",
                       label: "Liquid net worth",
                       color: "#1F9D72",
                       showMark: false,
-                      valueFormatter: (value) => `$${Number(value ?? 0).toLocaleString()}`,
+                      valueFormatter: (value) => formatMoney(Number(value ?? 0), currency),
                     },
                   ]}
                   grid={{ horizontal: true }}
@@ -1402,7 +1404,10 @@ export function TodayPage() {
               goalProjection ? (
                 formatDate(goalProjection, { month: "short", year: "numeric" })
               ) : (
-                <Money value={Number(goalRemaining) / 100} currency={activeGoal.target.currency} />
+                <Money
+                  value={minorToMajor(goalRemaining, activeGoal.target.currency)}
+                  currency={activeGoal.target.currency}
+                />
               )
             ) : (
               "Add a goal"
@@ -1443,7 +1448,10 @@ export function TodayPage() {
                   <>
                     {budgetSurplus >= 0n ? "Plan surplus " : "Plan gap "}
                     <Money
-                      value={Number(budgetSurplus < 0n ? -budgetSurplus : budgetSurplus) / 100}
+                      value={minorToMajor(
+                        budgetSurplus < 0n ? -budgetSurplus : budgetSurplus,
+                        currentBudget.plannedIncome.currency,
+                      )}
                       currency={currentBudget.plannedIncome.currency}
                       compact
                     />

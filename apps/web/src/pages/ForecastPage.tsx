@@ -54,6 +54,7 @@ import {
   ChartMaskedState,
   EmptyState,
   ErrorState,
+  formatMoney,
   LoadingCard,
   MetricCard,
   Money,
@@ -64,13 +65,14 @@ import {
 import { usePrivacy } from "../contexts";
 import { forecastHistory } from "../data";
 import { isDemoMode } from "../demo";
+import { chartTickFormatter, minorToMajor } from "../lib/money";
 
 function forecastMoney(value: number): ApiMoney {
   return { minorUnits: String(Math.round(value * 100)), currency: "USD" };
 }
 
 function minor(money: ApiMoney | undefined): number {
-  return money ? Number(money.minorUnits) / 100 : 0;
+  return money ? minorToMajor(money.minorUnits, money.currency) : 0;
 }
 
 function displayMonth(month: string, includeYear = true): string {
@@ -271,6 +273,7 @@ function ForecastChart({
   );
   const hasRanges = Boolean(forecast?.monteCarlo?.ranges.length);
   const tableRows = sampledRows(forecast?.monteCarlo?.ranges ?? []);
+  const currency = forecast?.totalNetWorthAtTarget.currency ?? "USD";
 
   return (
     <Card>
@@ -325,7 +328,7 @@ function ForecastChart({
                   xAxis={[{ dataKey: "month", scaleType: "point" }]}
                   yAxis={[
                     {
-                      valueFormatter: (value: number) => `$${Math.round(Number(value) / 1000)}k`,
+                      valueFormatter: chartTickFormatter(currency),
                       width: 58,
                     },
                   ]}
@@ -338,7 +341,7 @@ function ForecastChart({
                             color: "#D98B2B",
                             showMark: false,
                             valueFormatter: (value: number | null) =>
-                              `$${Number(value ?? 0).toLocaleString()}`,
+                              formatMoney(Number(value ?? 0), currency),
                           },
                           {
                             dataKey: "p50",
@@ -346,7 +349,7 @@ function ForecastChart({
                             color: "#4A7FD1",
                             showMark: false,
                             valueFormatter: (value: number | null) =>
-                              `$${Number(value ?? 0).toLocaleString()}`,
+                              formatMoney(Number(value ?? 0), currency),
                           },
                           {
                             dataKey: "p90",
@@ -354,7 +357,7 @@ function ForecastChart({
                             color: "#7F6BB2",
                             showMark: false,
                             valueFormatter: (value: number | null) =>
-                              `$${Number(value ?? 0).toLocaleString()}`,
+                              formatMoney(Number(value ?? 0), currency),
                           },
                         ]
                       : []),
@@ -365,7 +368,7 @@ function ForecastChart({
                       area: !hasRanges,
                       showMark: false,
                       valueFormatter: (value: number | null) =>
-                        `$${Number(value ?? 0).toLocaleString()}`,
+                        formatMoney(Number(value ?? 0), currency),
                     },
                   ]}
                   grid={{ horizontal: true }}

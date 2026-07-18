@@ -71,6 +71,7 @@ import {
   transactions as fixtureTransactions,
 } from "../data";
 import { isDemoMode } from "../demo";
+import { minorToMajor } from "../lib/money";
 
 type ConditionField = "merchant" | "description" | "direction" | "amount" | "account" | "status";
 type ActionField = "category" | "envelope" | "review" | "flag" | "merchant";
@@ -108,6 +109,7 @@ interface SuggestionView {
   category: string;
   confidence: number;
   amount: number;
+  currency: string;
   rationale: string;
   proposal: string;
 }
@@ -591,6 +593,7 @@ const suggestionFixtures: SuggestionView[] = [
     category: "Dining",
     confidence: 72,
     amount: -48.16,
+    currency: "USD",
     rationale: "Similar local restaurant merchants were categorized as Dining.",
     proposal: "Merchant is exactly “Corner Table” → Dining",
   },
@@ -601,6 +604,7 @@ const suggestionFixtures: SuggestionView[] = [
     category: "Home",
     confidence: 61,
     amount: -118.74,
+    currency: "USD",
     rationale: "The merchant suggests household supplies, but local history is still limited.",
     proposal: "Description starts with “Home Supply” → Home",
   },
@@ -752,7 +756,10 @@ function toSuggestionView(suggestion: ApiAiSuggestion): SuggestionView {
     raw: suggestion.rawDescription ?? suggestion.merchant,
     category: categoryPath.length > 0 ? categoryPath.join(" › ") : suggestion.categoryName,
     confidence: Math.round(suggestion.confidence * 100),
-    amount: suggestion.amount ? Number(suggestion.amount.minorUnits) / 100 : 0,
+    amount: suggestion.amount
+      ? minorToMajor(suggestion.amount.minorUnits, suggestion.amount.currency)
+      : 0,
+    currency: suggestion.amount?.currency ?? "USD",
     rationale: suggestion.rationale,
     proposal:
       suggestion.proposedRule?.name ?? `Categorize this merchant as ${suggestion.categoryName}`,
@@ -1380,7 +1387,14 @@ function RuleBuilder({
               <Box>
                 <Typography variant="body2" fontWeight={750}>
                   {preview.matchCount} historical match{preview.matchCount === 1 ? "" : "es"} ·{" "}
-                  <Money value={Number(preview.aggregateAmount.minorUnits) / 100} sign />
+                  <Money
+                    value={minorToMajor(
+                      preview.aggregateAmount.minorUnits,
+                      preview.aggregateAmount.currency,
+                    )}
+                    currency={preview.aggregateAmount.currency}
+                    sign
+                  />
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
                   Saving affects future imports and syncs. Existing transactions change only if you
@@ -1405,7 +1419,11 @@ function RuleBuilder({
                   </Typography>
                 </Box>
                 <Typography variant="body2" fontWeight={700}>
-                  <Money value={Number(transaction.amount.minorUnits) / 100} sign />
+                  <Money
+                    value={minorToMajor(transaction.amount.minorUnits, transaction.amount.currency)}
+                    currency={transaction.amount.currency}
+                    sign
+                  />
                 </Typography>
               </Stack>
             ))}
@@ -1644,7 +1662,7 @@ function SuggestionCard({
           </Stack>
           <Box sx={{ textAlign: "right" }}>
             <Typography variant="h3">
-              <Money value={suggestion.amount} sign />
+              <Money value={suggestion.amount} currency={suggestion.currency} sign />
             </Typography>
             <StatusChip label={`${suggestion.confidence}% confidence`} tone="warning" />
           </Box>

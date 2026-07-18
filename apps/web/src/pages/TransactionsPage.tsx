@@ -69,6 +69,7 @@ import {
   type LedgerItem,
 } from "../data";
 import { isDemoMode } from "../demo";
+import { formatMoneyExact, minorToMajor } from "../lib/money";
 
 export interface TransactionView extends LedgerItem {
   accountId: string;
@@ -244,7 +245,7 @@ export function displayItems(page: CursorPage<ApiTransaction>): TransactionView[
       accountMask: fallback?.accountMask ?? "••••",
       category: item.categoryName,
       envelope: item.envelopeName ?? "Unassigned",
-      amount: Number(item.amount.minorUnits) / 100,
+      amount: minorToMajor(item.amount.minorUnits, item.amount.currency),
       amountMinorUnits: item.amount.minorUnits,
       currency: item.amount.currency,
       status: item.status,
@@ -274,10 +275,7 @@ export function displayItems(page: CursorPage<ApiTransaction>): TransactionView[
 }
 
 function formatMinorUnits(minorUnits: bigint, currency: string) {
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency,
-  }).format(Number(minorUnits) / 100);
+  return formatMoneyExact(minorUnits, currency);
 }
 
 function minorUnitsToInput(minorUnits: bigint) {
@@ -582,7 +580,7 @@ function TransactionRow({
       </Box>
       <Box sx={{ textAlign: "right" }}>
         <Typography variant="body2" fontWeight={760}>
-          <Money value={item.amount} sign />
+          <Money value={item.amount} currency={item.currency} sign />
         </Typography>
         <TransactionBadges item={item} />
       </Box>
@@ -639,7 +637,7 @@ function MobileTransactionRow({
             </Box>
           </Box>
           <Typography variant="body2" fontWeight={760} sx={{ ml: 2 }}>
-            <Money value={item.amount} sign />
+            <Money value={item.amount} currency={item.currency} sign />
           </Typography>
         </Button>
       </Stack>
@@ -1895,7 +1893,7 @@ export function TransactionDetail({
               </Typography>
             </Box>
             <Typography sx={{ fontSize: 24, fontWeight: 760 }}>
-              <Money value={item.amount} sign />
+              <Money value={item.amount} currency={item.currency} sign />
             </Typography>
           </Stack>
           <Stack direction="row" gap={1.5} sx={{ mt: 3 }} flexWrap="wrap">

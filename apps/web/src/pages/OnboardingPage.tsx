@@ -34,6 +34,7 @@ import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, type DashboardReport, type Money } from "../api";
 import { Stack, TextField, Typography } from "../components/mui";
+import { formatMoneyExact } from "../lib/money";
 
 const steps = ["Start", "Your target", "Cash flow", "Ready"];
 type SourceChoice = "simplefin" | "manual" | "demo";
@@ -114,12 +115,7 @@ function ageOnDate(birthDate: string, onDate = new Date()) {
 }
 
 function formatMoney(value: Money) {
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency: value.currency,
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Number(value.minorUnits) / 100);
+  return formatMoneyExact(value.minorUnits, value.currency);
 }
 
 function formatDate(value: string) {
