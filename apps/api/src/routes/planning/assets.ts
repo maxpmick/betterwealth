@@ -230,11 +230,12 @@ export function createAssetRoutes(db: BetterWealthDatabase, config: AppConfig) {
       });
     }
     const updated = await repositories.assets.findById(current.id);
+    if (!updated) throw new NotFoundError("Asset");
     const latest = await repositories.assets.latestValuation(current.id);
     return context.json({
-      ...updated!,
-      value: moneyJson(latest?.amount ?? 0n, latest?.currency ?? updated!.currency),
-      valuedAt: latest ? `${latest.valuedOn}T00:00:00.000Z` : updated!.updatedAt,
+      ...updated,
+      value: moneyJson(latest?.amount ?? 0n, latest?.currency ?? updated.currency),
+      valuedAt: latest ? `${latest.valuedOn}T00:00:00.000Z` : updated.updatedAt,
       source: latest?.source ?? "manual",
       confidence:
         !latest || latest.confidenceBps >= 9_000
@@ -242,9 +243,9 @@ export function createAssetRoutes(db: BetterWealthDatabase, config: AppConfig) {
           : latest.confidenceBps >= 6_000
             ? "medium"
             : "low",
-      liquidityClass: updated!.liquidityClass === "liquid" ? "liquid" : "illiquid",
-      ...(updated!.linkedLiabilityAccountId
-        ? { relatedLiabilityId: updated!.linkedLiabilityAccountId }
+      liquidityClass: updated.liquidityClass === "liquid" ? "liquid" : "illiquid",
+      ...(updated.linkedLiabilityAccountId
+        ? { relatedLiabilityId: updated.linkedLiabilityAccountId }
         : {}),
     });
   });
