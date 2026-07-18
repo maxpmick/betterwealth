@@ -37,6 +37,7 @@ import { requireRole } from "../auth/service";
 import type { AppConfig } from "../config";
 import { sha256 } from "../lib/crypto";
 import { ForbiddenError, NotFoundError } from "../lib/errors";
+import { idempotency } from "../lib/idempotency";
 import type { AppEnv } from "../types";
 
 function jsonSafe<T>(value: T): T {
@@ -67,6 +68,7 @@ const profilePatchSchema = z
 export function createOperationRoutes(db: BetterWealthDatabase, config: AppConfig) {
   const routes = new Hono<AppEnv>();
   routes.use("*", requireAuth(db, config));
+  routes.use("*", idempotency(db));
 
   routes.get("/profile", async (context) => {
     const auth = context.get("auth");

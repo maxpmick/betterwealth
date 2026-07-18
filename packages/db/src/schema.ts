@@ -2017,6 +2017,22 @@ export const forecastRuns = sqliteTable(
 
 // Audit and settings ---------------------------------------------------------
 
+export const idempotencyKeys = sqliteTable(
+  "idempotency_keys",
+  {
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    method: text("method").notNull(),
+    path: text("path").notNull(),
+    status: integer("status").notNull(),
+    body: text("body").notNull(),
+    ...timestamps(),
+  },
+  (t) => [primaryKey({ columns: [t.householdId, t.key] })],
+);
+
 export const auditEvents = sqliteTable(
   "audit_events",
   {

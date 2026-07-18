@@ -8,5 +8,7 @@ export type AppEnv = {
   Variables: {
     auth: AuthContext;
     requestId: string;
+    /** Set once the idempotency middleware has processed this request. */
+    idempotencyProcessed?: boolean;
   };
 };

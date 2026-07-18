@@ -2,6 +2,7 @@ import type { BetterWealthDatabase } from "@betterwealth/db";
 import { Hono } from "hono";
 import { requireAuth } from "../../auth/middleware";
 import type { AppConfig } from "../../config";
+import { idempotency } from "../../lib/idempotency";
 import type { AppEnv } from "../../types";
 import { createAssetRoutes } from "./assets";
 import { createBillRoutes } from "./bills";
@@ -19,6 +20,7 @@ export function createPlanningRoutes(
 ) {
   const routes = new Hono<AppEnv>();
   routes.use("*", requireAuth(db, config));
+  routes.use("*", idempotency(db));
   routes.route("/", createEnvelopeRoutes(db, config));
   routes.route("/", createBillRoutes(db, config));
   routes.route("/", createGoalRoutes(db, config, now));

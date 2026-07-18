@@ -86,7 +86,7 @@ describe("database connection and migrations", () => {
         "SELECT count(*) AS count FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
       )
       .get();
-    expect(tableCount?.count).toBe(49);
+    expect(tableCount?.count).toBe(50);
     expect(db.$client.query("PRAGMA foreign_key_check").all()).toEqual([]);
   });
 

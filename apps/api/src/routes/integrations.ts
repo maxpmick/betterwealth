@@ -31,6 +31,7 @@ import {
 import { claimSimpleFinToken } from "../integrations/simplefin";
 import { FieldCipher, sha256 } from "../lib/crypto";
 import { AppError, ForbiddenError, NotFoundError } from "../lib/errors";
+import { idempotency } from "../lib/idempotency";
 import { normalizeDescription } from "../sync/reconcile";
 import type { AppEnv } from "../types";
 
@@ -291,6 +292,7 @@ export function createIntegrationRoutes(
   const regenerateCategory =
     dependencies.regenerateTransactionCategory ?? regenerateTransactionCategory;
   routes.use("*", requireAuth(db, config));
+  routes.use("*", idempotency(db));
 
   routes.get("/connections", async (context) => {
     const auth = context.get("auth");

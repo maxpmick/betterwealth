@@ -22,6 +22,7 @@ import { z } from "zod";
 import { requireAuth, requireCsrf } from "../auth/middleware";
 import type { AppConfig } from "../config";
 import { AppError, ConflictError, NotFoundError } from "../lib/errors";
+import { idempotency } from "../lib/idempotency";
 import { normalizeDescription } from "../sync/reconcile";
 import type { AppEnv } from "../types";
 
@@ -266,6 +267,7 @@ async function ensureCategory(db: BetterWealthDatabase, householdId: string, nam
 export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) {
   const routes = new Hono<AppEnv>();
   routes.use("*", requireAuth(db, config));
+  routes.use("*", idempotency(db));
 
   routes.get("/accounts", async (context) => {
     const auth = context.get("auth");
