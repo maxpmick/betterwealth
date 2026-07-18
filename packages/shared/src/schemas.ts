@@ -1,116 +1,19 @@
 import { z } from "zod";
 
-import { SafeToSpendJsonSchema } from "./allocation.ts";
 import { YearMonthSchema } from "./goals.ts";
 import { CurrencyCodeSchema, type MinorUnitsStringSchema, MoneyJsonSchema } from "./money.ts";
-import { CategorizationRuleSchema } from "./rules.ts";
+
+/**
+ * Domain and engine schemas shared across packages and the canonical fixture.
+ * These are NOT the HTTP API contract — the API contract is served from
+ * /api/v1/openapi.json and pinned to the live route table by
+ * apps/api/src/openapi.test.ts. Do not add API envelope or response DTO
+ * schemas here; validate domain invariants and engine inputs only.
+ */
 
 export const UlidSchema = z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/i, "Expected a ULID");
-export const IdSchema = UlidSchema;
 export const UtcDateTimeSchema = z.string().datetime({ offset: true });
 export const DateOnlySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
-
-export const ApiErrorSchema = z
-  .object({
-    code: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
-    message: z.string().min(1).max(1_000),
-    requestId: z.string().min(1).max(128).optional(),
-    fieldErrors: z.record(z.string(), z.array(z.string())).optional(),
-    retryable: z.boolean().default(false),
-  })
-  .strict();
-export type ApiError = z.infer<typeof ApiErrorSchema>;
-
-export const ApiMetaSchema = z
-  .object({
-    requestId: z.string().min(1).max(128).optional(),
-    generatedAt: UtcDateTimeSchema.optional(),
-  })
-  .strict();
-
-export function ApiSuccessSchema<T extends z.ZodType>(data: T) {
-  return z.object({ data, meta: ApiMetaSchema.optional() }).strict();
-}
-
-export function ApiFailureSchema() {
-  return z.object({ error: ApiErrorSchema }).strict();
-}
-
-export function PaginatedResponseSchema<T extends z.ZodType>(item: T) {
-  return z
-    .object({
-      data: z.array(item),
-      page: z
-        .object({
-          cursor: z.string().nullable(),
-          nextCursor: z.string().nullable(),
-          hasMore: z.boolean(),
-          total: z.number().int().nonnegative().optional(),
-        })
-        .strict(),
-      meta: ApiMetaSchema.optional(),
-    })
-    .strict();
-}
-
-export const UserSchema = z
-  .object({
-    id: UlidSchema,
-    email: z.string().email(),
-    displayName: z.string().min(1).max(120),
-    status: z.enum(["active", "disabled", "pendingDeletion"]),
-    createdAt: UtcDateTimeSchema,
-    updatedAt: UtcDateTimeSchema,
-  })
-  .strict();
-export type User = z.infer<typeof UserSchema>;
-
-export const HouseholdRoleSchema = z.enum(["owner", "admin", "member", "viewer"]);
-export type HouseholdRole = z.infer<typeof HouseholdRoleSchema>;
-
-export const HouseholdSchema = z
-  .object({
-    id: UlidSchema,
-    name: z.string().min(1).max(120),
-    baseCurrency: CurrencyCodeSchema,
-    locale: z.string().min(2).max(35),
-    timezone: z.string().min(1).max(100),
-    createdAt: UtcDateTimeSchema,
-    updatedAt: UtcDateTimeSchema,
-  })
-  .strict();
-export type Household = z.infer<typeof HouseholdSchema>;
-
-export const SessionSchema = z
-  .object({
-    id: UlidSchema,
-    user: UserSchema,
-    household: HouseholdSchema,
-    role: HouseholdRoleSchema,
-    expiresAt: UtcDateTimeSchema,
-  })
-  .strict();
-export type Session = z.infer<typeof SessionSchema>;
-
-export const RegisterRequestSchema = z
-  .object({
-    email: z.string().email().max(320),
-    password: z.string().min(12).max(256),
-    displayName: z.string().trim().min(1).max(120),
-    householdName: z.string().trim().min(1).max(120),
-    baseCurrency: CurrencyCodeSchema.default("USD"),
-    timezone: z.string().min(1).max(100),
-  })
-  .strict();
-export type RegisterRequest = z.input<typeof RegisterRequestSchema>;
-
-export const LoginRequestSchema = z
-  .object({ email: z.string().email().max(320), password: z.string().min(1).max(256) })
-  .strict();
-export type LoginRequest = z.infer<typeof LoginRequestSchema>;
-
-export const AuthResponseSchema = ApiSuccessSchema(SessionSchema);
-export type AuthResponse = z.infer<typeof AuthResponseSchema>;
 
 export const AccountTypeSchema = z.enum([
   "checking",
@@ -167,8 +70,6 @@ export const AccountSchema = z
     }
   });
 export type Account = z.infer<typeof AccountSchema>;
-export const AccountResponseSchema = ApiSuccessSchema(AccountSchema);
-export const AccountsResponseSchema = PaginatedResponseSchema(AccountSchema);
 
 export const TransactionStatusSchema = z.enum(["pending", "posted", "stale", "removedUpstream"]);
 export const TransactionSourceSchema = z.enum([
@@ -249,28 +150,6 @@ export const TransactionSchema = z
   });
 export type Transaction = z.infer<typeof TransactionSchema>;
 
-export const TransactionResponseSchema = ApiSuccessSchema(TransactionSchema);
-export const TransactionsResponseSchema = PaginatedResponseSchema(TransactionSchema);
-export const TransactionListResponseSchema = TransactionsResponseSchema;
-
-export const CategorySchema = z
-  .object({
-    id: UlidSchema,
-    householdId: UlidSchema,
-    parentId: UlidSchema.nullable(),
-    name: z.string().min(1).max(120),
-    kind: z.enum(["income", "expense", "transfer"]),
-    color: z
-      .string()
-      .regex(/^#[0-9A-F]{6}$/i)
-      .nullable(),
-    icon: z.string().max(80).nullable(),
-    active: z.boolean(),
-    system: z.boolean(),
-  })
-  .strict();
-export type Category = z.infer<typeof CategorySchema>;
-
 export const EnvelopeSchema = z
   .object({
     id: UlidSchema,
@@ -301,23 +180,6 @@ export const EnvelopeSchema = z
   .strict();
 export type Envelope = z.infer<typeof EnvelopeSchema>;
 
-export const BudgetPeriodSchema = z
-  .object({
-    id: UlidSchema,
-    householdId: UlidSchema,
-    cadence: z.enum(["payCycle", "monthly"]),
-    startsOn: DateOnlySchema,
-    endsOn: DateOnlySchema,
-    status: z.enum(["planned", "open", "closed"]),
-    expectedIncome: MoneyJsonSchema,
-    actualIncome: MoneyJsonSchema,
-    unassigned: MoneyJsonSchema,
-    envelopes: z.array(EnvelopeSchema),
-  })
-  .strict();
-export type BudgetPeriod = z.infer<typeof BudgetPeriodSchema>;
-export const BudgetResponseSchema = ApiSuccessSchema(BudgetPeriodSchema);
-
 export const GoalTypeSchema = z.enum([
   "emergencyFund",
   "purchase",
@@ -346,13 +208,6 @@ export const GoalSchema = z
   })
   .strict();
 export type Goal = z.infer<typeof GoalSchema>;
-export const GoalResponseSchema = ApiSuccessSchema(GoalSchema);
-export const GoalsResponseSchema = PaginatedResponseSchema(GoalSchema);
-
-export const RuleSchema = CategorizationRuleSchema;
-export type Rule = z.infer<typeof RuleSchema>;
-export const RuleResponseSchema = ApiSuccessSchema(RuleSchema);
-export const RulesResponseSchema = PaginatedResponseSchema(RuleSchema);
 
 export const ForecastAccountJsonSchema = z
   .object({
@@ -480,7 +335,6 @@ export const ForecastRunSchema = z
     debtFreeMonth: YearMonthSchema.nullable(),
   })
   .strict();
-export const ForecastResponseSchema = ApiSuccessSchema(ForecastRunSchema);
 
 export const MonteCarloRunSchema = z
   .object({
@@ -501,135 +355,5 @@ export const MonteCarloRunSchema = z
     goalSuccessBasisPoints: z.number().int().min(0).max(10_000).nullable(),
   })
   .strict();
-export const MonteCarloResponseSchema = ApiSuccessSchema(MonteCarloRunSchema);
-
-export const UpcomingBillSchema = z
-  .object({
-    id: UlidSchema,
-    name: z.string().min(1).max(160),
-    dueDate: DateOnlySchema,
-    amount: MoneyJsonSchema,
-    funded: z.boolean(),
-    autopayAccountId: UlidSchema.nullable(),
-  })
-  .strict();
-
-export const DashboardReportSchema = z
-  .object({
-    asOf: UtcDateTimeSchema,
-    currency: CurrencyCodeSchema,
-    safeToSpend: SafeToSpendJsonSchema,
-    netWorth: MoneyJsonSchema,
-    netWorthChange: MoneyJsonSchema,
-    liquidCash: MoneyJsonSchema,
-    nextPaycheckDate: DateOnlySchema.nullable(),
-    runwayDays: z.number().int().nonnegative().nullable(),
-    envelopeSummary: z
-      .object({
-        onTrack: z.number().int().nonnegative(),
-        atRisk: z.number().int().nonnegative(),
-        overspent: z.number().int().nonnegative(),
-        available: MoneyJsonSchema,
-      })
-      .strict(),
-    upcomingBills: z.array(UpcomingBillSchema),
-    recentTransactions: z.array(TransactionSchema),
-    weeklyAction: z
-      .object({
-        id: z.string().min(1).max(128),
-        kind: z.enum(["review", "fund", "save", "payDebt", "reduceSpending", "none"]),
-        title: z.string().min(1).max(160),
-        rationale: z.string().min(1).max(1_000),
-        amount: MoneyJsonSchema.nullable(),
-      })
-      .strict(),
-    forecast: z
-      .object({
-        endingNetWorth: MoneyJsonSchema,
-        targetNetWorth: MoneyJsonSchema.nullable(),
-        onTrack: z.boolean().nullable(),
-      })
-      .strict(),
-  })
-  .strict();
-export type DashboardReport = z.infer<typeof DashboardReportSchema>;
-export const DashboardResponseSchema = ApiSuccessSchema(DashboardReportSchema);
-
-export const NetWorthReportSchema = z
-  .object({
-    currency: CurrencyCodeSchema,
-    from: DateOnlySchema,
-    to: DateOnlySchema,
-    points: z.array(
-      z
-        .object({
-          date: DateOnlySchema,
-          assets: MoneyJsonSchema,
-          liabilities: MoneyJsonSchema,
-          netWorth: MoneyJsonSchema,
-        })
-        .strict(),
-    ),
-  })
-  .strict();
-export type NetWorthReport = z.infer<typeof NetWorthReportSchema>;
-
-export const CashFlowReportSchema = z
-  .object({
-    currency: CurrencyCodeSchema,
-    from: DateOnlySchema,
-    to: DateOnlySchema,
-    periods: z.array(
-      z
-        .object({
-          month: YearMonthSchema,
-          income: MoneyJsonSchema,
-          spending: MoneyJsonSchema,
-          debtPayments: MoneyJsonSchema,
-          savings: MoneyJsonSchema,
-          netCashFlow: MoneyJsonSchema,
-        })
-        .strict(),
-    ),
-  })
-  .strict();
-export type CashFlowReport = z.infer<typeof CashFlowReportSchema>;
-
-export const SpendingReportSchema = z
-  .object({
-    currency: CurrencyCodeSchema,
-    from: DateOnlySchema,
-    to: DateOnlySchema,
-    total: MoneyJsonSchema,
-    byCategory: z.array(
-      z
-        .object({
-          categoryId: UlidSchema.nullable(),
-          categoryName: z.string().min(1),
-          amount: MoneyJsonSchema,
-          transactionCount: z.number().int().nonnegative(),
-        })
-        .strict(),
-    ),
-  })
-  .strict();
-export type SpendingReport = z.infer<typeof SpendingReportSchema>;
-
-export const HealthResponseSchema = z
-  .object({
-    status: z.enum(["ok", "degraded"]),
-    version: z.string().min(1),
-    time: UtcDateTimeSchema,
-    checks: z.record(z.string(), z.enum(["ok", "degraded", "down"])),
-  })
-  .strict();
-
-export const IdempotencyKeySchema = z
-  .string()
-  .min(16)
-  .max(128)
-  .regex(/^[A-Za-z0-9._:-]+$/);
-export const CursorSchema = z.string().min(1).max(1_024);
-export const LimitSchema = z.coerce.number().int().min(1).max(250).default(50);
 
 export type MoneyAmountString = z.infer<typeof MinorUnitsStringSchema>;
