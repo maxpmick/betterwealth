@@ -76,11 +76,8 @@ const goalCreateSchema = z
     name: z.string().trim().min(1).max(160),
     type: goalTypeSchema,
     target: positiveGoalMoneySchema.optional(),
-    targetAmountMinorUnits: positiveMinorUnitsSchema.optional(),
     funded: nonNegativeGoalMoneySchema.optional(),
-    fundedAmountMinorUnits: nonNegativeMinorUnitsSchema.optional(),
     monthlyContribution: nonNegativeGoalMoneySchema.optional(),
-    monthlyContributionMinorUnits: nonNegativeMinorUnitsSchema.optional(),
     currency: currencySchema.default("USD"),
     targetDate: dateSchema.nullable().optional(),
     priority: z.number().int().min(-1_000_000).max(1_000_000).default(100),
@@ -96,7 +93,7 @@ const goalCreateSchema = z
   })
   .strict()
   .superRefine((input, context) => {
-    const target = input.target?.minorUnits ?? input.targetAmountMinorUnits;
+    const target = input.target?.minorUnits;
     if (!target || BigInt(target) <= 0n) {
       context.addIssue({
         code: "custom",
@@ -1051,13 +1048,9 @@ export function createGoalRoutes(db: BetterWealthDatabase, config: AppConfig, no
         );
       }
     }
-    const target = optionalMoney(input.target, input.targetAmountMinorUnits, input.currency);
-    const funded = optionalMoney(input.funded, input.fundedAmountMinorUnits, target.currency);
-    const monthly = optionalMoney(
-      input.monthlyContribution,
-      input.monthlyContributionMinorUnits,
-      target.currency,
-    );
+    const target = optionalMoney(input.target, undefined, input.currency);
+    const funded = optionalMoney(input.funded, undefined, target.currency);
+    const monthly = optionalMoney(input.monthlyContribution, undefined, target.currency);
     if (target.currency !== funded.currency || target.currency !== monthly.currency) {
       throw new ConflictError("Goal currencies must match", "currency_mismatch");
     }
@@ -1155,17 +1148,11 @@ export function createGoalRoutes(db: BetterWealthDatabase, config: AppConfig, no
     }
     const target = input.target
       ? { amount: BigInt(input.target.minorUnits), currency: input.target.currency }
-      : input.targetAmountMinorUnits === undefined
-        ? undefined
-        : { amount: BigInt(input.targetAmountMinorUnits), currency: current.currency };
+      : undefined;
     const funded = input.funded
       ? { amount: BigInt(input.funded.minorUnits), currency: input.funded.currency }
-      : input.fundedAmountMinorUnits === undefined
-        ? undefined
-        : { amount: BigInt(input.fundedAmountMinorUnits), currency: current.currency };
-    const monthly = input.monthlyContribution
-      ? input.monthlyContribution.minorUnits
-      : input.monthlyContributionMinorUnits;
+      : undefined;
+    const monthly = input.monthlyContribution?.minorUnits;
     if (
       (target && target.currency !== current.currency) ||
       (funded && funded.currency !== current.currency) ||

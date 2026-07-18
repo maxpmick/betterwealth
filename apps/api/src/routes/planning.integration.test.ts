@@ -169,9 +169,6 @@ describe("planning routes", () => {
       endDate: "2026-07-31T00:00:00.000Z",
       plannedIncome: { minorUnits: "220000", currency: "USD" },
       funded: { minorUnits: "0", currency: "USD" },
-      spent: { minorUnits: "0", currency: "USD" },
-      remaining: { minorUnits: "0", currency: "USD" },
-      unassigned: { minorUnits: "220000", currency: "USD" },
       envelopes: [
         {
           id: envelope.id,
