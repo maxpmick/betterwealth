@@ -3,9 +3,16 @@ import type { Context, MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
 import type { AppConfig } from "../config";
 import { secureEqual, sha256 } from "../lib/crypto";
-import { AppError, ForbiddenError } from "../lib/errors";
+import { AppError, ForbiddenError, UnauthorizedError } from "../lib/errors";
 import type { AppEnv } from "../types";
 import { resolveSession, touchSession } from "./service";
+import {
+  isPersonalAccessTokenAuth,
+  personalAccessTokenId,
+  requireScope,
+  resolvePersonalAccessToken,
+  touchPersonalAccessToken,
+} from "./tokens";
 
 export const SESSION_COOKIE = "bw_session";
 export const CSRF_COOKIE = "bw_csrf";
@@ -68,6 +75,24 @@ export function requireAuth(
   config: AppConfig,
 ): MiddlewareHandler<AppEnv> {
   return async (context, next) => {
+    const authorization = context.req.header("authorization");
+    if (authorization?.startsWith("Bearer ")) {
+      // Personal access tokens authenticate non-browser clients. They are not
+      // subject to CSRF checks (no cookie jar to confuse-deputize), and they
+      // select the household explicitly via X-BetterWealth-Household or fall
+      // back to the user's first active household.
+      const token = await resolvePersonalAccessToken(
+        db,
+        authorization.slice("Bearer ".length).trim(),
+        context.req.header("x-betterwealth-household"),
+      );
+      if (!token) throw new UnauthorizedError("Your token is invalid or has expired");
+      context.set("auth", token);
+      const tokenId = personalAccessTokenId(token.sessionId);
+      if (tokenId) await touchPersonalAccessToken(db, tokenId);
+      await next();
+      return;
+    }
     const auth = await resolveSession(
       db,
       getCookie(context, SESSION_COOKIE),
@@ -88,9 +113,19 @@ export function requireCsrf(config: AppConfig): MiddlewareHandler<AppEnv> {
     const origin = context.req.header("origin");
     if (origin && !isTrustedWebOrigin(config, origin))
       throw new ForbiddenError("Request origin was rejected");
+    const auth = context.get("auth");
+    if (isPersonalAccessTokenAuth(auth)) {
+      // Bearer tokens are header credentials; CSRF only defends cookie auth.
+      // Scope enforcement still applies to mutations.
+      requireScope(auth, "write");
+      if (auth.role === "viewer") {
+        throw new ForbiddenError("View-only household members cannot make changes");
+      }
+      await next();
+      return;
+    }
     const cookieToken = getCookie(context, CSRF_COOKIE);
     const headerToken = context.req.header("x-csrf-token");
-    const auth = context.get("auth");
     if (
       !cookieToken ||
       !headerToken ||

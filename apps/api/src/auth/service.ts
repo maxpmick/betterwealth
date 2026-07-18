@@ -29,6 +29,8 @@ export type AuthContext = {
   sessionId: string;
   csrfTokenHash: string;
   absoluteExpiresAt: string;
+  /** Present only for personal-access-token auth; cookie sessions are full-scope. */
+  tokenScopes?: string[];
 };
 
 const DEFAULT_CATEGORIES = STARTER_CATEGORIES.map(

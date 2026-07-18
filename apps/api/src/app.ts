@@ -46,6 +46,9 @@ const documentedOperations = [
   ["GET", "/auth/sessions", "List active sessions"],
   ["DELETE", "/auth/sessions/{id}", "Revoke an active session"],
   ["POST", "/auth/logout", "End the current session"],
+  ["GET", "/auth/tokens", "List personal access tokens"],
+  ["POST", "/auth/tokens", "Create a personal access token"],
+  ["DELETE", "/auth/tokens/{id}", "Revoke a personal access token"],
   ["GET", "/profile", "Read user and household profile"],
   ["PATCH", "/profile", "Update user and household profile"],
   ["POST", "/profile/password", "Change the account password"],
@@ -178,7 +181,7 @@ function openApiPaths() {
     const pathOperations = paths[path] ?? {};
     pathOperations[method.toLowerCase()] = {
       summary,
-      ...(isPublic ? { security: [] } : { security: [{ sessionCookie: [] }] }),
+      ...(isPublic ? { security: [] } : { security: [{ sessionCookie: [] }, { bearerToken: [] }] }),
       ...(parameters.length ? { parameters } : {}),
       responses: {
         "200": { description: "Successful response" },
@@ -294,7 +297,13 @@ export function createApp(
     "/api/*",
     cors({
       origin: (origin) => (isTrustedWebOrigin(config, origin) ? origin : undefined),
-      allowHeaders: ["Content-Type", "X-CSRF-Token", "Idempotency-Key"],
+      allowHeaders: [
+        "Content-Type",
+        "X-CSRF-Token",
+        "Idempotency-Key",
+        "Authorization",
+        "X-BetterWealth-Household",
+      ],
       allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
       exposeHeaders: ["X-Request-Id", "RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset"],
       credentials: true,
@@ -383,6 +392,12 @@ export function createApp(
             name: "bw_session",
             description:
               "Session cookie from POST /auth/login. Non-browser clients call POST /auth/login, store the Set-Cookie values (bw_session, bw_csrf), send them as a Cookie header on every request, and mirror the bw_csrf value in the X-CSRF-Token header on every mutation. Requests without an Origin header are allowed so native clients are not origin-checked.",
+          },
+          bearerToken: {
+            type: "http",
+            scheme: "bearer",
+            description:
+              "Personal access token (bw_pat_...) from POST /auth/tokens. Send as Authorization: Bearer <token>. No CSRF header is required for bearer-authenticated requests. Tokens are scoped (read, write) and per-user.",
           },
         },
         schemas: {
