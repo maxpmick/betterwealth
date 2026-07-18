@@ -61,7 +61,6 @@ const goalTypeSchema = z.enum([
   "custom",
 ]);
 
-const nonNegativeMinorUnitsSchema = minorUnitsSchema.refine((value) => BigInt(value) >= 0n);
 const positiveGoalMoneySchema = MoneyJsonSchema.refine(
   (value) => BigInt(value.minorUnits) > 0n,
   "Goal target must be positive",
