@@ -377,7 +377,7 @@ export function createApp(
         title: "BetterWealth API",
         version: "0.1.0",
         description:
-          "A household-scoped personal finance API for ledger, planning, budgeting, and wealth forecasting. Money uses signed base-10 minor-unit strings.",
+          "A household-scoped personal finance API for ledger, planning, budgeting, and wealth forecasting. Money uses signed base-10 minor-unit strings. Enum values are the frozen v1 vocabulary: display-oriented aliases over internal enums (e.g. account group 'custom' for rewards, transaction reviewState 'approved' for reviewed, connection status 'healthy' for active, rule origin 'approved_ai' for ai, budget period status 'planned' for draft) are part of the contract and will not be renamed in v1.",
       },
       servers: [{ url: "/api/v1" }],
       paths: openApiPaths(),
