@@ -548,10 +548,10 @@ export function createEnvelopeRoutes(db: BetterWealthDatabase, config: AppConfig
     const startsOn = input.startDate ?? input.startsOn;
     const endsOn = input.endDate ?? input.endsOn;
     if (!startsOn || !endsOn) {
-      throw new AppError("Budget start and end dates are required", 400, "invalid_budget");
+      throw new AppError("Budget start and end dates are required", 422, "invalid_budget");
     }
     if (startsOn > endsOn) {
-      throw new AppError("Budget start date must not be after its end date", 400, "invalid_budget");
+      throw new AppError("Budget start date must not be after its end date", 422, "invalid_budget");
     }
     const kind =
       input.kind ?? (input.periodKind === "plan" ? "custom" : input.periodKind) ?? "month";
@@ -648,7 +648,7 @@ export function createEnvelopeRoutes(db: BetterWealthDatabase, config: AppConfig
       ) {
         throw new AppError(
           "Funding must be between zero and the period's expected income and use its currency",
-          400,
+          422,
           "invalid_budget_funding",
         );
       }
@@ -995,7 +995,7 @@ export function createEnvelopeRoutes(db: BetterWealthDatabase, config: AppConfig
     if (input.amount.currency !== period.currency || BigInt(input.amount.minorUnits) <= 0n) {
       throw new AppError(
         "Allocation must be positive and use the budget currency",
-        400,
+        422,
         "invalid_allocation",
       );
     }

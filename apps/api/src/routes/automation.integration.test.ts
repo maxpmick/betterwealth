@@ -205,7 +205,7 @@ describe("automation rule routes", () => {
       conditions: condition,
       actions: [{ type: "setCategory", categoryId: otherFood?.id }],
     });
-    expect(crossHouseholdCategory.status).toBe(400);
+    expect(crossHouseholdCategory.status).toBe(422);
     expect(await crossHouseholdCategory.json()).toHaveProperty(
       "error.code",
       "invalid_rule_reference",
@@ -220,7 +220,7 @@ describe("automation rule routes", () => {
       },
       actions,
     });
-    expect(crossHouseholdAccount.status).toBe(400);
+    expect(crossHouseholdAccount.status).toBe(422);
 
     const overlappingResponse = await request("/api/v1/rules", {
       name: "Coffee overlap",

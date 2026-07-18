@@ -178,7 +178,7 @@ function openApiPaths() {
       responses: {
         "200": { description: "Successful response" },
         "400": {
-          description: "Invalid request (bad JSON, domain validation, or payload too large)",
+          description: "Malformed request (bad JSON, oversized body, or unsupported input shape)",
           content: {
             "application/json": { schema: { $ref: "#/components/schemas/Error" } },
           },
@@ -220,7 +220,7 @@ function openApiPaths() {
           },
         },
         "422": {
-          description: "Validation failed",
+          description: "Validation failed (schema or domain rule)",
           content: {
             "application/json": { schema: { $ref: "#/components/schemas/Error" } },
           },

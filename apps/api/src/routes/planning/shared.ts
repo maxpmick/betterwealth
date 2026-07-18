@@ -17,6 +17,9 @@ import { and, asc, desc, eq, gte, inArray, lte } from "drizzle-orm";
 import { z } from "zod";
 import { localMonthKey } from "../../lib/dates";
 import { NotFoundError } from "../../lib/errors";
+import { moneyJson } from "../../lib/money-json";
+
+export { moneyJson };
 
 export type MoneyJson = { minorUnits: string; currency: string };
 
@@ -128,10 +131,6 @@ export async function loadPlanningForecastDefaults(db: BetterWealthDatabase, hou
     timezone: household?.timezone ?? "UTC",
     preferences: preferences.success ? preferences.data : {},
   };
-}
-
-export function moneyJson(minorUnits: bigint, currency: string): MoneyJson {
-  return { minorUnits: minorUnits.toString(), currency };
 }
 
 export function page<T>(data: T[]) {

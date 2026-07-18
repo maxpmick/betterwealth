@@ -188,7 +188,7 @@ async function validateRuleReferences(
     if (found.length !== ids.length) {
       throw new AppError(
         `Rule references an unavailable ${check.label}`,
-        400,
+        422,
         "invalid_rule_reference",
       );
     }
@@ -446,7 +446,7 @@ export function createRuleRoutes(db: BetterWealthDatabase, config: AppConfig) {
       .strict()
       .parse(await context.req.json());
     const condition = input.conditions ?? input.condition;
-    if (!condition) throw new AppError("A rule condition is required", 400, "invalid_rule");
+    if (!condition) throw new AppError("A rule condition is required", 422, "invalid_rule");
     await validateRuleReferences(db, auth.householdId, condition, input.actions);
     const candidate = CategorizationRuleSchema.parse({
       id: ulid(),
@@ -536,7 +536,7 @@ export function createRuleRoutes(db: BetterWealthDatabase, config: AppConfig) {
         .from(tags)
         .where(and(eq(tags.householdId, auth.householdId), inArray(tags.id, tagIds)));
       if (validTags.length !== tagIds.length) {
-        throw new AppError("Rule references an unavailable tag", 400, "invalid_rule_reference");
+        throw new AppError("Rule references an unavailable tag", 422, "invalid_rule_reference");
       }
     }
     const merchantIds = new Map<string, string>();

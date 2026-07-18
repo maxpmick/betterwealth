@@ -14,7 +14,12 @@ import {
   transactionTags,
   transfers,
 } from "@betterwealth/db/schema";
-import { MinorUnitsStringSchema, UlidSchema } from "@betterwealth/shared";
+import {
+  CurrencyCodeSchema,
+  MinorUnitsStringSchema,
+  parseDecimalToMinorUnits,
+  UlidSchema,
+} from "@betterwealth/shared";
 import { and, desc, eq, inArray, like, lt, ne, or } from "drizzle-orm";
 import { Hono } from "hono";
 import { ulid } from "ulid";
@@ -23,14 +28,9 @@ import { requireAuth, requireCsrf } from "../auth/middleware";
 import type { AppConfig } from "../config";
 import { AppError, ConflictError, NotFoundError } from "../lib/errors";
 import { idempotency } from "../lib/idempotency";
+import { moneyJson } from "../lib/money-json";
 import { normalizeDescription } from "../sync/reconcile";
 import type { AppEnv } from "../types";
-
-type MoneyJson = { minorUnits: string; currency: string };
-
-function money(minorUnits: bigint, currency: string): MoneyJson {
-  return { minorUnits: minorUnits.toString(), currency };
-}
 
 function mapGroup(group: typeof accounts.$inferSelect.group) {
   return group === "rewards" ? ("custom" as const) : group;
@@ -56,13 +56,14 @@ function transactionProvenance(source: typeof transactions.$inferSelect.source) 
 }
 
 function queryAmountMinorUnits(value: string): bigint | null {
+  // Free-text search amounts are 2-digit major units ($, commas, whitespace tolerated).
   const normalized = value.trim().replace(/[$,\s]/g, "");
   if (!/^[+-]?\d+(?:\.\d{1,2})?$/.test(normalized)) return null;
-  const negative = normalized.startsWith("-");
-  const unsigned = normalized.replace(/^[+-]/, "");
-  const [whole = "0", fraction = ""] = unsigned.split(".");
-  const amount = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
-  return negative ? -amount : amount;
+  try {
+    return parseDecimalToMinorUnits(normalized, 2, "reject");
+  } catch {
+    return null;
+  }
 }
 
 async function latestBalances(db: BetterWealthDatabase, householdId: string) {
@@ -94,11 +95,7 @@ const accountCreateSchema = z.object({
   ]),
   type: z.string().trim().min(1).max(80).default("manual"),
   subtype: z.string().trim().max(80).optional(),
-  currency: z
-    .string()
-    .length(3)
-    .transform((value) => value.toUpperCase())
-    .default("USD"),
+  currency: CurrencyCodeSchema.default("USD"),
   balanceMinorUnits: MinorUnitsStringSchema.default("0"),
   mask: z.string().max(8).optional(),
   includeInBudget: z.boolean().default(true),
@@ -188,10 +185,7 @@ function decodeTransactionCursor(value: string) {
 const manualTransactionSchema = z.object({
   accountId: z.string(),
   amountMinorUnits: MinorUnitsStringSchema.refine((value) => value !== "0"),
-  currency: z
-    .string()
-    .length(3)
-    .transform((value) => value.toUpperCase()),
+  currency: CurrencyCodeSchema,
   effectiveDate: z.string().datetime(),
   description: z.string().trim().min(1).max(500),
   categoryId: z.string().optional(),
@@ -295,11 +289,11 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
           includeInBudget: account.includeInBudget,
           includeInNetWorth: account.includeInNetWorth,
           status: account.status,
-          balance: money(balance?.currentBalance ?? 0n, balance?.currency ?? account.currency),
+          balance: moneyJson(balance?.currentBalance ?? 0n, balance?.currency ?? account.currency),
           availableBalance:
             balance?.availableBalance === null || balance?.availableBalance === undefined
               ? undefined
-              : money(balance.availableBalance, balance.currency),
+              : moneyJson(balance.availableBalance, balance.currency),
           syncStatus: account.isManual
             ? ("manual" as const)
             : account.status === "stale"
@@ -343,18 +337,18 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
       data: snapshots.map((snapshot) => ({
         id: snapshot.id,
         asOf: snapshot.asOf,
-        current: money(snapshot.currentBalance, snapshot.currency),
-        ledger: money(snapshot.ledgerBalance, snapshot.currency),
+        current: moneyJson(snapshot.currentBalance, snapshot.currency),
+        ledger: moneyJson(snapshot.ledgerBalance, snapshot.currency),
         available:
           snapshot.availableBalance === null
             ? null
-            : money(snapshot.availableBalance, snapshot.currency),
+            : moneyJson(snapshot.availableBalance, snapshot.currency),
         source: snapshot.source,
         reconciled: snapshot.currentBalance === snapshot.ledgerBalance,
       })),
       summary: {
-        current: money(latest?.currentBalance ?? 0n, latest?.currency ?? account.currency),
-        change: money(
+        current: moneyJson(latest?.currentBalance ?? 0n, latest?.currency ?? account.currency),
+        change: moneyJson(
           latest && earliest ? latest.currentBalance - earliest.currentBalance : 0n,
           latest?.currency ?? account.currency,
         ),
@@ -770,7 +764,7 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
         effectiveDate: transaction.postedAt ?? transaction.authorizedAt ?? transaction.transactedOn,
         description: transaction.rawDescription,
         merchant: merchantName ?? transaction.normalizedDescription,
-        amount: money(transaction.amount, transaction.currency),
+        amount: moneyJson(transaction.amount, transaction.currency),
         accountId: transaction.accountId,
         accountName,
         categoryName: categoryName ?? "Uncategorized",
@@ -792,7 +786,7 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
         refundLinkIds: refundLinkIdsByTransaction.get(transaction.id) ?? [],
         refundLinks: (refundLinksByTransaction.get(transaction.id) ?? []).map((link) => ({
           ...link,
-          amount: money(link.amount, transaction.currency),
+          amount: moneyJson(link.amount, transaction.currency),
         })),
       })),
       page: {
@@ -890,7 +884,7 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
         row.transaction.postedAt ?? row.transaction.authorizedAt ?? row.transaction.transactedOn,
       description: row.transaction.rawDescription,
       merchant: row.merchantName ?? row.transaction.normalizedDescription,
-      amount: money(row.transaction.amount, row.transaction.currency),
+      amount: moneyJson(row.transaction.amount, row.transaction.currency),
       accountId: row.transaction.accountId,
       accountName: row.accountName,
       categoryId: row.transaction.categoryId,
@@ -909,7 +903,7 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
       isIncome: row.transaction.isIncome,
       splits: splitRows.map((split) => ({
         ...split,
-        amount: money(split.amount, row.transaction.currency),
+        amount: moneyJson(split.amount, row.transaction.currency),
       })),
       transfer: transfer
         ? {
@@ -924,7 +918,7 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
         id: link.id,
         refundTransactionId: link.refundTransactionId,
         purchaseTransactionId: link.purchaseTransactionId,
-        amount: money(link.amount, row.transaction.currency),
+        amount: moneyJson(link.amount, row.transaction.currency),
         status: link.status,
       })),
     });
@@ -1254,7 +1248,7 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
       data: created.map((split) => ({
         id: split.id,
         sequence: split.sequence,
-        amount: money(split.amount, parent.currency),
+        amount: moneyJson(split.amount, parent.currency),
         categoryId: split.categoryId,
         envelopeId: split.envelopeId,
         memo: split.memo,
@@ -1670,7 +1664,7 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
       {
         id: confirmed.id,
         status: "confirmed",
-        amount: money(confirmed.requested, refund.currency),
+        amount: moneyJson(confirmed.requested, refund.currency),
       },
       201,
     );
@@ -1880,7 +1874,7 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
         updated.transaction.transactedOn,
       description: updated.transaction.rawDescription,
       merchant: updated.merchantName ?? updated.transaction.normalizedDescription,
-      amount: money(updated.transaction.amount, updated.transaction.currency),
+      amount: moneyJson(updated.transaction.amount, updated.transaction.currency),
       accountId: updated.transaction.accountId,
       accountName: updated.accountName,
       categoryName: updated.categoryName ?? "Uncategorized",
