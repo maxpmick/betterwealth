@@ -542,11 +542,6 @@ export function createEnvelopeRoutes(db: BetterWealthDatabase, config: AppConfig
     );
   });
 
-  routes.get("/budget-periods", async (context) => {
-    const auth = context.get("auth");
-    return context.json(page(await budgetDtos(db, auth.householdId)));
-  });
-
   routes.post("/budgets", requireCsrf(config), async (context) => {
     const auth = context.get("auth");
     const input = budgetWriteSchema.parse(await context.req.json());
@@ -597,40 +592,6 @@ export function createEnvelopeRoutes(db: BetterWealthDatabase, config: AppConfig
         ...(allocation.fundedMinorUnits ? { fundedMinorUnits: allocation.fundedMinorUnits } : {}),
       });
     }
-    return context.json((await budgetDtos(db, auth.householdId, id))[0]!, 201);
-  });
-
-  routes.post("/budget-periods", requireCsrf(config), async (context) => {
-    const auth = context.get("auth");
-    const input = budgetWriteSchema.parse(await context.req.json());
-    const startsOn = input.startDate ?? input.startsOn;
-    const endsOn = input.endDate ?? input.endsOn;
-    if (!startsOn || !endsOn) {
-      throw new AppError("Budget start and end dates are required", 400, "invalid_budget");
-    }
-    const expected = optionalMoney(
-      input.plannedIncome,
-      input.expectedIncomeMinorUnits,
-      input.currency ?? "USD",
-    );
-    const actual = optionalMoney(
-      input.actualIncome,
-      input.actualIncomeMinorUnits,
-      expected.currency,
-    );
-    const id = ulid();
-    await db.insert(budgetPeriods).values({
-      id,
-      householdId: auth.householdId,
-      kind: input.kind ?? (input.periodKind === "plan" ? "custom" : input.periodKind) ?? "month",
-      startsOn,
-      endsOn,
-      currency: expected.currency,
-      expectedIncome: expected.minor,
-      actualIncome: actual.minor,
-      status: normalizePeriodStatus(input.status) ?? "draft",
-      ...(input.payCycleId ? { payCycleId: input.payCycleId } : {}),
-    });
     return context.json((await budgetDtos(db, auth.householdId, id))[0]!, 201);
   });
 
@@ -988,32 +949,6 @@ export function createEnvelopeRoutes(db: BetterWealthDatabase, config: AppConfig
     });
   });
 
-  routes.patch("/budget-periods/:id", requireCsrf(config), async (context) => {
-    const auth = context.get("auth");
-    const current = await requireBudgetPeriod(db, auth.householdId, context.req.param("id"));
-    const input = budgetWriteSchema.parse(await context.req.json());
-    await db
-      .update(budgetPeriods)
-      .set({
-        ...(input.startDate || input.startsOn
-          ? { startsOn: input.startDate ?? input.startsOn }
-          : {}),
-        ...(input.endDate || input.endsOn ? { endsOn: input.endDate ?? input.endsOn } : {}),
-        ...(input.status ? { status: normalizePeriodStatus(input.status) } : {}),
-        ...(input.expectedIncomeMinorUnits
-          ? { expectedIncome: BigInt(input.expectedIncomeMinorUnits) }
-          : {}),
-        ...(input.actualIncomeMinorUnits
-          ? { actualIncome: BigInt(input.actualIncomeMinorUnits) }
-          : {}),
-        updatedAt: nowIso(),
-      })
-      .where(
-        and(eq(budgetPeriods.householdId, auth.householdId), eq(budgetPeriods.id, current.id)),
-      );
-    return context.json((await budgetDtos(db, auth.householdId, current.id))[0]!);
-  });
-
   routes.delete("/budgets/:id", requireCsrf(config), async (context) => {
     const auth = context.get("auth");
     const current = await requireBudgetPeriod(db, auth.householdId, context.req.param("id"));
@@ -1024,16 +959,6 @@ export function createEnvelopeRoutes(db: BetterWealthDatabase, config: AppConfig
         and(eq(budgetPeriods.householdId, auth.householdId), eq(budgetPeriods.id, current.id)),
       );
     return context.body(null, 204);
-  });
-
-  routes.put("/budget-periods/:id/allocations", requireCsrf(config), async (context) => {
-    const auth = context.get("auth");
-    const input = allocationWriteSchema.parse(await context.req.json());
-    const id = await writeAllocation(db, auth.householdId, context.req.param("id"), input);
-    return context.json({
-      id,
-      budget: (await budgetDtos(db, auth.householdId, context.req.param("id")))[0]!,
-    });
   });
 
   routes.post("/allocations", requireCsrf(config), async (context) => {

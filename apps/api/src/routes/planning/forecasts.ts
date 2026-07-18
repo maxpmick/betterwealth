@@ -118,34 +118,6 @@ const uiForecastAssumptionsSchema = z
   })
   .strict();
 
-const forecastScenarioWriteSchema = z
-  .object({
-    name: z.string().trim().min(1).max(160),
-    preset: z.enum(["conservative", "baseline", "ambitious", "custom"]).default("baseline"),
-    seed: z.union([z.string(), z.number().finite()]).default("betterwealth"),
-    horizonMonths: z.number().int().min(1).max(1_200).optional(),
-    reportingCurrency: currencySchema.optional(),
-    isBase: z.boolean().default(false),
-    isActive: z.boolean().default(true),
-    scenario: ForecastScenarioSchema,
-    monteCarlo: monteCarloSettingsSchema.optional(),
-  })
-  .strict();
-
-const forecastScenarioPatchSchema = z
-  .object({
-    name: z.string().trim().min(1).max(160).optional(),
-    preset: z.enum(["conservative", "baseline", "ambitious", "custom"]).optional(),
-    seed: z.union([z.string(), z.number().finite()]).optional(),
-    horizonMonths: z.number().int().min(1).max(1_200).optional(),
-    reportingCurrency: currencySchema.optional(),
-    isBase: z.boolean().optional(),
-    isActive: z.boolean().optional(),
-    scenario: ForecastScenarioSchema.optional(),
-    monteCarlo: monteCarloSettingsSchema.optional(),
-  })
-  .strict();
-
 const forecastRunRequestSchema = z
   .object({
     scenarioId: z.string(),
@@ -612,24 +584,6 @@ function engineScenario(input: z.infer<typeof ForecastScenarioSchema>): Forecast
   };
 }
 
-function forecastScenarioDto(row: typeof forecastScenarios.$inferSelect) {
-  const stored = parseStoredForecastAssumptions(row.assumptions);
-  return {
-    id: row.id,
-    name: row.name,
-    preset: row.preset,
-    seed: row.seed,
-    horizonMonths: row.horizonMonths,
-    reportingCurrency: row.reportingCurrency,
-    isBase: row.isBase,
-    isActive: row.isActive,
-    scenario: stored.scenario,
-    monteCarlo: stored.monteCarlo,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  };
-}
-
 function uiScenarioDto(row: typeof forecastScenarios.$inferSelect) {
   const stored = parseStoredForecastAssumptions(row.assumptions);
   const fallbackCurrency = stored.scenario.baseCurrency;
@@ -937,142 +891,6 @@ export function createForecastRoutes(db: BetterWealthDatabase, config: AppConfig
   });
 
   routes.delete("/scenarios/:id", requireCsrf(config), async (context) => {
-    const auth = context.get("auth");
-    const result = await db
-      .update(forecastScenarios)
-      .set({ isActive: false, isBase: false, updatedAt: nowIso() })
-      .where(
-        and(
-          eq(forecastScenarios.householdId, auth.householdId),
-          eq(forecastScenarios.id, context.req.param("id")),
-        ),
-      )
-      .returning({ id: forecastScenarios.id })
-      .get();
-    if (!result) throw new NotFoundError("Forecast scenario");
-    return context.body(null, 204);
-  });
-
-  routes.get("/forecast-scenarios", async (context) => {
-    const auth = context.get("auth");
-    const rows = await db
-      .select()
-      .from(forecastScenarios)
-      .where(eq(forecastScenarios.householdId, auth.householdId))
-      .orderBy(desc(forecastScenarios.isBase), asc(forecastScenarios.name));
-    return context.json(page(rows.map(forecastScenarioDto)));
-  });
-
-  routes.post("/forecast-scenarios", requireCsrf(config), async (context) => {
-    const auth = context.get("auth");
-    const input = forecastScenarioWriteSchema.parse(await context.req.json());
-    if (input.horizonMonths && input.horizonMonths !== input.scenario.horizonMonths) {
-      throw new ConflictError("Scenario horizon fields must match", "forecast_horizon_mismatch");
-    }
-    if (input.reportingCurrency && input.reportingCurrency !== input.scenario.baseCurrency) {
-      throw new ConflictError("Scenario currencies must match", "currency_mismatch");
-    }
-    const id = ulid();
-    db.transaction((transaction) => {
-      if (input.isBase) {
-        transaction
-          .update(forecastScenarios)
-          .set({ isBase: false, updatedAt: nowIso() })
-          .where(eq(forecastScenarios.householdId, auth.householdId))
-          .run();
-      }
-      transaction
-        .insert(forecastScenarios)
-        .values({
-          id,
-          householdId: auth.householdId,
-          name: input.name,
-          preset: input.preset,
-          assumptions: dbJson({
-            scenario: input.scenario,
-            ...(input.monteCarlo ? { monteCarlo: input.monteCarlo } : {}),
-          }),
-          seed: String(input.seed),
-          horizonMonths: input.scenario.horizonMonths,
-          reportingCurrency: input.scenario.baseCurrency,
-          isBase: input.isBase,
-          isActive: input.isActive,
-          createdByUserId: auth.user.id,
-        })
-        .run();
-    });
-    const row = await db
-      .select()
-      .from(forecastScenarios)
-      .where(and(eq(forecastScenarios.householdId, auth.householdId), eq(forecastScenarios.id, id)))
-      .get();
-    return context.json(forecastScenarioDto(row!), 201);
-  });
-
-  routes.patch("/forecast-scenarios/:id", requireCsrf(config), async (context) => {
-    const auth = context.get("auth");
-    const current = await db
-      .select()
-      .from(forecastScenarios)
-      .where(
-        and(
-          eq(forecastScenarios.householdId, auth.householdId),
-          eq(forecastScenarios.id, context.req.param("id")),
-        ),
-      )
-      .get();
-    if (!current) throw new NotFoundError("Forecast scenario");
-    const input = forecastScenarioPatchSchema.parse(await context.req.json());
-    const stored = parseStoredForecastAssumptions(current.assumptions);
-    const scenario = input.scenario ?? stored.scenario;
-    db.transaction((transaction) => {
-      if (input.isBase) {
-        transaction
-          .update(forecastScenarios)
-          .set({ isBase: false, updatedAt: nowIso() })
-          .where(eq(forecastScenarios.householdId, auth.householdId))
-          .run();
-      }
-      transaction
-        .update(forecastScenarios)
-        .set({
-          ...(input.name === undefined ? {} : { name: input.name }),
-          ...(input.preset === undefined ? {} : { preset: input.preset }),
-          assumptions: dbJson({
-            scenario,
-            ...((input.monteCarlo ?? stored.monteCarlo)
-              ? { monteCarlo: input.monteCarlo ?? stored.monteCarlo }
-              : {}),
-          }),
-          ...(input.seed === undefined ? {} : { seed: String(input.seed) }),
-          horizonMonths: scenario.horizonMonths,
-          reportingCurrency: scenario.baseCurrency,
-          ...(input.isBase === undefined ? {} : { isBase: input.isBase }),
-          ...(input.isActive === undefined ? {} : { isActive: input.isActive }),
-          updatedAt: nowIso(),
-        })
-        .where(
-          and(
-            eq(forecastScenarios.householdId, auth.householdId),
-            eq(forecastScenarios.id, current.id),
-          ),
-        )
-        .run();
-    });
-    const updated = await db
-      .select()
-      .from(forecastScenarios)
-      .where(
-        and(
-          eq(forecastScenarios.householdId, auth.householdId),
-          eq(forecastScenarios.id, current.id),
-        ),
-      )
-      .get();
-    return context.json(forecastScenarioDto(updated!));
-  });
-
-  routes.delete("/forecast-scenarios/:id", requireCsrf(config), async (context) => {
     const auth = context.get("auth");
     const result = await db
       .update(forecastScenarios)
