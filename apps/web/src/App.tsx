@@ -7,10 +7,16 @@ import { api } from "./api";
 import { AppShell } from "./components/AppShell";
 import { Stack, Typography } from "./components/mui";
 import { isDemoMode } from "./demo";
-import { BudgetPage } from "./pages/BudgetPage";
-import { TodayPage } from "./pages/TodayPage";
-import { TransactionsPage } from "./pages/TransactionsPage";
 
+const TodayPage = lazy(() =>
+  import("./pages/TodayPage").then((module) => ({ default: module.TodayPage })),
+);
+const BudgetPage = lazy(() =>
+  import("./pages/BudgetPage").then((module) => ({ default: module.BudgetPage })),
+);
+const TransactionsPage = lazy(() =>
+  import("./pages/TransactionsPage").then((module) => ({ default: module.TransactionsPage })),
+);
 const LoginPage = lazy(() =>
   import("./pages/AuthPages").then((module) => ({ default: module.LoginPage })),
 );
