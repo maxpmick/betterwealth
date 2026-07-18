@@ -348,12 +348,17 @@ export function createApp(
     app.use(path, rateLimit({ limit, windowMs, keyPrefix, trustProxy: config.TRUST_PROXY }));
   }
 
-  const health = () => ({
-    status: "ok" as const,
-    version: "0.1.0",
-    time: new Date().toISOString(),
-    database: "ready" as const,
-  });
+  const health = () => {
+    // Probe the database rather than reporting a hardcoded ready — a readiness
+    // check that cannot see a broken database is worse than none.
+    const row = db.$client.query<{ one: number }, []>("SELECT 1 AS one").get();
+    return {
+      status: "ok" as const,
+      version: "0.1.0",
+      time: new Date().toISOString(),
+      database: row?.one === 1 ? ("ready" as const) : ("error" as const),
+    };
+  };
   app.get("/health", (context) => context.json(health()));
   app.get("/api/v1/health", (context) => context.json(health()));
   app.get("/api/v1/capabilities", (context) =>

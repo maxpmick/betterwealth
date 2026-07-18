@@ -784,15 +784,14 @@ describe("per-user integration settings", () => {
     const first = await sync();
     expect(first.status).toBe(202);
     const firstBody = (await first.json()) as {
-      syncRunId: string;
       syncRunIds: string[];
       state: string;
     };
     expect(firstBody.syncRunIds).toHaveLength(2);
-    expect(firstBody.syncRunIds).toContain(firstBody.syncRunId);
     expect(firstBody.state).toBe("queued");
     const queued = await application.db.select().from(jobs);
     expect(queued).toHaveLength(2);
+    expect(new Set(queued.map((job) => job.id))).toEqual(new Set(firstBody.syncRunIds));
     expect(
       new Set(queued.map((job) => (job.payload as { connectionId: string }).connectionId)),
     ).toEqual(new Set(retryableConnectionIds));

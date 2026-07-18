@@ -441,7 +441,6 @@ export function createIntegrationRoutes(
     if (!first) throw new NotFoundError("Active SimpleFIN connection");
     return context.json(
       {
-        syncRunId: first.id,
         syncRunIds: queued.map(({ id }) => id),
         state: queued.some(({ state }) => state === "queued") ? ("queued" as const) : first.state,
       },

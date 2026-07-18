@@ -1217,7 +1217,6 @@ export const api = {
   },
   sync: () =>
     request<{
-      syncRunId: string;
       syncRunIds: string[];
       state: "queued" | "leased" | "succeeded" | "failed" | "cancelled";
     }>("/sync-runs", {

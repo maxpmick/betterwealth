@@ -781,7 +781,6 @@ export function createLedgerRoutes(db: BetterWealthDatabase, config: AppConfig) 
         isIncome: transaction.isIncome,
         hasSplits: splitTransactionIds.has(transaction.id),
         transferId: transferIdByTransaction.get(transaction.id),
-        transferMatch: transferByTransaction.get(transaction.id),
         transfer: transferByTransaction.get(transaction.id),
         refundLinkIds: refundLinkIdsByTransaction.get(transaction.id) ?? [],
         refundLinks: (refundLinksByTransaction.get(transaction.id) ?? []).map((link) => ({
