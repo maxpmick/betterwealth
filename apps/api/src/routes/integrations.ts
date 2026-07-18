@@ -14,7 +14,7 @@ import {
   transactions,
 } from "@betterwealth/db/schema";
 import { money, ruleSpecificity } from "@betterwealth/shared";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, or } from "drizzle-orm";
 import { Hono } from "hono";
 import { ulid } from "ulid";
 import { z } from "zod";
@@ -32,6 +32,7 @@ import { claimSimpleFinToken } from "../integrations/simplefin";
 import { FieldCipher, sha256 } from "../lib/crypto";
 import { AppError, ForbiddenError, NotFoundError } from "../lib/errors";
 import { idempotency } from "../lib/idempotency";
+import { listPageParams, paginateList } from "../lib/pagination";
 import { normalizeDescription } from "../sync/reconcile";
 import type { AppEnv } from "../types";
 
@@ -450,13 +451,26 @@ export function createIntegrationRoutes(
 
   routes.get("/sync-runs", async (context) => {
     const auth = context.get("auth");
-    const rows = await db
+    const { limit, cursor } = listPageParams(context.req, 50);
+    const conditions = [eq(syncRuns.householdId, auth.householdId)];
+    if (cursor) {
+      const cursorCondition = or(
+        lt(syncRuns.createdAt, cursor.sortKey),
+        and(eq(syncRuns.createdAt, cursor.sortKey), lt(syncRuns.id, cursor.id)),
+      );
+      if (cursorCondition) conditions.push(cursorCondition);
+    }
+    const fetched = await db
       .select()
       .from(syncRuns)
-      .where(eq(syncRuns.householdId, auth.householdId))
-      .orderBy(desc(syncRuns.createdAt))
-      .limit(50);
-    return context.json({ data: rows, page: { cursor: null, hasMore: false } });
+      .where(and(...conditions))
+      .orderBy(desc(syncRuns.createdAt), desc(syncRuns.id))
+      .limit(limit + 1);
+    const { rows, page } = paginateList(fetched, limit, (row) => ({
+      sortKey: row.createdAt,
+      id: row.id,
+    }));
+    return context.json({ data: rows, page });
   });
 
   routes.get("/settings/integrations/ai", async (context) => {
@@ -712,7 +726,16 @@ export function createIntegrationRoutes(
 
   routes.get("/ai/suggestions", async (context) => {
     const auth = context.get("auth");
-    const [rows, taxonomy] = await Promise.all([
+    const { limit, cursor } = listPageParams(context.req, 1_000);
+    const conditions = [eq(aiSuggestions.householdId, auth.householdId)];
+    if (cursor) {
+      const cursorCondition = or(
+        lt(aiSuggestions.createdAt, cursor.sortKey),
+        and(eq(aiSuggestions.createdAt, cursor.sortKey), lt(aiSuggestions.id, cursor.id)),
+      );
+      if (cursorCondition) conditions.push(cursorCondition);
+    }
+    const [fetched, taxonomy] = await Promise.all([
       db
         .select({
           suggestion: aiSuggestions,
@@ -725,9 +748,9 @@ export function createIntegrationRoutes(
         .from(aiSuggestions)
         .innerJoin(transactions, eq(transactions.id, aiSuggestions.transactionId))
         .leftJoin(categories, eq(categories.id, aiSuggestions.suggestedCategoryId))
-        .where(eq(aiSuggestions.householdId, auth.householdId))
-        .orderBy(desc(aiSuggestions.createdAt))
-        .limit(1_000),
+        .where(and(...conditions))
+        .orderBy(desc(aiSuggestions.createdAt), desc(aiSuggestions.id))
+        .limit(limit + 1),
       db
         .select({
           id: categories.id,
@@ -739,6 +762,10 @@ export function createIntegrationRoutes(
         .from(categories)
         .where(eq(categories.householdId, auth.householdId)),
     ]);
+    const { rows, page } = paginateList(fetched, limit, ({ suggestion }) => ({
+      sortKey: suggestion.createdAt,
+      id: suggestion.id,
+    }));
     const taxonomyPaths = categoryPathMap(taxonomy);
     return context.json({
       data: rows
@@ -772,7 +799,7 @@ export function createIntegrationRoutes(
             status: suggestion.status,
           }),
         ),
-      page: { cursor: null, hasMore: false },
+      page,
     });
   });
 

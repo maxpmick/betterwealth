@@ -23,13 +23,14 @@ import {
   runForecast,
   runMonteCarlo,
 } from "@betterwealth/shared";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, lt, or } from "drizzle-orm";
 import { Hono } from "hono";
 import { ulid } from "ulid";
 import { z } from "zod";
 import { requireCsrf } from "../../auth/middleware";
 import type { AppConfig } from "../../config";
 import { AppError, NotFoundError } from "../../lib/errors";
+import { listPageParams, paginateList } from "../../lib/pagination";
 import type { AppEnv } from "../../types";
 import {
   averageMonthlyAmount,
@@ -908,13 +909,26 @@ export function createForecastRoutes(db: BetterWealthDatabase, config: AppConfig
 
   routes.get("/forecasts", async (context) => {
     const auth = context.get("auth");
-    const rows = await db
+    const { limit, cursor } = listPageParams(context.req, 100);
+    const conditions = [eq(forecastRuns.householdId, auth.householdId)];
+    if (cursor) {
+      const cursorCondition = or(
+        lt(forecastRuns.createdAt, cursor.sortKey),
+        and(eq(forecastRuns.createdAt, cursor.sortKey), lt(forecastRuns.id, cursor.id)),
+      );
+      if (cursorCondition) conditions.push(cursorCondition);
+    }
+    const fetched = await db
       .select()
       .from(forecastRuns)
-      .where(eq(forecastRuns.householdId, auth.householdId))
-      .orderBy(desc(forecastRuns.createdAt))
-      .limit(100);
-    return context.json(page(rows.map(forecastRunDto)));
+      .where(and(...conditions))
+      .orderBy(desc(forecastRuns.createdAt), desc(forecastRuns.id))
+      .limit(limit + 1);
+    const { rows, page: pageInfo } = paginateList(fetched, limit, (row) => ({
+      sortKey: row.createdAt,
+      id: row.id,
+    }));
+    return context.json({ data: rows.map(forecastRunDto), page: pageInfo });
   });
 
   routes.post("/forecasts", requireCsrf(config), async (context) => {

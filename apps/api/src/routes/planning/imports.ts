@@ -1,7 +1,7 @@
 import { type BetterWealthDatabase, splitEncryptedPayload } from "@betterwealth/db";
 import { importRuns, jobs, rawImportRecords, transactions } from "@betterwealth/db/schema";
 import { parseDecimalToMinorUnits } from "@betterwealth/shared";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, lt, or } from "drizzle-orm";
 import { Hono } from "hono";
 import { ulid } from "ulid";
 import { z } from "zod";
@@ -11,9 +11,10 @@ import type { AppConfig } from "../../config";
 import { parseTransactionFile } from "../../imports/parsers";
 import { FieldCipher, sha256 } from "../../lib/crypto";
 import { AppError, ConflictError } from "../../lib/errors";
+import { listPageParams, paginateList } from "../../lib/pagination";
 import { normalizeDescription, transactionFingerprint } from "../../sync/reconcile";
 import type { AppEnv } from "../../types";
-import { currencySchema, nowIso, page, requireAccount } from "./shared";
+import { currencySchema, nowIso, requireAccount } from "./shared";
 
 const importTransactionsSchema = z
   .object({
@@ -34,7 +35,16 @@ export function createImportRoutes(db: BetterWealthDatabase, config: AppConfig) 
 
   routes.get("/imports", async (context) => {
     const auth = context.get("auth");
-    const rows = await db
+    const { limit, cursor } = listPageParams(context.req, 100);
+    const conditions = [eq(importRuns.householdId, auth.householdId)];
+    if (cursor) {
+      const cursorCondition = or(
+        lt(importRuns.createdAt, cursor.sortKey),
+        and(eq(importRuns.createdAt, cursor.sortKey), lt(importRuns.id, cursor.id)),
+      );
+      if (cursorCondition) conditions.push(cursorCondition);
+    }
+    const fetched = await db
       .select({
         id: importRuns.id,
         format: importRuns.format,
@@ -48,10 +58,14 @@ export function createImportRoutes(db: BetterWealthDatabase, config: AppConfig) 
         createdAt: importRuns.createdAt,
       })
       .from(importRuns)
-      .where(eq(importRuns.householdId, auth.householdId))
-      .orderBy(desc(importRuns.createdAt))
-      .limit(100);
-    return context.json(page(rows));
+      .where(and(...conditions))
+      .orderBy(desc(importRuns.createdAt), desc(importRuns.id))
+      .limit(limit + 1);
+    const { rows, page } = paginateList(fetched, limit, (row) => ({
+      sortKey: row.createdAt,
+      id: row.id,
+    }));
+    return context.json({ data: rows, page });
   });
 
   routes.post("/imports/transactions", requireCsrf(config), async (context) => {
