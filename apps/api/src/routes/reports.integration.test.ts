@@ -430,4 +430,47 @@ describe("dashboard planning truth", () => {
     };
     expect(afterCashFlow.months.at(-1)?.expenses.minorUnits).toBe("7500");
   });
+
+  test("buckets cash flow by the household timezone and validates the timezone", async () => {
+    const zoneChange = await request("/profile", { timezone: "America/New_York" }, "PATCH");
+    expect(zoneChange.status).toBe(200);
+    const badZone = await request("/profile", { timezone: "Not/AZone" }, "PATCH");
+    expect(badZone.status).toBe(422);
+
+    const accountResponse = await request("/accounts", {
+      name: "Timezone checking",
+      group: "cash",
+      type: "checking",
+      currency: "USD",
+      balanceMinorUnits: "100000",
+      includeInBudget: true,
+    });
+    const account = (await accountResponse.json()) as { id: string };
+
+    // 2026-08-01T02:00:00Z is still July 31 local time in New York.
+    const julyLocal = await request("/transactions", {
+      accountId: account.id,
+      amountMinorUnits: "-7000",
+      currency: "USD",
+      effectiveDate: "2026-08-01T02:00:00.000Z",
+      description: "Late July in New York",
+    });
+    expect(julyLocal.status).toBe(201);
+    const augustEverywhere = await request("/transactions", {
+      accountId: account.id,
+      amountMinorUnits: "-3000",
+      currency: "USD",
+      effectiveDate: "2026-08-01T12:00:00.000Z",
+      description: "August everywhere",
+    });
+    expect(augustEverywhere.status).toBe(201);
+
+    const cashFlow = (await (await request("/reports/cash-flow")).json()) as {
+      months: Array<{ month: string; expenses: { minorUnits: string } }>;
+    };
+    const july = cashFlow.months.find(({ month }) => month === "2026-07");
+    const august = cashFlow.months.find(({ month }) => month === "2026-08");
+    expect(july?.expenses.minorUnits).toBe("7000");
+    expect(august?.expenses.minorUnits).toBe("3000");
+  });
 });

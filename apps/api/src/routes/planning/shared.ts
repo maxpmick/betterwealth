@@ -15,6 +15,7 @@ import {
 import { divideAndRound, MinorUnitsStringSchema } from "@betterwealth/shared";
 import { and, asc, desc, eq, gte, inArray, lte } from "drizzle-orm";
 import { z } from "zod";
+import { localMonthKey } from "../../lib/dates";
 import { NotFoundError } from "../../lib/errors";
 
 export type MoneyJson = { minorUnits: string; currency: string };
@@ -93,10 +94,19 @@ export function cadenceFromDueRule(value: unknown) {
   return parsed.success ? parsed.data.cadence : "monthly";
 }
 
+export async function householdTimezone(db: BetterWealthDatabase, householdId: string) {
+  const household = await db
+    .select({ timezone: households.timezone })
+    .from(households)
+    .where(eq(households.id, householdId))
+    .get();
+  return household?.timezone ?? "UTC";
+}
+
 export async function loadPlanningForecastDefaults(db: BetterWealthDatabase, householdId: string) {
   const [household, preferenceRow] = await Promise.all([
     db
-      .select({ currency: households.baseCurrency })
+      .select({ currency: households.baseCurrency, timezone: households.timezone })
       .from(households)
       .where(eq(households.id, householdId))
       .get(),
@@ -115,6 +125,7 @@ export async function loadPlanningForecastDefaults(db: BetterWealthDatabase, hou
   const preferences = planningForecastPreferencesSchema.safeParse(preferenceRow?.value);
   return {
     currency: household?.currency,
+    timezone: household?.timezone ?? "UTC",
     preferences: preferences.success ? preferences.data : {},
   };
 }
@@ -139,8 +150,8 @@ export function dbJsonOrNull(value: unknown): JsonObject | null {
   return value === null ? null : dbJson(value);
 }
 
-export function startOfCurrentMonth(now: Date) {
-  return now.toISOString().slice(0, 7);
+export function startOfCurrentMonth(now: Date, timeZone = "UTC") {
+  return localMonthKey(now, timeZone);
 }
 
 export function optionalMoney(

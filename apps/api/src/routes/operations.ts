@@ -62,7 +62,20 @@ const profilePatchSchema = z
       .regex(/^[A-Za-z]{3}$/)
       .transform((value) => value.toUpperCase())
       .optional(),
-    timezone: z.string().trim().min(1).max(100).optional(),
+    timezone: z
+      .string()
+      .trim()
+      .min(1)
+      .max(100)
+      .refine((value) => {
+        try {
+          new Intl.DateTimeFormat("en-US", { timeZone: value });
+          return true;
+        } catch {
+          return false;
+        }
+      }, "Expected an IANA timezone such as America/New_York")
+      .optional(),
   })
   .strict();
 

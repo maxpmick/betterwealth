@@ -29,6 +29,7 @@ import { ulid } from "ulid";
 import { z } from "zod";
 import { requireCsrf } from "../../auth/middleware";
 import type { AppConfig } from "../../config";
+import { localMonthKey } from "../../lib/dates";
 import { AppError, NotFoundError } from "../../lib/errors";
 import { listPageParams, paginateList } from "../../lib/pagination";
 import type { AppEnv } from "../../types";
@@ -38,6 +39,7 @@ import {
   cadencePeriodsPerYear,
   dbJson,
   goalMonthlyAmount,
+  householdTimezone,
   loadPlanningForecastDefaults,
   type MoneyJson,
   minorUnitsSchema,
@@ -74,6 +76,7 @@ async function defaultForecastHorizonMonths(
   db: BetterWealthDatabase,
   userId: string,
   now = new Date(),
+  timeZone = "UTC",
 ) {
   const profile = await db
     .select({ birthDate: users.birthDate, targetAge: users.targetAge })
@@ -84,7 +87,9 @@ async function defaultForecastHorizonMonths(
   if (!match || profile?.targetAge === null || profile?.targetAge === undefined) return 96;
   const targetYear = Number(match[1]) + profile.targetAge;
   const targetMonth = Number(match[2]) - 1;
-  const months = targetYear * 12 + targetMonth - (now.getUTCFullYear() * 12 + now.getUTCMonth());
+  const [currentYear, currentMonth] = localMonthKey(now, timeZone).split("-").map(Number);
+  const months =
+    targetYear * 12 + targetMonth - ((currentYear ?? 0) * 12 + (currentMonth ?? 1) - 1);
   return Math.max(1, Math.min(1_200, months));
 }
 
@@ -381,7 +386,8 @@ async function buildLedgerForecastScenario(
       .map((bill) => {
         const cadence = cadenceFromDueRule(bill.dueRule);
         const oneTime = normalizedCadence(cadence) === "onetimeestimate";
-        const scheduledMonth = bill.nextDueDate?.slice(0, 7) ?? startOfCurrentMonth(now);
+        const scheduledMonth =
+          bill.nextDueDate?.slice(0, 7) ?? startOfCurrentMonth(now, planningDefaults.timezone);
         return {
           id: bill.id,
           name: bill.name,
@@ -494,7 +500,7 @@ async function buildLedgerForecastScenario(
   });
   return ForecastScenarioSchema.parse({
     name,
-    startMonth: startOfCurrentMonth(now),
+    startMonth: startOfCurrentMonth(now, planningDefaults.timezone),
     horizonMonths,
     baseCurrency: currency,
     primaryCashAccountId: primary.id,
@@ -745,7 +751,13 @@ export function createForecastRoutes(db: BetterWealthDatabase, config: AppConfig
       .strict()
       .parse(await context.req.json());
     const horizonMonths =
-      input.horizonMonths ?? (await defaultForecastHorizonMonths(db, auth.user.id, now()));
+      input.horizonMonths ??
+      (await defaultForecastHorizonMonths(
+        db,
+        auth.user.id,
+        now(),
+        await householdTimezone(db, auth.householdId),
+      ));
     const scenario = await buildLedgerForecastScenario(
       db,
       auth.householdId,

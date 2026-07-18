@@ -25,6 +25,7 @@ import { ulid } from "ulid";
 import { z } from "zod";
 import { requireCsrf } from "../../auth/middleware";
 import type { AppConfig } from "../../config";
+import { localDateKey } from "../../lib/dates";
 import { ConflictError, NotFoundError } from "../../lib/errors";
 import { cappedConfirmedRefund, confirmedRefundAmounts } from "../../lib/refunds";
 import type { AppEnv } from "../../types";
@@ -37,6 +38,7 @@ import {
   dbJson,
   dbJsonOrNull,
   goalMonthlyAmount,
+  householdTimezone,
   loadPlanningForecastDefaults,
   type MoneyJson,
   minorUnitsSchema,
@@ -148,17 +150,18 @@ type ComfortablePurchasePlanDto = {
 function goalDto(
   row: typeof goals.$inferSelect,
   now: Date,
+  timeZone: string,
   comfortablePurchase?: ComfortablePurchasePlanDto,
 ) {
   const monthly = BigInt(goalMonthlyAmount(row.contributionPolicy));
   const projection = projectGoal({
-    startMonth: startOfCurrentMonth(now),
+    startMonth: startOfCurrentMonth(now, timeZone),
     currentAmount: money(row.fundedAmount, row.currency),
     targetAmount: money(row.targetAmount, row.currency),
     monthlyContribution: money(monthly, row.currency),
   });
   const pace = deriveGoalPace({
-    startMonth: startOfCurrentMonth(now),
+    startMonth: startOfCurrentMonth(now, timeZone),
     currentAmount: { minorUnits: row.fundedAmount, currency: row.currency },
     targetAmount: { minorUnits: row.targetAmount, currency: row.currency },
     monthlyContribution: { minorUnits: monthly, currency: row.currency },
@@ -302,9 +305,10 @@ async function comfortablePurchasePlans(
   );
   if (purchaseRows.length === 0) return new Map();
 
-  const today = now.toISOString().slice(0, 10);
-  const ninetyDaysAgo = new Date(now.getTime() - 90 * 86_400_000).toISOString().slice(0, 10);
-  const sevenDaysAgo = new Date(now.getTime() - 7 * 86_400_000).toISOString().slice(0, 10);
+  const timeZone = await householdTimezone(db, householdId);
+  const today = localDateKey(now, timeZone);
+  const ninetyDaysAgo = localDateKey(new Date(now.getTime() - 90 * 86_400_000), timeZone);
+  const sevenDaysAgo = localDateKey(new Date(now.getTime() - 7 * 86_400_000), timeZone);
   const [
     defaults,
     profile,
@@ -503,7 +507,7 @@ async function comfortablePurchasePlans(
     missing.add("Choose a target age for the wealth milestone");
   } else {
     targetWealthMonth = `${Number(birthDateMatch[1]) + targetAge}-${birthDateMatch[2]}`;
-    if (targetWealthMonth <= startOfCurrentMonth(now)) {
+    if (targetWealthMonth <= startOfCurrentMonth(now, timeZone)) {
       missing.add("Choose a future target age for the wealth milestone");
     }
   }
@@ -795,7 +799,7 @@ async function comfortablePurchasePlans(
       const contribution = BigInt(goalMonthlyAmount(goal.contributionPolicy));
       const verifiedCurrent = verifiedFundingByGoal.get(goal.id) ?? 0n;
       const projection = projectGoal({
-        startMonth: startOfCurrentMonth(now),
+        startMonth: startOfCurrentMonth(now, timeZone),
         currentAmount: money(verifiedCurrent, currency),
         targetAmount: money(goal.targetAmount, currency),
         monthlyContribution: money(contribution, currency),
@@ -812,7 +816,7 @@ async function comfortablePurchasePlans(
       };
     });
     const result = comfortablePurchaseDate({
-      startMonth: startOfCurrentMonth(now),
+      startMonth: startOfCurrentMonth(now, timeZone),
       purchasePrice: money(purchase.targetAmount, currency),
       currentPurchaseSavings: money(verifiedPurchaseSavings, currency),
       monthlyPurchaseContribution: money(purchaseMonthly, currency),
@@ -918,8 +922,11 @@ async function goalDtos(
   rows: readonly (typeof goals.$inferSelect)[],
   now: Date,
 ) {
-  const purchasePlans = await comfortablePurchasePlans(db, householdId, userId, rows, now);
-  return rows.map((row) => goalDto(row, now, purchasePlans.get(row.id)));
+  const [purchasePlans, timeZone] = await Promise.all([
+    comfortablePurchasePlans(db, householdId, userId, rows, now),
+    householdTimezone(db, householdId),
+  ]);
+  return rows.map((row) => goalDto(row, now, timeZone, purchasePlans.get(row.id)));
 }
 
 async function goalDtoWithComfort(
@@ -934,8 +941,11 @@ async function goalDtoWithComfort(
     .from(goals)
     .where(eq(goals.householdId, householdId))
     .orderBy(asc(goals.priority), asc(goals.name));
-  const purchasePlans = await comfortablePurchasePlans(db, householdId, userId, allRows, now);
-  return goalDto(row, now, purchasePlans.get(row.id));
+  const [purchasePlans, timeZone] = await Promise.all([
+    comfortablePurchasePlans(db, householdId, userId, allRows, now),
+    householdTimezone(db, householdId),
+  ]);
+  return goalDto(row, now, timeZone, purchasePlans.get(row.id));
 }
 
 const goalContributionSchema = z
