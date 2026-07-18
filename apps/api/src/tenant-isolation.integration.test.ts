@@ -33,6 +33,7 @@ describe("tenant isolation", () => {
   let application: BetterWealthApplication;
   let householdBHeaders: Record<string, string>;
   let householdAHeaders: Record<string, string>;
+  let householdACookie: string;
   let householdBAccountId: string;
   let householdBTransactionId: string;
   let householdBCategoryId: string;
@@ -83,6 +84,7 @@ describe("tenant isolation", () => {
     );
     householdAHeaders = await registerAndLogin("tenant-a@example.com", "Household A");
     householdBHeaders = await registerAndLogin("tenant-b@example.com", "Household B");
+    householdACookie = householdAHeaders.cookie ?? "";
 
     const account = await post(householdBHeaders, "/accounts", {
       name: "B secret account",
@@ -158,7 +160,7 @@ describe("tenant isolation", () => {
     ];
     for (const endpoint of listEndpoints) {
       const response = await application.app.request(`/api/v1${endpoint}`, {
-        headers: { cookie: householdAHeaders.cookie },
+        headers: { cookie: householdACookie },
       });
       expect(response.status, endpoint).toBe(200);
       const body = await response.text();
@@ -171,7 +173,7 @@ describe("tenant isolation", () => {
   test("search cannot surface another household's transactions", async () => {
     const response = await application.app.request(
       `/api/v1/transactions?query=${encodeURIComponent("B SECRET MERCHANT")}`,
-      { headers: { cookie: householdAHeaders.cookie } },
+      { headers: { cookie: householdACookie } },
     );
     expect(response.status).toBe(200);
     const body = (await response.json()) as { data: unknown[] };
@@ -187,7 +189,7 @@ describe("tenant isolation", () => {
     ];
     for (const { path, patch } of foreignTargets) {
       const read = await application.app.request(`/api/v1${path}`, {
-        headers: { cookie: householdAHeaders.cookie },
+        headers: { cookie: householdACookie },
       });
       expect([403, 404], `GET ${path} should not succeed`).toContain(read.status);
 
@@ -203,7 +205,7 @@ describe("tenant isolation", () => {
   test("the household cookie cannot switch a session into a foreign household", async () => {
     // Build a cookie jar without the empty bw_household placeholder login
     // leaves behind, so the foreign id is the value the server actually reads.
-    const sessionCookie = householdAHeaders.cookie
+    const sessionCookie = householdACookie
       .split("; ")
       .filter((entry) => !entry.startsWith("bw_household="))
       .join("; ");

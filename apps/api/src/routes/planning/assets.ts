@@ -1,7 +1,7 @@
 import type { BetterWealthDatabase } from "@betterwealth/db";
+import { createHouseholdRepositories } from "@betterwealth/db";
 import { assets, assetValuations } from "@betterwealth/db/schema";
 import { MoneyJsonSchema } from "@betterwealth/shared";
-import { and, asc, desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { ulid } from "ulid";
 import { z } from "zod";
@@ -72,22 +72,11 @@ export function createAssetRoutes(db: BetterWealthDatabase, config: AppConfig) {
 
   routes.get("/assets", async (context) => {
     const auth = context.get("auth");
-    const [assetRows, valuationRows] = await Promise.all([
-      db
-        .select()
-        .from(assets)
-        .where(and(eq(assets.householdId, auth.householdId), eq(assets.isActive, true)))
-        .orderBy(asc(assets.type), asc(assets.name)),
-      db
-        .select()
-        .from(assetValuations)
-        .where(eq(assetValuations.householdId, auth.householdId))
-        .orderBy(desc(assetValuations.valuedOn), desc(assetValuations.createdAt)),
+    const repositories = createHouseholdRepositories(db, auth.householdId);
+    const [assetRows, latest] = await Promise.all([
+      repositories.assets.list(),
+      Promise.resolve(repositories.assets.latestValuations()),
     ]);
-    const latest = new Map<string, (typeof valuationRows)[number]>();
-    for (const valuation of valuationRows) {
-      if (!latest.has(valuation.assetId)) latest.set(valuation.assetId, valuation);
-    }
     return context.json(
       page(
         assetRows.map((asset) => {
@@ -194,11 +183,8 @@ export function createAssetRoutes(db: BetterWealthDatabase, config: AppConfig) {
 
   routes.patch("/assets/:id", requireCsrf(config), async (context) => {
     const auth = context.get("auth");
-    const current = await db
-      .select()
-      .from(assets)
-      .where(and(eq(assets.householdId, auth.householdId), eq(assets.id, context.req.param("id"))))
-      .get();
+    const repositories = createHouseholdRepositories(db, auth.householdId);
+    const current = await repositories.assets.findById(context.req.param("id"));
     if (!current) throw new NotFoundError("Asset");
     const input = assetPatchSchema.parse(await context.req.json());
     const linkedLiabilityAccountId = input.linkedLiabilityAccountId ?? input.relatedLiabilityId;
@@ -213,16 +199,7 @@ export function createAssetRoutes(db: BetterWealthDatabase, config: AppConfig) {
       throw new ConflictError("Asset and valuation currencies must match", "currency_mismatch");
     }
     if (input.currency && input.currency !== current.currency) {
-      const existingValuation = await db
-        .select({ id: assetValuations.id })
-        .from(assetValuations)
-        .where(
-          and(
-            eq(assetValuations.householdId, auth.householdId),
-            eq(assetValuations.assetId, current.id),
-          ),
-        )
-        .get();
+      const existingValuation = await repositories.assets.hasValuations(current.id);
       if (existingValuation) {
         throw new ConflictError(
           "An asset with valuation history cannot change currency",
@@ -230,24 +207,19 @@ export function createAssetRoutes(db: BetterWealthDatabase, config: AppConfig) {
         );
       }
     }
-    await db
-      .update(assets)
-      .set({
-        ...(input.name === undefined ? {} : { name: input.name }),
-        ...(input.type === undefined ? {} : { type: input.type }),
-        ...(input.liquidityClass === undefined ? {} : { liquidityClass: input.liquidityClass }),
-        ...(input.currency === undefined ? {} : { currency: input.currency }),
-        ...(linkedLiabilityAccountId === undefined ? {} : { linkedLiabilityAccountId }),
-        ...(input.metadata === undefined ? {} : { metadata: dbJsonOrNull(input.metadata) }),
-        ...(input.isActive === undefined ? {} : { isActive: input.isActive }),
-        updatedAt: nowIso(),
-      })
-      .where(and(eq(assets.householdId, auth.householdId), eq(assets.id, current.id)));
+    await repositories.assets.update(current.id, {
+      ...(input.name === undefined ? {} : { name: input.name }),
+      ...(input.type === undefined ? {} : { type: input.type }),
+      ...(input.liquidityClass === undefined ? {} : { liquidityClass: input.liquidityClass }),
+      ...(input.currency === undefined ? {} : { currency: input.currency }),
+      ...(linkedLiabilityAccountId === undefined ? {} : { linkedLiabilityAccountId }),
+      ...(input.metadata === undefined ? {} : { metadata: dbJsonOrNull(input.metadata) }),
+      ...(input.isActive === undefined ? {} : { isActive: input.isActive }),
+      updatedAt: nowIso(),
+    });
     if (input.value) {
-      await db.insert(assetValuations).values({
+      await repositories.assets.addValuation(current.id, {
         id: ulid(),
-        householdId: auth.householdId,
-        assetId: current.id,
         amount: BigInt(input.value.minorUnits),
         currency: input.value.currency,
         valuedOn:
@@ -257,22 +229,8 @@ export function createAssetRoutes(db: BetterWealthDatabase, config: AppConfig) {
           input.confidence === "low" ? 4_000 : input.confidence === "medium" ? 7_500 : 10_000,
       });
     }
-    const updated = await db
-      .select()
-      .from(assets)
-      .where(and(eq(assets.householdId, auth.householdId), eq(assets.id, current.id)))
-      .get();
-    const latest = await db
-      .select()
-      .from(assetValuations)
-      .where(
-        and(
-          eq(assetValuations.householdId, auth.householdId),
-          eq(assetValuations.assetId, current.id),
-        ),
-      )
-      .orderBy(desc(assetValuations.valuedOn), desc(assetValuations.createdAt))
-      .get();
+    const updated = await repositories.assets.findById(current.id);
+    const latest = await repositories.assets.latestValuation(current.id);
     return context.json({
       ...updated!,
       value: moneyJson(latest?.amount ?? 0n, latest?.currency ?? updated!.currency),
@@ -293,34 +251,18 @@ export function createAssetRoutes(db: BetterWealthDatabase, config: AppConfig) {
 
   routes.delete("/assets/:id", requireCsrf(config), async (context) => {
     const auth = context.get("auth");
-    const result = await db
-      .update(assets)
-      .set({ isActive: false, updatedAt: nowIso() })
-      .where(and(eq(assets.householdId, auth.householdId), eq(assets.id, context.req.param("id"))))
-      .returning({ id: assets.id })
-      .get();
+    const repositories = createHouseholdRepositories(db, auth.householdId);
+    const result = await repositories.assets.archive(context.req.param("id"));
     if (!result) throw new NotFoundError("Asset");
     return context.body(null, 204);
   });
 
   routes.get("/assets/:id/valuations", async (context) => {
     const auth = context.get("auth");
-    const asset = await db
-      .select({ id: assets.id })
-      .from(assets)
-      .where(and(eq(assets.householdId, auth.householdId), eq(assets.id, context.req.param("id"))))
-      .get();
+    const repositories = createHouseholdRepositories(db, auth.householdId);
+    const asset = await repositories.assets.findById(context.req.param("id"));
     if (!asset) throw new NotFoundError("Asset");
-    const rows = await db
-      .select()
-      .from(assetValuations)
-      .where(
-        and(
-          eq(assetValuations.householdId, auth.householdId),
-          eq(assetValuations.assetId, asset.id),
-        ),
-      )
-      .orderBy(desc(assetValuations.valuedOn), desc(assetValuations.createdAt));
+    const rows = await repositories.assets.listValuations(asset.id);
     return context.json(
       page(rows.map((row) => ({ ...row, amount: moneyJson(row.amount, row.currency) }))),
     );
@@ -328,11 +270,8 @@ export function createAssetRoutes(db: BetterWealthDatabase, config: AppConfig) {
 
   routes.post("/assets/:id/valuations", requireCsrf(config), async (context) => {
     const auth = context.get("auth");
-    const asset = await db
-      .select()
-      .from(assets)
-      .where(and(eq(assets.householdId, auth.householdId), eq(assets.id, context.req.param("id"))))
-      .get();
+    const repositories = createHouseholdRepositories(db, auth.householdId);
+    const asset = await repositories.assets.findById(context.req.param("id"));
     if (!asset) throw new NotFoundError("Asset");
     const input = valuationCreateSchema.parse(await context.req.json());
     const amount = optionalMoney(
@@ -344,12 +283,10 @@ export function createAssetRoutes(db: BetterWealthDatabase, config: AppConfig) {
       throw new ConflictError("Valuation currency must match the asset", "currency_mismatch");
     }
     const proposedId = ulid();
-    const saved = await db
-      .insert(assetValuations)
-      .values({
+    const saved = await repositories.assets.upsertValuation(
+      asset.id,
+      {
         id: proposedId,
-        householdId: auth.householdId,
-        assetId: asset.id,
         amount: amount.minor,
         currency: amount.currency,
         valuedOn: input.valuedOn,
@@ -357,19 +294,15 @@ export function createAssetRoutes(db: BetterWealthDatabase, config: AppConfig) {
         confidenceBps: input.confidenceBps,
         ...(input.providerReference ? { providerReference: input.providerReference } : {}),
         ...(input.metadata === undefined ? {} : { metadata: dbJsonOrNull(input.metadata) }),
-      })
-      .onConflictDoUpdate({
-        target: [assetValuations.assetId, assetValuations.valuedOn, assetValuations.source],
-        set: {
-          amount: amount.minor,
-          currency: amount.currency,
-          confidenceBps: input.confidenceBps,
-          providerReference: input.providerReference ?? null,
-          metadata: input.metadata === undefined ? null : dbJsonOrNull(input.metadata),
-        },
-      })
-      .returning({ id: assetValuations.id })
-      .get();
+      },
+      {
+        amount: amount.minor,
+        currency: amount.currency,
+        confidenceBps: input.confidenceBps,
+        providerReference: input.providerReference ?? null,
+        metadata: input.metadata === undefined ? null : dbJsonOrNull(input.metadata),
+      },
+    );
     if (!saved) throw new NotFoundError("Asset valuation");
     return context.json(
       {

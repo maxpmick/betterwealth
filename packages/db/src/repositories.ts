@@ -17,6 +17,8 @@ import { addMinorUnits } from "./money.ts";
 import {
   accounts,
   allocationEntries,
+  assets,
+  assetValuations,
   attachments,
   auditEvents,
   balanceSnapshots,
@@ -72,6 +74,8 @@ export function householdAnd(
 }
 
 type NewAccount = typeof accounts.$inferInsert;
+type NewAsset = typeof assets.$inferInsert;
+type NewAssetValuation = typeof assetValuations.$inferInsert;
 type NewTransaction = typeof transactions.$inferInsert;
 type NewSplit = typeof transactionSplits.$inferInsert;
 type NewAllocationEntry = typeof allocationEntries.$inferInsert;
@@ -79,6 +83,14 @@ type NewAuditEvent = typeof auditEvents.$inferInsert;
 type NewConnection = typeof connections.$inferInsert;
 
 export type ScopedAccountInsert = Omit<NewAccount, "householdId">;
+export type ScopedAssetInsert = Omit<NewAsset, "householdId">;
+export type ScopedAssetValuationInsert = Omit<NewAssetValuation, "householdId" | "assetId">;
+type AssetValuationUpsertUpdate = Partial<
+  Pick<
+    NewAssetValuation,
+    "amount" | "currency" | "confidenceBps" | "providerReference" | "metadata"
+  >
+>;
 export type ScopedTransactionInsert = Omit<NewTransaction, "householdId">;
 export type ScopedSplitInsert = Omit<NewSplit, "householdId" | "transactionId">;
 export type ScopedAllocationInsert = Omit<NewAllocationEntry, "householdId">;
@@ -280,6 +292,112 @@ export function createHouseholdRepositories(db: BetterWealthDatabase, householdI
         account,
         balance: latest.get(account.id) ?? null,
       }));
+    },
+  };
+
+  const findAssetById = (id: string) =>
+    db
+      .select()
+      .from(assets)
+      .where(householdAnd(assets, householdId, eq(assets.id, id)))
+      .get();
+
+  const assetRepository = {
+    list(options: { includeInactive?: boolean } = {}) {
+      return db
+        .select()
+        .from(assets)
+        .where(
+          householdAnd(
+            assets,
+            householdId,
+            options.includeInactive === true ? undefined : eq(assets.isActive, true),
+          ),
+        )
+        .orderBy(assets.type, assets.name)
+        .all();
+    },
+    findById: findAssetById,
+    create(input: ScopedAssetInsert) {
+      return db
+        .insert(assets)
+        .values({ ...input, householdId })
+        .returning()
+        .get();
+    },
+    update(id: string, patch: Partial<Omit<NewAsset, "householdId" | "id">>) {
+      return db
+        .update(assets)
+        .set(patch)
+        .where(householdAnd(assets, householdId, eq(assets.id, id)))
+        .returning()
+        .get();
+    },
+    archive(id: string) {
+      return db
+        .update(assets)
+        .set({ isActive: false, updatedAt: new Date().toISOString() })
+        .where(householdAnd(assets, householdId, eq(assets.id, id)))
+        .returning({ id: assets.id })
+        .get();
+    },
+    latestValuations() {
+      const rows = db
+        .select()
+        .from(assetValuations)
+        .where(householdScope(assetValuations, householdId))
+        .orderBy(desc(assetValuations.valuedOn), desc(assetValuations.createdAt))
+        .all();
+      const latest = new Map<string, (typeof rows)[number]>();
+      for (const row of rows) {
+        if (!latest.has(row.assetId)) latest.set(row.assetId, row);
+      }
+      return latest;
+    },
+    latestValuation(assetId: string) {
+      return db
+        .select()
+        .from(assetValuations)
+        .where(householdAnd(assetValuations, householdId, eq(assetValuations.assetId, assetId)))
+        .orderBy(desc(assetValuations.valuedOn), desc(assetValuations.createdAt))
+        .get();
+    },
+    listValuations(assetId: string) {
+      return db
+        .select()
+        .from(assetValuations)
+        .where(householdAnd(assetValuations, householdId, eq(assetValuations.assetId, assetId)))
+        .orderBy(desc(assetValuations.valuedOn), desc(assetValuations.createdAt))
+        .all();
+    },
+    hasValuations(assetId: string) {
+      return db
+        .select({ id: assetValuations.id })
+        .from(assetValuations)
+        .where(householdAnd(assetValuations, householdId, eq(assetValuations.assetId, assetId)))
+        .get();
+    },
+    addValuation(assetId: string, input: ScopedAssetValuationInsert) {
+      return db
+        .insert(assetValuations)
+        .values({ ...input, householdId, assetId })
+        .returning()
+        .get();
+    },
+    upsertValuation(
+      assetId: string,
+      input: ScopedAssetValuationInsert,
+      updateSet: AssetValuationUpsertUpdate,
+    ) {
+      return db
+        .insert(assetValuations)
+        .values({ ...input, householdId, assetId })
+        .onConflictDoUpdate({
+          target: [assetValuations.assetId, assetValuations.valuedOn, assetValuations.source],
+          set: updateSet,
+        })
+        .returning()
+        .get();
     },
   };
 
@@ -711,6 +829,7 @@ export function createHouseholdRepositories(db: BetterWealthDatabase, householdI
     membership,
     connections: connectionRepository,
     accounts: accountRepository,
+    assets: assetRepository,
     transactions: transactionRepository,
     budgets: budgetRepository,
     goals: goalRepository,
