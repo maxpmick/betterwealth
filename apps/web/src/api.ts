@@ -10,9 +10,9 @@
  * - cookie-authenticated mutations require the bw_csrf cookie mirrored in X-CSRF-Token;
  * - sync/import/bulk mutations receive an Idempotency-Key.
  *
- * These local interfaces intentionally mirror the product blueprint while the shared
- * contract package is still being assembled. Replace them with generated OpenAPI types
- * when /api/v1/openapi.json is ready.
+ * The canonical contract is /api/v1/openapi.json, pinned to the live route table by
+ * apps/api/src/openapi.test.ts. These interfaces hand-mirror it; keep them aligned
+ * with real responses (shared/src/schemas.ts holds domain/engine schemas, not API DTOs).
  */
 
 export const API_BASE = "/api/v1";
@@ -132,7 +132,7 @@ export interface ApiRefundLinkMatch {
 
 export interface ApiCapabilities {
   registration: {
-    mode: "open" | "invite" | "closed";
+    mode: "open" | "closed";
     selfService: boolean;
   };
 }
@@ -1116,8 +1116,6 @@ export const api = {
       body: JSON.stringify(patch),
     }),
   connections: () => request<CursorPage<ApiConnection>>("/connections"),
-  createConnection: (input: { provider: ApiConnection["provider"]; payload: unknown }) =>
-    request<ApiConnection>("/connections", { method: "POST", body: JSON.stringify(input) }),
   updateConnection: (id: string, patch: Partial<ApiConnection>) =>
     request<ApiConnection>(`/connections/${encodeURIComponent(id)}`, {
       method: "PATCH",
@@ -1219,7 +1217,6 @@ export const api = {
   },
   sync: () =>
     request<{
-      syncRunId: string;
       syncRunIds: string[];
       state: "queued" | "leased" | "succeeded" | "failed" | "cancelled";
     }>("/sync-runs", {

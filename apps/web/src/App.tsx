@@ -7,10 +7,16 @@ import { api } from "./api";
 import { AppShell } from "./components/AppShell";
 import { Stack, Typography } from "./components/mui";
 import { isDemoMode } from "./demo";
-import { BudgetPage } from "./pages/BudgetPage";
-import { TodayPage } from "./pages/TodayPage";
-import { TransactionsPage } from "./pages/TransactionsPage";
 
+const TodayPage = lazy(() =>
+  import("./pages/TodayPage").then((module) => ({ default: module.TodayPage })),
+);
+const BudgetPage = lazy(() =>
+  import("./pages/BudgetPage").then((module) => ({ default: module.BudgetPage })),
+);
+const TransactionsPage = lazy(() =>
+  import("./pages/TransactionsPage").then((module) => ({ default: module.TransactionsPage })),
+);
 const LoginPage = lazy(() =>
   import("./pages/AuthPages").then((module) => ({ default: module.LoginPage })),
 );
@@ -52,7 +58,7 @@ function RouteLoading() {
   );
 }
 
-function ProtectedAppShell() {
+function useSessionGate() {
   const demo = isDemoMode();
   const session = useQuery({
     queryKey: ["session"],
@@ -61,7 +67,16 @@ function ProtectedAppShell() {
     retry: false,
     staleTime: 60_000,
   });
-  if (!demo && session.isPending)
+  return {
+    demo,
+    isPending: !demo && session.isPending,
+    isError: !demo && session.isError,
+  };
+}
+
+function ProtectedAppShell() {
+  const gate = useSessionGate();
+  if (gate.isPending)
     return (
       <Box
         role="status"
@@ -71,36 +86,22 @@ function ProtectedAppShell() {
         <LinearProgress />
       </Box>
     );
-  if (!demo && session.isError) return <Navigate to="/login" replace />;
+  if (gate.isError) return <Navigate to="/login" replace />;
   return <AppShell />;
 }
 
 function ProtectedOnboarding() {
-  const demo = isDemoMode();
-  const session = useQuery({
-    queryKey: ["session"],
-    queryFn: api.session,
-    enabled: !demo,
-    retry: false,
-    staleTime: 60_000,
-  });
-  if (!demo && session.isPending) return <RouteLoading />;
-  if (!demo && session.isError) return <Navigate to="/login" replace />;
+  const gate = useSessionGate();
+  if (gate.isPending) return <RouteLoading />;
+  if (gate.isError) return <Navigate to="/login" replace />;
   return <OnboardingPage />;
 }
 
 function SessionAwareRoot() {
-  const demo = isDemoMode();
-  const session = useQuery({
-    queryKey: ["session"],
-    queryFn: api.session,
-    enabled: !demo,
-    retry: false,
-    staleTime: 60_000,
-  });
-  if (demo) return <Navigate to="/today" replace />;
-  if (session.isPending) return <RouteLoading />;
-  return <Navigate to={session.isError ? "/login" : "/today"} replace />;
+  const gate = useSessionGate();
+  if (gate.demo) return <Navigate to="/today" replace />;
+  if (gate.isPending) return <RouteLoading />;
+  return <Navigate to={gate.isError ? "/login" : "/today"} replace />;
 }
 
 function NotFoundPage() {

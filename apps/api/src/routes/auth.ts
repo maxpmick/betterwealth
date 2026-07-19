@@ -1,8 +1,9 @@
 import type { BetterWealthDatabase } from "@betterwealth/db";
-import { sessions } from "@betterwealth/db/schema";
+import { auditEvents, sessions } from "@betterwealth/db/schema";
 import { and, desc, eq, gt, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { ulid } from "ulid";
 import {
   CSRF_COOKIE,
   clientIp,
@@ -14,7 +15,15 @@ import {
   SESSION_COOKIE,
 } from "../auth/middleware";
 import { createSession, registerUser, revokeSession, verifyLogin } from "../auth/service";
+import {
+  createPersonalAccessToken,
+  createTokenSchema,
+  isPersonalAccessTokenAuth,
+  listPersonalAccessTokens,
+  revokePersonalAccessToken,
+} from "../auth/tokens";
 import type { AppConfig } from "../config";
+import { ForbiddenError } from "../lib/errors";
 import type { AppEnv } from "../types";
 
 function sessionCookieOptions(config: AppConfig, httpOnly: boolean) {
@@ -31,6 +40,11 @@ export function createAuthRoutes(db: BetterWealthDatabase, config: AppConfig) {
   const routes = new Hono<AppEnv>();
 
   routes.post("/register", requireTrustedOrigin(config), requireJsonBody(), async (context) => {
+    // The public-registration gate is an HTTP exposure policy; operator tooling
+    // (bootstrap CLI) uses the same domain service without it.
+    if (config.REGISTRATION_MODE !== "open") {
+      throw new ForbiddenError("Public registration is not enabled");
+    }
     const result = await registerUser(db, await context.req.json(), config);
     return context.json(result, 201);
   });
@@ -110,6 +124,66 @@ export function createAuthRoutes(db: BetterWealthDatabase, config: AppConfig) {
     deleteCookie(context, SESSION_COOKIE, { path: "/" });
     deleteCookie(context, CSRF_COOKIE, { path: "/" });
     deleteCookie(context, HOUSEHOLD_COOKIE, { path: "/" });
+    return context.body(null, 204);
+  });
+
+  // Personal access tokens for non-browser clients (mobile apps, scripts).
+  // The token value is returned exactly once at creation. Token management
+  // itself requires interactive cookie auth — a PAT cannot mint or revoke PATs.
+  routes.post("/tokens", requireAuth(db, config), requireCsrf(config), async (context) => {
+    const auth = context.get("auth");
+    if (isPersonalAccessTokenAuth(auth)) {
+      throw new ForbiddenError("Personal access tokens cannot manage tokens");
+    }
+    const input = createTokenSchema.parse(await context.req.json());
+    const created = await createPersonalAccessToken(db, auth.user.id, input);
+    await db.insert(auditEvents).values({
+      id: ulid(),
+      householdId: auth.householdId,
+      actorUserId: auth.user.id,
+      actorType: "user",
+      action: "token.created",
+      entityType: "personal_access_token",
+      entityId: created.id,
+      requestId: context.get("requestId"),
+      metadata: { name: input.name, scopes: input.scopes },
+    });
+    return context.json(
+      {
+        id: created.id,
+        token: created.token,
+        name: input.name,
+        scopes: [...new Set(input.scopes)],
+        expiresAt: created.expiresAt,
+      },
+      201,
+    );
+  });
+
+  routes.get("/tokens", requireAuth(db, config), async (context) => {
+    const auth = context.get("auth");
+    const rows = await listPersonalAccessTokens(db, auth.user.id);
+    return context.json({ data: rows, page: { cursor: null, hasMore: false } });
+  });
+
+  routes.delete("/tokens/:id", requireAuth(db, config), requireCsrf(config), async (context) => {
+    const auth = context.get("auth");
+    if (isPersonalAccessTokenAuth(auth)) {
+      throw new ForbiddenError("Personal access tokens cannot manage tokens");
+    }
+    const id = context.req.param("id");
+    await revokePersonalAccessToken(db, auth.user.id, id);
+    await db.insert(auditEvents).values({
+      id: ulid(),
+      householdId: auth.householdId,
+      actorUserId: auth.user.id,
+      actorType: "user",
+      action: "token.revoked",
+      entityType: "personal_access_token",
+      entityId: id,
+      requestId: context.get("requestId"),
+      metadata: {},
+    });
     return context.body(null, 204);
   });
 

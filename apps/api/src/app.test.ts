@@ -11,7 +11,7 @@ import { loadConfig } from "./config";
 import { sha256 } from "./lib/crypto";
 import { ALEX_DEMO_EMAIL, ALEX_DEMO_PASSWORD, seedCanonicalAlex } from "./seed/canonical-alex";
 
-function testConfig(databasePath: string, registrationMode: "open" | "invite" | "closed" = "open") {
+function testConfig(databasePath: string, registrationMode: "open" | "closed" = "open") {
   return loadConfig({
     APP_ENV: "test",
     API_HOST: "127.0.0.1",
@@ -89,6 +89,39 @@ describe("BetterWealth API", () => {
     }
   });
 
+  test("serves a restrictive CSP and referrer policy on API responses", async () => {
+    const response = await application.app.request("/api/v1/health");
+    expect(response.headers.get("content-security-policy")).toBe(
+      "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+    );
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+  });
+
+  test("refuses public registration when registration is closed", async () => {
+    const closedDirectory = mkdtempSync(join(tmpdir(), "betterwealth-closed-"));
+    const closedApplication = createApp(
+      testConfig(join(closedDirectory, "closed.sqlite"), "closed"),
+    );
+    try {
+      const response = await closedApplication.app.request("/api/v1/auth/register", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "http://localhost:5173" },
+        body: JSON.stringify({
+          email: "blocked@example.com",
+          password: "BlockedStrong!2026",
+          householdName: "Blocked plan",
+        }),
+      });
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({
+        error: { code: "forbidden", message: "Public registration is not enabled" },
+      });
+    } finally {
+      closedApplication.close();
+      rmSync(closedDirectory, { recursive: true, force: true });
+    }
+  });
+
   test("rolls back every registration write when household creation fails", async () => {
     application.db.$client.exec(`
       CREATE TRIGGER fail_registration_household
@@ -139,6 +172,45 @@ describe("BetterWealth API", () => {
     expect(document.paths).toHaveProperty("/reports/net-worth");
     expect(document.paths).toHaveProperty("/assets/{id}/valuations");
     expect(document.components.securitySchemes).toHaveProperty("sessionCookie");
+  });
+
+  test("rejects malformed JSON with a 400 contract error instead of a 500", async () => {
+    const response = await application.app.request("/api/v1/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://localhost:5173" },
+      body: "{not json",
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: { code: "invalid_json", message: "The request body is not valid JSON" },
+    });
+  });
+
+  test("rejects oversized bodies with a 413 contract error instead of a 500", async () => {
+    const response = await application.app.request("/api/v1/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://localhost:5173" },
+      body: `{"email":"${"a".repeat(3 * 1024 * 1024)}@example.com","password":"irrelevant-123"}`,
+    });
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({
+      error: { code: "payload_too_large", message: "The request body exceeds the size limit" },
+    });
+  });
+
+  test("gives import uploads the larger per-route body budget", async () => {
+    // 3 MB exceeds the default 2 MB cap but is within the import budget, so
+    // the request reaches authentication instead of dying at the body limit.
+    const response = await application.app.request("/api/v1/imports/transactions", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://localhost:5173" },
+      body: JSON.stringify({
+        accountId: "a".repeat(3 * 1024 * 1024),
+        filename: "big.csv",
+        content: "x",
+      }),
+    });
+    expect(response.status).toBe(401);
   });
 
   test("auth, CSRF, ledger creation, and household isolation work together", async () => {

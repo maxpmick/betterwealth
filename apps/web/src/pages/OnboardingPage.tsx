@@ -32,8 +32,10 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, type DashboardReport, type Money } from "../api";
+import { api, type Money } from "../api";
 import { Stack, TextField, Typography } from "../components/mui";
+import { demoDashboard } from "../demoApi";
+import { formatMoneyExact } from "../lib/money";
 
 const steps = ["Start", "Your target", "Cash flow", "Ready"];
 type SourceChoice = "simplefin" | "manual" | "demo";
@@ -57,30 +59,6 @@ interface ManualAccountForm {
   name: string;
   openingBalance: string;
 }
-
-const demoDashboard: DashboardReport = {
-  safeToSpend: { minorUnits: "61200", currency: "USD" },
-  safePerDay: { minorUnits: "4371", currency: "USD" },
-  coveredThrough: "2026-07-30",
-  coveredThroughSource: "income_source",
-  availableCash: { minorUnits: "300000", currency: "USD" },
-  reservedBills: { minorUnits: "84800", currency: "USD" },
-  envelopeCommitments: { minorUnits: "34000", currency: "USD" },
-  goalContributions: { minorUnits: "20000", currency: "USD" },
-  minimumBuffer: { minorUnits: "100000", currency: "USD" },
-  projectedLiquidNetWorth: { minorUnits: "22340000", currency: "USD" },
-  targetLiquidNetWorth: { minorUnits: "22500000", currency: "USD" },
-  targetAge: 30,
-  projectionSource: "forecast",
-  savingsRate: 24.6,
-  trust: {
-    state: "ready",
-    asOf: "2026-07-16T10:42:00.000Z",
-    pendingImpact: { minorUnits: "-4816", currency: "USD" },
-    missingInputs: [],
-    confidenceLabel: "Demo fixture",
-  },
-};
 
 function isoDateOffset(days: number) {
   const value = new Date();
@@ -114,12 +92,7 @@ function ageOnDate(birthDate: string, onDate = new Date()) {
 }
 
 function formatMoney(value: Money) {
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency: value.currency,
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Number(value.minorUnits) / 100);
+  return formatMoneyExact(value.minorUnits, value.currency);
 }
 
 function formatDate(value: string) {

@@ -114,7 +114,14 @@ export function parseOfxTransactions(input: string): ImportedTransaction[] {
     if (!match)
       throw new AppError(`OFX transaction ${index + 1} has an invalid date`, 400, "invalid_import");
     const [, year, month, day, hour = "00", minute = "00", second = "00"] = match;
-    const postedAt = new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}Z`).toISOString();
+    const posted = new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}Z`);
+    // Shape alone is not enough: month 13 or day 45 matches the regex but
+    // produces an invalid Date, which must fail closed like every other
+    // parser rejection instead of surfacing as a 500.
+    if (Number.isNaN(posted.getTime())) {
+      throw new AppError(`OFX transaction ${index + 1} has an invalid date`, 400, "invalid_import");
+    }
+    const postedAt = posted.toISOString();
     if (!/^-?\d+(?:\.\d+)?$/.test(amount)) {
       throw new AppError(
         `OFX transaction ${index + 1} has an invalid amount`,

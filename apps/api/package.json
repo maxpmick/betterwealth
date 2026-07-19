@@ -18,7 +18,6 @@
     "@betterwealth/db": "workspace:*",
     "@betterwealth/shared": "workspace:*",
     "@betterwealth/testkit": "workspace:*",
-    "@hono/zod-openapi": "latest",
     "drizzle-orm": "latest",
     "hono": "latest",
     "ulid": "latest",

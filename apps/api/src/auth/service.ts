@@ -29,6 +29,8 @@ export type AuthContext = {
   sessionId: string;
   csrfTokenHash: string;
   absoluteExpiresAt: string;
+  /** Present only for personal-access-token auth; cookie sessions are full-scope. */
+  tokenScopes?: string[];
 };
 
 const DEFAULT_CATEGORIES = STARTER_CATEGORIES.map(
@@ -61,9 +63,6 @@ export async function registerUser(
   inputValue: unknown,
   config: AppConfig,
 ): Promise<{ userId: string; householdId: string }> {
-  if (config.REGISTRATION_MODE !== "open") {
-    throw new ForbiddenError("Public registration is not enabled");
-  }
   const input = registerSchema.parse(inputValue);
   const normalizedEmail = normalizeEmail(input.email);
   const existing = await db

@@ -276,7 +276,13 @@ describe("per-user integration settings", () => {
     const toggled = await application.app.request("/api/v1/settings/integrations", {
       method: "PATCH",
       headers: mutationHeaders,
-      body: JSON.stringify({ ai: { enabled: true, model: "test/third" } }),
+      body: JSON.stringify({
+        ai: {
+          enabled: true,
+          model: "test/third",
+          consentedFields: ["normalized_description", "direction", "coarse_amount"],
+        },
+      }),
     });
     expect(toggled.status).toBe(200);
     const afterToggle = await application.app.request("/api/v1/settings/integrations/ai", {
@@ -287,6 +293,61 @@ describe("per-user integration settings", () => {
       model: "test/third",
       webResearchEnabled: true,
     });
+  });
+
+  test("refuses to enable AI without explicit consent fields or a user-configured key", async () => {
+    const owner = await authenticatedOwner(
+      application,
+      "consent-explicit@example.com",
+      "ConsentExplicit!2026",
+    );
+
+    // No key configured at all: even with consent fields there is nothing to enable.
+    const noKey = await application.app.request("/api/v1/settings/integrations", {
+      method: "PATCH",
+      headers: owner.headers,
+      body: JSON.stringify({
+        ai: { enabled: true, consentedFields: ["normalized_description"] },
+      }),
+    });
+    expect(noKey.status).toBe(404);
+
+    const configured = await application.app.request("/api/v1/settings/integrations/ai", {
+      method: "PUT",
+      headers: owner.headers,
+      body: JSON.stringify({
+        enabled: false,
+        consent: true,
+        baseUrl: "https://openrouter.ai/api/v1",
+        model: "test/consent",
+        apiKey: "sk-test-consent-explicit",
+        confidenceThreshold: 0.9,
+        webResearchEnabled: false,
+      }),
+    });
+    expect(configured.status).toBe(200);
+
+    // Key configured, but enabling without the explicit field list fails closed.
+    const noConsent = await application.app.request("/api/v1/settings/integrations", {
+      method: "PATCH",
+      headers: owner.headers,
+      body: JSON.stringify({ ai: { enabled: true } }),
+    });
+    expect(noConsent.status).toBe(400);
+    expect(await noConsent.json()).toMatchObject({ error: { code: "ai_consent_required" } });
+    const stillDisabled = await application.app.request("/api/v1/settings/integrations/ai", {
+      headers: owner.headers,
+    });
+    expect(await stillDisabled.json()).toMatchObject({ enabled: false });
+
+    const enabled = await application.app.request("/api/v1/settings/integrations", {
+      method: "PATCH",
+      headers: owner.headers,
+      body: JSON.stringify({
+        ai: { enabled: true, consentedFields: ["normalized_description", "coarse_amount"] },
+      }),
+    });
+    expect(enabled.status).toBe(200);
   });
 
   test("regenerates the same pending suggestion from bounded feedback with full category paths", async () => {
@@ -577,6 +638,92 @@ describe("per-user integration settings", () => {
     expect(regenerationInputs).toHaveLength(0);
   });
 
+  test("does not disclose another user's transaction for on-demand suggestions", async () => {
+    const owner = await authenticatedOwner(
+      application,
+      "ondemand@example.com",
+      "OnDemandStrong!2026",
+    );
+    const otherRegistration = await application.app.request("/api/v1/auth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://localhost:5173" },
+      body: JSON.stringify({
+        email: "ondemand-other@example.com",
+        password: "OnDemandOther!2026",
+        householdName: "Other plan",
+      }),
+    });
+    const other = (await otherRegistration.json()) as { userId: string };
+    const category = await application.db
+      .select({ id: categories.id })
+      .from(categories)
+      .where(eq(categories.householdId, owner.householdId))
+      .then((rows) => rows[0]);
+    if (!category) throw new Error("Expected default categories");
+    const fixture = await insertAiSuggestion(application, {
+      householdId: owner.householdId,
+      ownerUserId: other.userId,
+      categoryId: category.id,
+    });
+    const configured = await application.app.request("/api/v1/settings/integrations/ai", {
+      method: "PUT",
+      headers: owner.headers,
+      body: JSON.stringify({
+        enabled: true,
+        consent: true,
+        baseUrl: "https://openrouter.ai/api/v1",
+        model: "test/on-demand",
+        apiKey: "sk-test-on-demand-scope",
+        confidenceThreshold: 0.9,
+        webResearchEnabled: false,
+      }),
+    });
+    expect(configured.status).toBe(200);
+
+    // The requester has AI configured and consenting, but the transaction belongs
+    // to a different account owner, so the route fails closed with a 404.
+    const foreign = await application.app.request(
+      `/api/v1/ai/suggestions/transactions/${fixture.transactionId}`,
+      { method: "POST", headers: owner.headers },
+    );
+    expect(foreign.status).toBe(404);
+
+    const accountId = ulid();
+    const ownTransactionId = ulid();
+    await application.db.insert(accounts).values({
+      id: accountId,
+      householdId: owner.householdId,
+      ownerUserId: null,
+      name: "Ownerless household account",
+      group: "cash",
+      type: "checking",
+      currency: "USD",
+      isLiability: false,
+      isManual: true,
+    });
+    await application.db.insert(transactions).values({
+      id: ownTransactionId,
+      householdId: owner.householdId,
+      accountId,
+      amount: -1_000n,
+      currency: "USD",
+      transactedOn: "2026-07-16",
+      rawDescription: "SHARED ACCOUNT PURCHASE",
+      normalizedDescription: "SHARED ACCOUNT PURCHASE",
+      status: "posted",
+      source: "manual",
+      reviewState: "needs_review",
+    });
+
+    // Ownerless/shared accounts fail closed too — the batch path applies the
+    // same rule because there is no household-wide disclosure consent yet.
+    const ownerless = await application.app.request(
+      `/api/v1/ai/suggestions/transactions/${ownTransactionId}`,
+      { method: "POST", headers: owner.headers },
+    );
+    expect(ownerless.status).toBe(404);
+  });
+
   test("queues active and degraded SimpleFIN connections while excluding blocked states", async () => {
     const registration = await application.app.request("/api/v1/auth/register", {
       method: "POST",
@@ -637,15 +784,14 @@ describe("per-user integration settings", () => {
     const first = await sync();
     expect(first.status).toBe(202);
     const firstBody = (await first.json()) as {
-      syncRunId: string;
       syncRunIds: string[];
       state: string;
     };
     expect(firstBody.syncRunIds).toHaveLength(2);
-    expect(firstBody.syncRunIds).toContain(firstBody.syncRunId);
     expect(firstBody.state).toBe("queued");
     const queued = await application.db.select().from(jobs);
     expect(queued).toHaveLength(2);
+    expect(new Set(queued.map((job) => job.id))).toEqual(new Set(firstBody.syncRunIds));
     expect(
       new Set(queued.map((job) => (job.payload as { connectionId: string }).connectionId)),
     ).toEqual(new Set(retryableConnectionIds));

@@ -10,5 +10,12 @@ export default defineConfig({
     maxWorkers: 1,
     restoreMocks: true,
     testTimeout: 10_000,
+    server: {
+      deps: {
+        // zod v4's namespace re-export (`export { z }`) loses its named exports
+        // when externalized under the Bun runtime; inline it so Vite transforms it.
+        inline: ["zod"],
+      },
+    },
   },
 });

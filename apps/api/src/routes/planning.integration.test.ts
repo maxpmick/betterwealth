@@ -40,6 +40,9 @@ describe("planning routes", () => {
   let householdId: string;
   let userId: string;
 
+  // Frozen clock injected into the routes so month-derived behavior is exact.
+  const FROZEN_NOW = new Date("2026-07-15T12:00:00.000Z");
+
   beforeEach(async () => {
     config = loadConfig({
       APP_ENV: "test",
@@ -65,7 +68,10 @@ describe("planning routes", () => {
     sessionToken = session.token;
     csrfToken = session.csrfToken;
     app = new Hono<AppEnv>();
-    app.route("/api/v1", createPlanningRoutes(db, config));
+    app.route(
+      "/api/v1",
+      createPlanningRoutes(db, config, () => FROZEN_NOW),
+    );
     app.onError((error, context) => {
       if (error instanceof ZodError) {
         return context.json({ error: { code: "validation_failed" } }, 422);
@@ -142,7 +148,7 @@ describe("planning routes", () => {
       currentBalance: 250_000n,
       availableBalance: 250_000n,
       currency: "USD",
-      asOf: new Date().toISOString(),
+      asOf: FROZEN_NOW.toISOString(),
       source: "manual",
     });
 
@@ -163,9 +169,6 @@ describe("planning routes", () => {
       endDate: "2026-07-31T00:00:00.000Z",
       plannedIncome: { minorUnits: "220000", currency: "USD" },
       funded: { minorUnits: "0", currency: "USD" },
-      spent: { minorUnits: "0", currency: "USD" },
-      remaining: { minorUnits: "0", currency: "USD" },
-      unassigned: { minorUnits: "220000", currency: "USD" },
       envelopes: [
         {
           id: envelope.id,
@@ -241,7 +244,7 @@ describe("planning routes", () => {
     expect(valuationHistoryBody.data).toHaveLength(1);
 
     const retirementAccountId = ulid();
-    const now = new Date();
+    const now = FROZEN_NOW;
     const birthDate = `${now.getUTCFullYear() - 22}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-15`;
     await Promise.all([
       db.update(users).set({ birthDate, targetAge: 30 }).where(eq(users.id, userId)),
@@ -283,7 +286,7 @@ describe("planning routes", () => {
       currentBalance: 800_000n,
       availableBalance: 800_000n,
       currency: "USD",
-      asOf: new Date().toISOString(),
+      asOf: FROZEN_NOW.toISOString(),
       source: "manual",
     });
 

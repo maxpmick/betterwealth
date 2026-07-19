@@ -93,7 +93,7 @@ sudo journalctl -u betterwealth-bootstrap.service --no-pager -n 100
 
 Do not rerun a consumed SimpleFIN setup token. Bootstrap stores the resulting access URL so a later run can retry sync without reclaiming the token.
 
-Immediately clear `BOOTSTRAP_USER_PASSWORD`, `BOOTSTRAP_SIMPLEFIN_SETUP_TOKEN`, and `BOOTSTRAP_OPENROUTER_API_KEY` from `/etc/betterwealth.env`. The long-running API and backup units explicitly unset these variables as defense in depth. Keep registration closed unless you intentionally invite another user.
+Immediately clear `BOOTSTRAP_USER_PASSWORD`, `BOOTSTRAP_SIMPLEFIN_SETUP_TOKEN`, and `BOOTSTRAP_OPENROUTER_API_KEY` from `/etc/betterwealth.env`. The long-running API and backup units explicitly unset these variables as defense in depth. Keep registration closed unless you intentionally let another household member register; set `REGISTRATION_MODE=open` temporarily in that case, then close it again. Bootstrap itself is operator tooling and runs with registration closed.
 
 ### Lost-password recovery
 

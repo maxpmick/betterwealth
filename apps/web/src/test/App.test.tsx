@@ -31,11 +31,7 @@ function installMatchMedia(width: number) {
   });
 }
 
-function renderApp(
-  path: string,
-  width = 1280,
-  registrationMode: "open" | "invite" | "closed" = "open",
-) {
+function renderApp(path: string, width = 1280, registrationMode: "open" | "closed" = "open") {
   installMatchMedia(width);
   window.sessionStorage.setItem("bw-demo", "true");
   vi.stubGlobal(
@@ -85,7 +81,9 @@ describe("BetterWealth routing and shell", () => {
     const desktop = await screen.findByRole("navigation", { name: /primary navigation/i });
     await user.click(within(desktop).getByRole("link", { name: /transactions/i }));
 
-    expect(screen.getByRole("heading", { level: 1, name: "Transactions" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Transactions" }),
+    ).toBeInTheDocument();
   });
 
   it("routes global search commands into their concrete page state", async () => {

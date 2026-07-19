@@ -25,6 +25,7 @@ import { format } from "date-fns";
 import type { ReactNode } from "react";
 import type { TrustState } from "../api";
 import { usePrivacy } from "../contexts";
+import { fractionDigitsFor } from "../lib/money";
 import { Stack, Typography } from "./mui";
 
 export function formatMoney(value: number, currency = "USD", compact = false) {
@@ -32,7 +33,8 @@ export function formatMoney(value: number, currency = "USD", compact = false) {
     style: "currency",
     currency,
     notation: compact ? "compact" : "standard",
-    maximumFractionDigits: compact ? 1 : Number.isInteger(value) ? 0 : 2,
+    maximumFractionDigits: compact ? 1 : fractionDigitsFor(currency),
+    minimumFractionDigits: compact ? 0 : Number.isInteger(value) ? 0 : undefined,
   }).format(value);
 }
 

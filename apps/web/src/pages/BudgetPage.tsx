@@ -39,18 +39,13 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Link as RouterLink, useSearchParams } from "react-router-dom";
-import {
-  type ApiBudget,
-  type ApiEnvelope,
-  api,
-  type CursorPage,
-  type Money as TransportMoney,
-} from "../api";
+import { type ApiBudget, type ApiEnvelope, api, type Money as TransportMoney } from "../api";
 import { Stack, TextField, Typography } from "../components/mui";
 import { PlanFlowCard } from "../components/PlanFlowCard";
 import {
   EmptyState,
   ErrorState,
+  formatMoney,
   LoadingCard,
   MetricCard,
   Money,
@@ -59,15 +54,12 @@ import {
   SectionHeader,
   StatusChip,
 } from "../components/ui";
-import { envelopes as demoEnvelopeData } from "../data";
 import { isDemoMode } from "../demo";
+import { demoBudgets } from "../demoApi";
+import { formatMoneyExact, minorToMajor } from "../lib/money";
 
 function transportMoneyFromMinor(minorUnits: bigint, currency = "USD"): TransportMoney {
   return { minorUnits: minorUnits.toString(), currency };
-}
-
-function transportMoney(value: number) {
-  return transportMoneyFromMinor(BigInt(Math.round(value * 100)));
 }
 
 function minor(value: TransportMoney | undefined) {
@@ -75,7 +67,7 @@ function minor(value: TransportMoney | undefined) {
 }
 
 function dollars(value: TransportMoney | undefined) {
-  return Number(minor(value)) / 100;
+  return minorToMajor(value?.minorUnits ?? "0", value?.currency ?? "USD");
 }
 
 function parseDollars(value: string): bigint | null {
@@ -98,47 +90,6 @@ function percent(numerator: bigint, denominator: bigint) {
   if (denominator <= 0n) return 0;
   return Math.min(999, Number((numerator * 100n) / denominator));
 }
-
-const demoBudget: ApiBudget = {
-  id: "budget_demo",
-  periodKind: "pay_cycle",
-  startDate: "2026-07-16",
-  endDate: "2026-07-30",
-  plannedIncome: transportMoney(2_200),
-  funded: transportMoney(2_050),
-  spent: transportMoney(121.73),
-  remaining: transportMoney(1_928.27),
-  unassigned: transportMoney(150),
-  totalPlanned: transportMoney(2_050),
-  surplus: transportMoney(150),
-  status: "open",
-  envelopes: demoEnvelopeData.map((envelope, index) => ({
-    id: `env_demo_${index}`,
-    name: envelope.name,
-    planned: transportMoney(envelope.planned),
-    funded: transportMoney(envelope.funded),
-    activity: transportMoney(-Math.abs(envelope.activity)),
-    available: transportMoney(envelope.available),
-    cadence: envelope.cadence,
-    pacing: envelope.pacing === "on-track" ? "on_track" : envelope.pacing,
-    rolloverPolicy: "none",
-    transferredIn: transportMoney(0),
-    transferredOut: transportMoney(0),
-    parentId: null,
-    categoryId: null,
-    categoryIds: [],
-    priority: 100 - index * 10,
-    minimumAmount: transportMoney(envelope.planned),
-    targetAmount: transportMoney(envelope.planned),
-    isRequired: index < 3,
-    isActive: true,
-  })),
-};
-
-const demoBudgets: CursorPage<ApiBudget> = {
-  data: [demoBudget],
-  page: { cursor: null, hasMore: false },
-};
 
 const planColors = ["#1F3A5F", "#4A7FD1", "#1F9D72", "#5BA98B", "#8B6CCF", "#D98B2B", "#DD625B"];
 
@@ -263,7 +214,10 @@ function EnvelopeCard({
                   color: available < 0n ? "error.main" : "text.primary",
                 }}
               >
-                <Money value={Number(available) / 100} />
+                <Money
+                  value={minorToMajor(available, envelope.available.currency)}
+                  currency={envelope.available.currency}
+                />
               </Typography>
             </Box>
             <StatusChip
@@ -286,10 +240,18 @@ function EnvelopeCard({
           />
           <Stack direction="row" justifyContent="space-between" sx={{ mt: 2 }}>
             <Typography variant="caption" color="text.secondary">
-              <Money value={Number(spent) / 100} /> spent
+              <Money
+                value={minorToMajor(spent, envelope.activity.currency)}
+                currency={envelope.activity.currency}
+              />{" "}
+              spent
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              <Money value={Number(funded) / 100} /> funded
+              <Money
+                value={minorToMajor(funded, envelope.funded.currency)}
+                currency={envelope.funded.currency}
+              />{" "}
+              funded
             </Typography>
           </Stack>
         </Box>
@@ -302,7 +264,11 @@ function EnvelopeCard({
             onClick={onCover}
             sx={{ mt: 4 }}
           >
-            Cover <Money value={Number(-available) / 100} />
+            Cover{" "}
+            <Money
+              value={minorToMajor(-available, envelope.available.currency)}
+              currency={envelope.available.currency}
+            />
           </Button>
         ) : null}
       </CardContent>
@@ -375,7 +341,7 @@ function FundingPlan({ budget, onEdit }: { budget: ApiBudget; onEdit: () => void
                 </Typography>
               </Box>
               <Typography variant="body2" fontWeight={750}>
-                <Money value={dollars(item.planned)} />
+                <Money value={dollars(item.planned)} currency={item.planned.currency} />
               </Typography>
             </Stack>
           ))}
@@ -386,7 +352,12 @@ function FundingPlan({ budget, onEdit }: { budget: ApiBudget; onEdit: () => void
             Plan total
           </Typography>
           <Typography variant="body2" fontWeight={750}>
-            <Money value={Number(total) / 100} /> of <Money value={dollars(budget.plannedIncome)} />{" "}
+            <Money
+              value={minorToMajor(total, budget.plannedIncome.currency)}
+              currency={budget.plannedIncome.currency}
+            />{" "}
+            of{" "}
+            <Money value={dollars(budget.plannedIncome)} currency={budget.plannedIncome.currency} />{" "}
             expected
           </Typography>
         </Stack>
@@ -663,7 +634,7 @@ export function BudgetPage() {
         periodKind: apiView,
         startDate: start,
         endDate: end,
-        plannedIncome: transportMoney(0),
+        plannedIncome: transportMoneyFromMinor(0n),
         envelopes: [],
       });
     },
@@ -724,6 +695,7 @@ export function BudgetPage() {
     : minor(budget.plannedIncome) - totalPlanned;
   const funded = minor(budget.funded);
   const spent = minor(budget.spent);
+  const budgetCurrency = budget.plannedIncome.currency;
   const daysLeft = Math.max(
     0,
     Math.ceil(
@@ -785,7 +757,7 @@ export function BudgetPage() {
           {
             id: "income",
             label: "Income",
-            value: <Money value={dollars(budget.plannedIncome)} />,
+            value: <Money value={dollars(budget.plannedIncome)} currency={budgetCurrency} />,
             detail: `${periodName} expected take-home available to assign`,
             icon: <AccountBalanceWalletRounded />,
             to: "/budget",
@@ -796,7 +768,12 @@ export function BudgetPage() {
           {
             id: "required",
             label: "Protect",
-            value: <Money value={Number(requiredPlanned) / 100} />,
+            value: (
+              <Money
+                value={minorToMajor(requiredPlanned, budgetCurrency)}
+                currency={budgetCurrency}
+              />
+            ),
             detail: `${activeEnvelopes.filter((envelope) => envelope.isRequired).length} required envelope${activeEnvelopes.filter((envelope) => envelope.isRequired).length === 1 ? "" : "s"} fund before optional spending`,
             icon: <CalendarMonthRounded />,
             to: "/budget",
@@ -807,7 +784,12 @@ export function BudgetPage() {
           {
             id: "flexible",
             label: "Live",
-            value: <Money value={Number(flexiblePlanned) / 100} />,
+            value: (
+              <Money
+                value={minorToMajor(flexiblePlanned, budgetCurrency)}
+                currency={budgetCurrency}
+              />
+            ),
             detail: `${activeEnvelopes.filter((envelope) => !envelope.isRequired).length} flexible envelope${activeEnvelopes.filter((envelope) => !envelope.isRequired).length === 1 ? "" : "s"} define the lifestyle ceiling`,
             icon: <PaymentsRounded />,
             to: "/budget",
@@ -818,7 +800,12 @@ export function BudgetPage() {
           {
             id: "surplus",
             label: "Build wealth",
-            value: <Money value={Number(surplus < 0n ? -surplus : surplus) / 100} />,
+            value: (
+              <Money
+                value={minorToMajor(surplus < 0n ? -surplus : surplus, budgetCurrency)}
+                currency={budgetCurrency}
+              />
+            ),
             detail:
               surplus >= 0n
                 ? "Still free after every planned envelope; assign it intentionally."
@@ -861,27 +848,34 @@ export function BudgetPage() {
       >
         <MetricCard
           label="Funded"
-          value={<Money value={Number(funded) / 100} />}
+          value={<Money value={minorToMajor(funded, budgetCurrency)} currency={budgetCurrency} />}
           helper={`${percent(funded, totalPlanned)}% of plan`}
         />
         <MetricCard
           label="Spent"
-          value={<Money value={Number(spent) / 100} />}
+          value={<Money value={minorToMajor(spent, budgetCurrency)} currency={budgetCurrency} />}
           helper={`${percent(spent, funded)}% of funded`}
         />
         <MetricCard
           label="Remaining"
-          value={<Money value={dollars(budget.remaining)} />}
+          value={<Money value={dollars(budget.remaining)} currency={budget.remaining?.currency} />}
           helper={`Through ${dateLabel(budget.endDate)}`}
         />
         <MetricCard
           label="Unassigned"
-          value={<Money value={dollars(budget.unassigned)} />}
+          value={
+            <Money value={dollars(budget.unassigned)} currency={budget.unassigned?.currency} />
+          }
           helper="Available to fund or move"
         />
         <MetricCard
           label={surplus >= 0n ? "Plan surplus" : "Plan gap"}
-          value={<Money value={Number(surplus < 0n ? -surplus : surplus) / 100} />}
+          value={
+            <Money
+              value={minorToMajor(surplus < 0n ? -surplus : surplus, budgetCurrency)}
+              currency={budgetCurrency}
+            />
+          }
           helper={`${daysLeft} day${daysLeft === 1 ? "" : "s"} left`}
         />
       </Box>
@@ -897,8 +891,9 @@ export function BudgetPage() {
         >
           <strong>
             {overages.length === 1 ? overages[0]!.name : `${overages.length} envelopes`}{" "}
-            {overages.length === 1 ? "is" : "are"} <Money value={Number(totalOverage) / 100} /> over
-            available funding.
+            {overages.length === 1 ? "is" : "are"}{" "}
+            <Money value={minorToMajor(totalOverage, budgetCurrency)} currency={budgetCurrency} />{" "}
+            over available funding.
           </strong>{" "}
           Move only money that is actually unassigned or available elsewhere.
         </Alert>
@@ -1046,14 +1041,21 @@ export function BudgetPage() {
                 <Typography variant="body2">{selectedOverage?.name} after transfer</Typography>
                 <Typography variant="body2" fontWeight={750}>
                   <Money
-                    value={Number(minor(selectedOverage?.available) + (coverMinor ?? 0n)) / 100}
+                    value={minorToMajor(
+                      minor(selectedOverage?.available) + (coverMinor ?? 0n),
+                      budgetCurrency,
+                    )}
+                    currency={budgetCurrency}
                   />
                 </Typography>
               </Stack>
               <Stack direction="row" justifyContent="space-between" sx={{ mt: 2 }}>
                 <Typography variant="body2">Source after transfer</Typography>
                 <Typography variant="body2" fontWeight={750}>
-                  <Money value={Number(sourceAvailable - (coverMinor ?? 0n)) / 100} />
+                  <Money
+                    value={minorToMajor(sourceAvailable - (coverMinor ?? 0n), budgetCurrency)}
+                    currency={budgetCurrency}
+                  />
                 </Typography>
               </Stack>
             </Box>
@@ -1074,7 +1076,11 @@ export function BudgetPage() {
           >
             {allocation.isPending
               ? "Transferring…"
-              : `Transfer ${coverAmount ? `$${coverAmount}` : ""}`}
+              : `Transfer ${
+                  coverMinor !== null
+                    ? formatMoney(minorToMajor(coverMinor, budgetCurrency), budgetCurrency)
+                    : ""
+                }`}
           </Button>
         </DialogActions>
       </Dialog>
@@ -1090,7 +1096,10 @@ export function BudgetPage() {
             <Stack direction="row" justifyContent="space-between">
               <Typography variant="body2">Funding source</Typography>
               <Typography variant="h3">
-                <Money value={Number(fundingAmount) / 100} />
+                <Money
+                  value={minorToMajor(fundingAmount, budgetCurrency)}
+                  currency={budgetCurrency}
+                />
               </Typography>
             </Stack>
             <Slider
@@ -1118,7 +1127,10 @@ export function BudgetPage() {
                     <Typography variant="body2">{envelope.name}</Typography>
                   </Stack>
                   <Typography variant="body2" fontWeight={700}>
-                    <Money value={Number(assigned) / 100} />
+                    <Money
+                      value={minorToMajor(assigned, budgetCurrency)}
+                      currency={budgetCurrency}
+                    />
                   </Typography>
                 </Stack>
               ))}
@@ -1127,13 +1139,19 @@ export function BudgetPage() {
             <Stack direction="row" justifyContent="space-between">
               <Typography variant="body2">Assigned to envelopes</Typography>
               <Typography variant="body2" fontWeight={750}>
-                <Money value={Number(previewAssigned) / 100} />
+                <Money
+                  value={minorToMajor(previewAssigned, budgetCurrency)}
+                  currency={budgetCurrency}
+                />
               </Typography>
             </Stack>
             <Stack direction="row" justifyContent="space-between" sx={{ mt: 1 }}>
               <Typography variant="body2">Left unassigned</Typography>
               <Typography variant="body2" fontWeight={750}>
-                <Money value={Number(fundingAmount - previewAssigned) / 100} />
+                <Money
+                  value={minorToMajor(fundingAmount - previewAssigned, budgetCurrency)}
+                  currency={budgetCurrency}
+                />
               </Typography>
             </Stack>
           </Box>
@@ -1347,7 +1365,7 @@ export function BudgetPage() {
                         helperText={
                           converted === null
                             ? "Enter dollars"
-                            : `${new Intl.NumberFormat(undefined, { style: "currency", currency: budget.plannedIncome.currency }).format(Number(converted) / 100)} per paycheck`
+                            : `${formatMoneyExact(converted, budget.plannedIncome.currency)} per paycheck`
                         }
                         sx={{ flex: 1 }}
                       />

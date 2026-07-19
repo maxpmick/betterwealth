@@ -8,6 +8,7 @@ import {
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
+import { HTTPException } from "hono/http-exception";
 import { requestId } from "hono/request-id";
 import { secureHeaders } from "hono/secure-headers";
 import { ZodError } from "zod";
@@ -32,6 +33,8 @@ export interface BetterWealthApplication {
 
 export interface BetterWealthApplicationDependencies {
   integrations?: IntegrationRouteDependencies;
+  /** Injectable clock for deterministic tests; defaults to the wall clock. */
+  now?: () => Date;
 }
 
 const documentedOperations = [
@@ -43,6 +46,9 @@ const documentedOperations = [
   ["GET", "/auth/sessions", "List active sessions"],
   ["DELETE", "/auth/sessions/{id}", "Revoke an active session"],
   ["POST", "/auth/logout", "End the current session"],
+  ["GET", "/auth/tokens", "List personal access tokens"],
+  ["POST", "/auth/tokens", "Create a personal access token"],
+  ["DELETE", "/auth/tokens/{id}", "Revoke a personal access token"],
   ["GET", "/profile", "Read user and household profile"],
   ["PATCH", "/profile", "Update user and household profile"],
   ["POST", "/profile/password", "Change the account password"],
@@ -95,6 +101,7 @@ const documentedOperations = [
     "Convert an approximate monthly plan into exact paycheck funding",
   ],
   ["POST", "/allocations", "Move money between envelope allocations"],
+  ["POST", "/budgets/{id}/build-from-monthly-spend", "Build envelopes from monthly spend"],
   ["GET", "/bills", "List planned bills"],
   ["POST", "/bills", "Create a planned bill"],
   ["PATCH", "/bills/{id}", "Update a planned bill"],
@@ -166,13 +173,64 @@ function openApiPaths() {
     const pathOperations = paths[path] ?? {};
     pathOperations[method.toLowerCase()] = {
       summary,
-      ...(isPublic ? { security: [] } : { security: [{ sessionCookie: [] }] }),
+      ...(isPublic ? { security: [] } : { security: [{ sessionCookie: [] }, { bearerToken: [] }] }),
       ...(parameters.length ? { parameters } : {}),
       responses: {
         "200": { description: "Successful response" },
-        "400": { description: "Invalid request" },
-        "401": { description: "Authentication required" },
-        "422": { description: "Validation failed" },
+        "400": {
+          description: "Malformed request (bad JSON, oversized body, or unsupported input shape)",
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/Error" } },
+          },
+        },
+        "401": {
+          description: "Authentication required",
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/Error" } },
+          },
+        },
+        "403": {
+          description: "Forbidden (origin, CSRF, or role check failed)",
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/Error" } },
+          },
+        },
+        "404": {
+          description: "Resource not found",
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/Error" } },
+          },
+        },
+        "409": {
+          description: "Conflict with current state",
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/Error" } },
+          },
+        },
+        "413": {
+          description: "Request body exceeds the size limit",
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/Error" } },
+          },
+        },
+        "415": {
+          description: "Unsupported media type (JSON required)",
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/Error" } },
+          },
+        },
+        "422": {
+          description: "Validation failed (schema or domain rule)",
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/Error" } },
+          },
+        },
+        "429": {
+          description: "Rate limit exceeded",
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/Error" } },
+          },
+        },
       },
     };
     paths[path] = pathOperations;
@@ -219,13 +277,25 @@ export function createApp(
       crossOriginResourcePolicy: "same-site",
       referrerPolicy: "no-referrer",
       strictTransportSecurity: config.isProduction ? "max-age=31536000; includeSubDomains" : false,
+      contentSecurityPolicy: {
+        // JSON-only API: no scripts, no framing, no subresources.
+        defaultSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+        baseUri: ["'none'"],
+      },
     }),
   );
   app.use(
     "/api/*",
     cors({
       origin: (origin) => (isTrustedWebOrigin(config, origin) ? origin : undefined),
-      allowHeaders: ["Content-Type", "X-CSRF-Token", "Idempotency-Key"],
+      allowHeaders: [
+        "Content-Type",
+        "X-CSRF-Token",
+        "Idempotency-Key",
+        "Authorization",
+        "X-BetterWealth-Household",
+      ],
       allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
       exposeHeaders: ["X-Request-Id", "RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset"],
       credentials: true,
@@ -236,7 +306,16 @@ export function createApp(
     await next();
     context.header("Cache-Control", "no-store");
   });
-  app.use("/api/*", bodyLimit({ maxSize: 2 * 1024 * 1024 }));
+  const defaultBodyLimit = 2 * 1024 * 1024;
+  const importBodyLimit = 12 * 1024 * 1024;
+  app.use("/api/*", async (context, next) => {
+    // Imports carry whole CSV/OFX files inside the JSON body and get a larger
+    // budget; everything else stays at the default cap.
+    const maxSize = context.req.path.startsWith("/api/v1/imports/")
+      ? importBodyLimit
+      : defaultBodyLimit;
+    return bodyLimit({ maxSize })(context, next);
+  });
   app.use(
     "/api/v1/auth/login",
     rateLimit({
@@ -269,12 +348,17 @@ export function createApp(
     app.use(path, rateLimit({ limit, windowMs, keyPrefix, trustProxy: config.TRUST_PROXY }));
   }
 
-  const health = () => ({
-    status: "ok" as const,
-    version: "0.1.0",
-    time: new Date().toISOString(),
-    database: "ready" as const,
-  });
+  const health = () => {
+    // Probe the database rather than reporting a hardcoded ready — a readiness
+    // check that cannot see a broken database is worse than none.
+    const row = db.$client.query<{ one: number }, []>("SELECT 1 AS one").get();
+    return {
+      status: "ok" as const,
+      version: "0.1.0",
+      time: new Date().toISOString(),
+      database: row?.one === 1 ? ("ready" as const) : ("error" as const),
+    };
+  };
   app.get("/health", (context) => context.json(health()));
   app.get("/api/v1/health", (context) => context.json(health()));
   app.get("/api/v1/capabilities", (context) =>
@@ -293,13 +377,25 @@ export function createApp(
         title: "BetterWealth API",
         version: "0.1.0",
         description:
-          "A household-scoped personal finance API for ledger, planning, budgeting, and wealth forecasting. Money uses signed base-10 minor-unit strings.",
+          "A household-scoped personal finance API for ledger, planning, budgeting, and wealth forecasting. Money uses signed base-10 minor-unit strings. Enum values are the frozen v1 vocabulary: display-oriented aliases over internal enums (e.g. account group 'custom' for rewards, transaction reviewState 'approved' for reviewed, connection status 'healthy' for active, rule origin 'approved_ai' for ai, budget period status 'planned' for draft) are part of the contract and will not be renamed in v1.",
       },
       servers: [{ url: "/api/v1" }],
       paths: openApiPaths(),
       components: {
         securitySchemes: {
-          sessionCookie: { type: "apiKey", in: "cookie", name: "bw_session" },
+          sessionCookie: {
+            type: "apiKey",
+            in: "cookie",
+            name: "bw_session",
+            description:
+              "Session cookie from POST /auth/login. Non-browser clients call POST /auth/login, store the Set-Cookie values (bw_session, bw_csrf), send them as a Cookie header on every request, and mirror the bw_csrf value in the X-CSRF-Token header on every mutation. Requests without an Origin header are allowed so native clients are not origin-checked.",
+          },
+          bearerToken: {
+            type: "http",
+            scheme: "bearer",
+            description:
+              "Personal access token (bw_pat_...) from POST /auth/tokens. Send as Authorization: Bearer <token>. No CSRF header is required for bearer-authenticated requests. Tokens are scoped (read, write) and per-user.",
+          },
         },
         schemas: {
           Money: {
@@ -308,7 +404,7 @@ export function createApp(
             required: ["minorUnits", "currency"],
             properties: {
               minorUnits: { type: "string", pattern: "^-?\\d+$" },
-              currency: { type: "string", pattern: "^[A-Z]{3}$" },
+              currency: { type: "string", pattern: "^[A-Za-z][A-Za-z0-9_-]{2,11}$" },
             },
           },
           Error: {
@@ -332,7 +428,7 @@ export function createApp(
   app.route("/api/v1/reports", createReportRoutes(db, config));
   app.route("/api/v1", createIntegrationRoutes(db, config, dependencies.integrations));
   app.route("/api/v1", createOperationRoutes(db, config));
-  app.route("/api/v1", createPlanningRoutes(db, config));
+  app.route("/api/v1", createPlanningRoutes(db, config, dependencies.now));
 
   app.notFound((context) =>
     context.json({ error: { code: "not_found", message: "API route not found" } }, 404),
@@ -361,6 +457,24 @@ export function createApp(
         },
         422,
       );
+    }
+    if (error instanceof SyntaxError) {
+      // Malformed JSON request bodies surface from context.req.json() as
+      // SyntaxError; they are client errors, not server failures.
+      return context.json(
+        { error: { code: "invalid_json", message: "The request body is not valid JSON" } },
+        400,
+      );
+    }
+    if (error instanceof HTTPException) {
+      // Framework-raised errors (e.g. the body-limit middleware's 413) keep
+      // their real status instead of collapsing into a 500.
+      const code = error.status === 413 ? "payload_too_large" : "request_failed";
+      const message =
+        error.status === 413
+          ? "The request body exceeds the size limit"
+          : error.message || "The request could not be completed";
+      return context.json({ error: { code, message } }, error.status);
     }
     logger.error("request.failed", {
       requestId: context.get("requestId"),

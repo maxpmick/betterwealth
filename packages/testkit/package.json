@@ -10,7 +10,6 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@betterwealth/db": "workspace:*",
     "@betterwealth/shared": "workspace:*"
   },
   "devDependencies": {

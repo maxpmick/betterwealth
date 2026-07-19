@@ -1,3 +1,22 @@
+/**
+ * The web demo universe: the fictional household rendered when demo mode is on
+ * (the `bw-demo` session flag). Every money amount is stored as an exact base-10
+ * minor-unit string — the same transport shape the real API uses — never as a
+ * float, so the demo cannot drift into cent-rounding artifacts.
+ *
+ * This module is the ONLY web-side fixture source, and demoApi.ts is the ONLY
+ * projection of it into API-shaped responses; pages must not fabricate their own
+ * API responses. The values are pinned by the demo-mode tests in src/test. They
+ * deliberately mirror the spirit of the canonical API seed fixture
+ * (packages/testkit/src/alex.ts) but cannot import it: apps/web depends only on
+ * @betterwealth/shared, and @betterwealth/testkit is not in its dependency graph
+ * (see docs/AUDIT.md, "Clean workspace dependency direction").
+ */
+
+/**
+ * Ledger row view model. `amount` is a display-only number (rows and charts are
+ * inherently approximate); the exact value always travels as `amountMinorUnits`.
+ */
 export interface LedgerItem {
   id: string;
   date: string;
@@ -17,72 +36,16 @@ export interface LedgerItem {
   provenance: string;
 }
 
-export interface Envelope {
-  name: string;
-  icon: string;
-  planned: number;
-  funded: number;
-  activity: number;
-  available: number;
-  cadence: string;
-  pacing: "on-track" | "watch" | "over";
-  due?: string;
+/**
+ * Canonical demo ledger record: the ledger view metadata with the float `amount`
+ * replaced by an exact minor-unit string and an explicit currency.
+ */
+export interface DemoTransaction extends Omit<LedgerItem, "amount"> {
+  amountMinorUnits: string;
+  currency: string;
 }
 
-export interface GoalItem {
-  id: string;
-  name: string;
-  type: string;
-  funded: number;
-  target: number;
-  monthly: number;
-  safeDate: string;
-  probability: number;
-  impact: number;
-  accent: string;
-}
-
-export interface AccountItem {
-  id: string;
-  name: string;
-  institution: string;
-  type: string;
-  group: string;
-  mask: string;
-  balance: number;
-  change: number;
-  status: "Healthy" | "Manual" | "Attention";
-  updated: string;
-}
-
-export const netWorthHistory = [
-  { month: "Aug", total: 8900, liquid: 7200 },
-  { month: "Sep", total: 9700, liquid: 7850 },
-  { month: "Oct", total: 10800, liquid: 8600 },
-  { month: "Nov", total: 11650, liquid: 9320 },
-  { month: "Dec", total: 12800, liquid: 10100 },
-  { month: "Jan", total: 13750, liquid: 10980 },
-  { month: "Feb", total: 14600, liquid: 11830 },
-  { month: "Mar", total: 15750, liquid: 12710 },
-  { month: "Apr", total: 16900, liquid: 13680 },
-  { month: "May", total: 17850, liquid: 14520 },
-  { month: "Jun", total: 18700, liquid: 15340 },
-  { month: "Jul", total: 19800, liquid: 16300 },
-];
-
-export const forecastHistory = [
-  { age: 22, conservative: 16300, baseline: 16300, ambitious: 16300 },
-  { age: 23, conservative: 28600, baseline: 30600, ambitious: 32900 },
-  { age: 24, conservative: 42300, baseline: 47600, ambitious: 53700 },
-  { age: 25, conservative: 57700, baseline: 67600, ambitious: 79400 },
-  { age: 26, conservative: 74800, baseline: 90400, ambitious: 110200 },
-  { age: 27, conservative: 93800, baseline: 116800, ambitious: 146400 },
-  { age: 28, conservative: 114900, baseline: 147300, ambitious: 189900 },
-  { age: 29, conservative: 138200, baseline: 182500, ambitious: 240100 },
-  { age: 30, conservative: 164000, baseline: 223400, ambitious: 298300 },
-];
-
-export const transactions: LedgerItem[] = [
+export const transactions: DemoTransaction[] = [
   {
     id: "txn_01",
     date: "Today",
@@ -92,8 +55,8 @@ export const transactions: LedgerItem[] = [
     accountMask: "2401",
     category: "Groceries",
     envelope: "Groceries",
-    amount: -86.42,
-    confidence: 0.98,
+    amountMinorUnits: "-8642",
+    currency: "USD",
     provenance: "SimpleFIN · Rule: Whole Foods → Groceries",
   },
   {
@@ -105,7 +68,8 @@ export const transactions: LedgerItem[] = [
     accountMask: "2401",
     category: "Income",
     envelope: "Unassigned",
-    amount: 2200,
+    amountMinorUnits: "220000",
+    currency: "USD",
     provenance: "SimpleFIN · Income pattern detected",
   },
   {
@@ -117,10 +81,10 @@ export const transactions: LedgerItem[] = [
     accountMask: "8802",
     category: "Dining",
     envelope: "Dining out",
-    amount: -48.16,
+    amountMinorUnits: "-4816",
+    currency: "USD",
     pending: true,
     needsReview: true,
-    confidence: 0.72,
     provenance: "SimpleFIN · AI suggestion, not yet approved",
   },
   {
@@ -132,7 +96,8 @@ export const transactions: LedgerItem[] = [
     accountMask: "2401",
     category: "Utilities",
     envelope: "Utilities",
-    amount: -94.22,
+    amountMinorUnits: "-9422",
+    currency: "USD",
     recurring: true,
     provenance: "SimpleFIN · Recurring bill series",
   },
@@ -145,7 +110,8 @@ export const transactions: LedgerItem[] = [
     accountMask: "2401",
     category: "Transfer",
     envelope: "Investing",
-    amount: -300,
+    amountMinorUnits: "-30000",
+    currency: "USD",
     excluded: true,
     provenance: "SimpleFIN · Matched transfer to Brokerage",
   },
@@ -158,7 +124,8 @@ export const transactions: LedgerItem[] = [
     accountMask: "7730",
     category: "Transfer",
     envelope: "Investing",
-    amount: 300,
+    amountMinorUnits: "30000",
+    currency: "USD",
     excluded: true,
     provenance: "SimpleFIN · Matched transfer from Checking",
   },
@@ -171,7 +138,8 @@ export const transactions: LedgerItem[] = [
     accountMask: "8802",
     category: "Entertainment",
     envelope: "Subscriptions",
-    amount: -16.99,
+    amountMinorUnits: "-1699",
+    currency: "USD",
     recurring: true,
     provenance: "SimpleFIN · Merchant history",
   },
@@ -184,8 +152,8 @@ export const transactions: LedgerItem[] = [
     accountMask: "8802",
     category: "Transportation",
     envelope: "Transportation",
-    amount: -42.08,
-    confidence: 0.96,
+    amountMinorUnits: "-4208",
+    currency: "USD",
     provenance: "SimpleFIN · Rule: Metro Fuel",
   },
   {
@@ -197,130 +165,155 @@ export const transactions: LedgerItem[] = [
     accountMask: "8802",
     category: "Shopping",
     envelope: "Home",
-    amount: -118.74,
+    amountMinorUnits: "-11874",
+    currency: "USD",
     needsReview: true,
-    confidence: 0.61,
     provenance: "CSV import · New merchant",
   },
 ];
 
-export const envelopes: Envelope[] = [
+export interface DemoEnvelope {
+  name: string;
+  plannedMinorUnits: string;
+  fundedMinorUnits: string;
+  /** Signed activity for the period; negative means spent. */
+  activityMinorUnits: string;
+  availableMinorUnits: string;
+  cadence: string;
+  pacing: "on-track" | "watch" | "over";
+}
+
+export const envelopes: DemoEnvelope[] = [
   {
     name: "Rent",
-    icon: "home",
-    planned: 1400,
-    funded: 1400,
-    activity: -1400,
-    available: 0,
+    plannedMinorUnits: "140000",
+    fundedMinorUnits: "140000",
+    activityMinorUnits: "-140000",
+    availableMinorUnits: "0",
     cadence: "Monthly",
     pacing: "on-track",
-    due: "Paid Jul 1",
   },
   {
     name: "Groceries",
-    icon: "cart",
-    planned: 420,
-    funded: 420,
-    activity: -238.42,
-    available: 181.58,
+    plannedMinorUnits: "42000",
+    fundedMinorUnits: "42000",
+    activityMinorUnits: "-23842",
+    availableMinorUnits: "18158",
     cadence: "Monthly",
     pacing: "on-track",
   },
   {
     name: "Dining out",
-    icon: "dining",
-    planned: 180,
-    funded: 180,
-    activity: -164.16,
-    available: 15.84,
+    plannedMinorUnits: "18000",
+    fundedMinorUnits: "18000",
+    activityMinorUnits: "-16416",
+    availableMinorUnits: "1584",
     cadence: "Monthly",
     pacing: "watch",
   },
   {
     name: "Utilities",
-    icon: "bolt",
-    planned: 210,
-    funded: 210,
-    activity: -94.22,
-    available: 115.78,
+    plannedMinorUnits: "21000",
+    fundedMinorUnits: "21000",
+    activityMinorUnits: "-9422",
+    availableMinorUnits: "11578",
     cadence: "Monthly",
     pacing: "on-track",
-    due: "Internet Jul 21",
   },
   {
     name: "Transportation",
-    icon: "car",
-    planned: 260,
-    funded: 260,
-    activity: -126.08,
-    available: 133.92,
+    plannedMinorUnits: "26000",
+    fundedMinorUnits: "26000",
+    activityMinorUnits: "-12608",
+    availableMinorUnits: "13392",
     cadence: "Monthly",
     pacing: "on-track",
   },
   {
     name: "Fun money",
-    icon: "spark",
-    planned: 160,
-    funded: 160,
-    activity: -176.99,
-    available: -16.99,
+    plannedMinorUnits: "16000",
+    fundedMinorUnits: "16000",
+    activityMinorUnits: "-17699",
+    availableMinorUnits: "-1699",
     cadence: "Monthly",
     pacing: "over",
   },
 ];
 
-export const goals: GoalItem[] = [
+export interface DemoGoal {
+  id: string;
+  name: string;
+  type: "emergency_fund" | "purchase" | "debt_payoff" | "investment";
+  fundedMinorUnits: string;
+  targetMinorUnits: string;
+  monthlyMinorUnits: string;
+  targetDate: string;
+  /** Display label for the modeled safe date on the Today card. */
+  earliestSafeDate: string;
+  /** Modeled funding likelihood shown on the Today card, 0..1. */
+  probability: number;
+}
+
+export const goals: DemoGoal[] = [
   {
     id: "goal_01",
     name: "Emergency fund",
-    type: "Cash resilience",
-    funded: 4500,
-    target: 12000,
-    monthly: 650,
-    safeDate: "July 2027",
+    type: "emergency_fund",
+    fundedMinorUnits: "450000",
+    targetMinorUnits: "1200000",
+    monthlyMinorUnits: "65000",
+    targetDate: "2027-07-01",
+    earliestSafeDate: "July 2027",
     probability: 0.88,
-    impact: 0,
-    accent: "#1F9D72",
   },
   {
     id: "goal_02",
     name: "Lisbon trip",
-    type: "Comfortable purchase",
-    funded: 1260,
-    target: 3000,
-    monthly: 290,
-    safeDate: "February 2027",
+    type: "purchase",
+    fundedMinorUnits: "126000",
+    targetMinorUnits: "300000",
+    monthlyMinorUnits: "29000",
+    targetDate: "2027-02-01",
+    earliestSafeDate: "February 2027",
     probability: 0.84,
-    impact: -4100,
-    accent: "#4A7FD1",
   },
   {
     id: "goal_03",
     name: "Student loan freedom",
-    type: "Debt payoff",
-    funded: 2400,
-    target: 12000,
-    monthly: 390,
-    safeDate: "October 2028",
+    type: "debt_payoff",
+    fundedMinorUnits: "240000",
+    targetMinorUnits: "1200000",
+    monthlyMinorUnits: "39000",
+    targetDate: "2028-10-01",
+    earliestSafeDate: "October 2028",
     probability: 0.91,
-    impact: 6800,
-    accent: "#8B6CCF",
   },
   {
     id: "goal_04",
     name: "$100k invested",
-    type: "Investment milestone",
-    funded: 14500,
-    target: 100000,
-    monthly: 700,
-    safeDate: "May 2032",
+    type: "investment",
+    fundedMinorUnits: "1450000",
+    targetMinorUnits: "10000000",
+    monthlyMinorUnits: "70000",
+    targetDate: "2032-05-01",
+    earliestSafeDate: "May 2032",
     probability: 0.73,
-    impact: 18400,
-    accent: "#D98B2B",
   },
 ];
 
-export const accounts: AccountItem[] = [
+export interface DemoAccount {
+  id: string;
+  name: string;
+  institution: string;
+  type: string;
+  group: "Cash" | "Investments" | "Credit" | "Loans";
+  mask: string;
+  balanceMinorUnits: string;
+  status: "Healthy" | "Manual" | "Attention";
+  updatedLabel: string;
+}
+
+export const accounts: DemoAccount[] = [
   {
     id: "acc_01",
     name: "Everyday checking",
@@ -328,10 +321,9 @@ export const accounts: AccountItem[] = [
     type: "Checking",
     group: "Cash",
     mask: "2401",
-    balance: 3000,
-    change: 4.2,
+    balanceMinorUnits: "300000",
     status: "Healthy",
-    updated: "2 min ago",
+    updatedLabel: "2 min ago",
   },
   {
     id: "acc_02",
@@ -340,10 +332,9 @@ export const accounts: AccountItem[] = [
     type: "Savings",
     group: "Cash",
     mask: "6118",
-    balance: 4500,
-    change: 9.8,
+    balanceMinorUnits: "450000",
     status: "Healthy",
-    updated: "2 min ago",
+    updatedLabel: "2 min ago",
   },
   {
     id: "acc_03",
@@ -352,10 +343,9 @@ export const accounts: AccountItem[] = [
     type: "Brokerage",
     group: "Investments",
     mask: "7730",
-    balance: 6500,
-    change: 12.6,
+    balanceMinorUnits: "650000",
     status: "Healthy",
-    updated: "8 min ago",
+    updatedLabel: "8 min ago",
   },
   {
     id: "acc_04",
@@ -364,10 +354,9 @@ export const accounts: AccountItem[] = [
     type: "Retirement",
     group: "Investments",
     mask: "4022",
-    balance: 8000,
-    change: 14.1,
+    balanceMinorUnits: "800000",
     status: "Healthy",
-    updated: "Yesterday",
+    updatedLabel: "Yesterday",
   },
   {
     id: "acc_05",
@@ -376,10 +365,9 @@ export const accounts: AccountItem[] = [
     type: "Credit card",
     group: "Credit",
     mask: "8802",
-    balance: -1200,
-    change: -2.4,
+    balanceMinorUnits: "-120000",
     status: "Healthy",
-    updated: "2 min ago",
+    updatedLabel: "2 min ago",
   },
   {
     id: "acc_06",
@@ -388,20 +376,26 @@ export const accounts: AccountItem[] = [
     type: "Loan · 5.4% APR",
     group: "Loans",
     mask: "1095",
-    balance: -12000,
-    change: 6.1,
+    balanceMinorUnits: "-1200000",
     status: "Manual",
-    updated: "Jul 1",
+    updatedLabel: "Jul 1",
   },
 ];
 
-export const recentActivity = transactions.slice(0, 5);
+export interface DemoRule {
+  id: string;
+  name: string;
+  priority: number;
+  matches: number;
+  last: string;
+  source: "You" | "System" | "Approved AI";
+  enabled: boolean;
+}
 
-export const rules = [
+export const rules: DemoRule[] = [
   {
     id: "rule_01",
     name: "Whole Foods groceries",
-    summary: "When merchant is Whole Foods → set Groceries and fund from Groceries",
     priority: 10,
     matches: 18,
     last: "Today",
@@ -411,7 +405,6 @@ export const rules = [
   {
     id: "rule_02",
     name: "Payroll income",
-    summary: "When description contains PAYROLL and amount is an inflow → mark as Income",
     priority: 20,
     matches: 12,
     last: "Today",
@@ -421,7 +414,6 @@ export const rules = [
   {
     id: "rule_03",
     name: "Metro fuel",
-    summary: "When merchant starts with Metro Fuel → set Transportation",
     priority: 30,
     matches: 9,
     last: "Jul 11",
@@ -431,11 +423,82 @@ export const rules = [
   {
     id: "rule_04",
     name: "Vanguard transfers",
-    summary: "When merchant is Vanguard and account is Checking → request transfer match",
     priority: 40,
     matches: 7,
     last: "Jul 13",
     source: "You",
     enabled: true,
   },
+];
+
+export interface DemoSuggestion {
+  id: string;
+  merchant: string;
+  raw: string;
+  category: string;
+  /** Confidence in percent, 0..100. */
+  confidence: number;
+  amountMinorUnits: string;
+  rationale: string;
+}
+
+export const suggestions: DemoSuggestion[] = [
+  {
+    id: "ai_01",
+    merchant: "Corner Table",
+    raw: "TST* CORNER TABLE",
+    category: "Dining",
+    confidence: 72,
+    amountMinorUnits: "-4816",
+    rationale: "Similar local restaurant merchants were categorized as Dining.",
+  },
+  {
+    id: "ai_02",
+    merchant: "Home Supply",
+    raw: "HOME SUPPLY #108",
+    category: "Home",
+    confidence: 61,
+    amountMinorUnits: "-11874",
+    rationale: "The merchant suggests household supplies, but local history is still limited.",
+  },
+];
+
+export interface DemoNetWorthPoint {
+  month: string;
+  totalMinorUnits: string;
+  liquidMinorUnits: string;
+}
+
+export const netWorthHistory: DemoNetWorthPoint[] = [
+  { month: "Aug", totalMinorUnits: "890000", liquidMinorUnits: "720000" },
+  { month: "Sep", totalMinorUnits: "970000", liquidMinorUnits: "785000" },
+  { month: "Oct", totalMinorUnits: "1080000", liquidMinorUnits: "860000" },
+  { month: "Nov", totalMinorUnits: "1165000", liquidMinorUnits: "932000" },
+  { month: "Dec", totalMinorUnits: "1280000", liquidMinorUnits: "1010000" },
+  { month: "Jan", totalMinorUnits: "1375000", liquidMinorUnits: "1098000" },
+  { month: "Feb", totalMinorUnits: "1460000", liquidMinorUnits: "1183000" },
+  { month: "Mar", totalMinorUnits: "1575000", liquidMinorUnits: "1271000" },
+  { month: "Apr", totalMinorUnits: "1690000", liquidMinorUnits: "1368000" },
+  { month: "May", totalMinorUnits: "1785000", liquidMinorUnits: "1452000" },
+  { month: "Jun", totalMinorUnits: "1870000", liquidMinorUnits: "1534000" },
+  { month: "Jul", totalMinorUnits: "1980000", liquidMinorUnits: "1630000" },
+];
+
+export interface DemoForecastPoint {
+  age: number;
+  conservative: string;
+  baseline: string;
+  ambitious: string;
+}
+
+export const forecastHistory: DemoForecastPoint[] = [
+  { age: 22, conservative: "1630000", baseline: "1630000", ambitious: "1630000" },
+  { age: 23, conservative: "2860000", baseline: "3060000", ambitious: "3290000" },
+  { age: 24, conservative: "4230000", baseline: "4760000", ambitious: "5370000" },
+  { age: 25, conservative: "5770000", baseline: "6760000", ambitious: "7940000" },
+  { age: 26, conservative: "7480000", baseline: "9040000", ambitious: "11020000" },
+  { age: 27, conservative: "9380000", baseline: "11680000", ambitious: "14640000" },
+  { age: 28, conservative: "11490000", baseline: "14730000", ambitious: "18990000" },
+  { age: 29, conservative: "13820000", baseline: "18250000", ambitious: "24010000" },
+  { age: 30, conservative: "16400000", baseline: "22340000", ambitious: "29830000" },
 ];

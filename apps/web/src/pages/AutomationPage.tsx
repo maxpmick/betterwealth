@@ -49,7 +49,6 @@ import {
   type ApiRule,
   type ApiRulePreview,
   type ApiRuleWriteInput,
-  type ApiTransaction,
   api,
   type CursorPage,
 } from "../api";
@@ -64,13 +63,18 @@ import {
   SectionHeader,
   StatusChip,
 } from "../components/ui";
-import {
-  accounts as fixtureAccounts,
-  envelopes as fixtureEnvelopes,
-  rules as fixtureRules,
-  transactions as fixtureTransactions,
-} from "../data";
+import { accounts as fixtureAccounts, transactions as fixtureTransactions } from "../data";
 import { isDemoMode } from "../demo";
+import {
+  demoAccounts,
+  demoCoverageTransactions as demoAutomationTransactions,
+  demoCategories,
+  demoEnvelopes,
+  demoRules,
+  demoSuggestions,
+  demoTransaction,
+} from "../demoApi";
+import { minorToMajor } from "../lib/money";
 
 type ConditionField = "merchant" | "description" | "direction" | "amount" | "account" | "status";
 type ActionField = "category" | "envelope" | "review" | "flag" | "merchant";
@@ -108,6 +112,7 @@ interface SuggestionView {
   category: string;
   confidence: number;
   amount: number;
+  currency: string;
   rationale: string;
   proposal: string;
 }
@@ -464,169 +469,6 @@ function formatLastMatched(value?: string) {
   return `Last matched ${new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: parsed.getFullYear() === new Date().getFullYear() ? undefined : "numeric" }).format(parsed)}`;
 }
 
-const demoCategories: CursorPage<ApiCategory> = {
-  data: (
-    [
-      ["category-groceries", "Groceries", "expense"],
-      ["category-dining", "Dining", "expense"],
-      ["category-utilities", "Utilities", "expense"],
-      ["category-transportation", "Transportation", "expense"],
-      ["category-income", "Income", "income"],
-      ["category-transfer", "Transfer", "transfer"],
-    ] satisfies Array<[string, string, ApiCategory["kind"]]>
-  ).map(([id, name, kind]) => ({
-    id,
-    name,
-    kind,
-    parentId: null,
-    active: true,
-  })),
-  page: { cursor: null, hasMore: false },
-};
-
-const demoEnvelopes: CursorPage<ApiEnvelope> = {
-  data: fixtureEnvelopes.map((envelope, index) => ({
-    id: `demo-envelope-${index}`,
-    name: envelope.name,
-    planned: { minorUnits: String(Math.round(envelope.planned * 100)), currency: "USD" },
-    funded: { minorUnits: String(Math.round(envelope.funded * 100)), currency: "USD" },
-    activity: { minorUnits: String(Math.round(envelope.activity * 100)), currency: "USD" },
-    available: { minorUnits: String(Math.round(envelope.available * 100)), currency: "USD" },
-    cadence: envelope.cadence,
-    pacing: envelope.pacing === "on-track" ? "on_track" : envelope.pacing,
-    rolloverPolicy: "positive",
-  })),
-  page: { cursor: null, hasMore: false },
-};
-
-const demoAccounts: CursorPage<ApiAccount> = {
-  data: fixtureAccounts.map((account) => ({
-    id: account.id,
-    name: account.name,
-    mask: account.mask,
-    group:
-      account.group === "Investments"
-        ? "investment"
-        : account.group === "Credit"
-          ? "credit"
-          : account.group === "Loans"
-            ? "loan"
-            : "cash",
-    balance: { minorUnits: String(Math.round(account.balance * 100)), currency: "USD" },
-    syncStatus:
-      account.status === "Manual"
-        ? "manual"
-        : account.status === "Attention"
-          ? "attention"
-          : "healthy",
-    updatedAt: "2026-07-16T12:00:00.000Z",
-  })),
-  page: { cursor: null, hasMore: false },
-};
-
-const demoRuleConditions: unknown[] = [
-  { field: "merchant", operator: "exact", value: "Whole Foods Market", caseSensitive: false },
-  {
-    all: [
-      {
-        field: "normalizedDescription",
-        operator: "contains",
-        value: "PAYROLL",
-        caseSensitive: false,
-      },
-      { field: "direction", operator: "exact", value: "inflow" },
-    ],
-  },
-  {
-    field: "normalizedDescription",
-    operator: "startsWith",
-    value: "METRO FUEL",
-    caseSensitive: false,
-  },
-  {
-    all: [
-      { field: "merchant", operator: "exact", value: "Vanguard", caseSensitive: false },
-      { field: "accountId", operator: "exact", value: "acc_01", caseSensitive: false },
-    ],
-  },
-];
-
-const demoRuleActions: unknown[][] = [
-  [
-    { type: "setCategory", categoryId: "category-groceries" },
-    { type: "setEnvelope", envelopeId: "demo-envelope-1" },
-  ],
-  [
-    { type: "setCategory", categoryId: "category-income" },
-    { type: "setFlag", flag: "income", value: true },
-  ],
-  [{ type: "setCategory", categoryId: "category-transportation" }],
-  [
-    { type: "setCategory", categoryId: "category-transfer" },
-    { type: "setFlag", flag: "transfer", value: true },
-  ],
-];
-
-const demoRules: CursorPage<ApiRule> = {
-  data: fixtureRules.map((rule, index) => ({
-    id: rule.id,
-    name: rule.name,
-    priority: rule.priority,
-    enabled: rule.enabled,
-    origin:
-      rule.source === "System" ? "system" : rule.source === "Approved AI" ? "approved_ai" : "user",
-    conditions: demoRuleConditions[index],
-    actions: demoRuleActions[index] ?? [],
-    matchCount: rule.matches,
-    lastMatchedAt: rule.last,
-  })),
-  page: { cursor: null, hasMore: false },
-};
-
-const suggestionFixtures: SuggestionView[] = [
-  {
-    id: "ai_01",
-    merchant: "Corner Table",
-    raw: "TST* CORNER TABLE",
-    category: "Dining",
-    confidence: 72,
-    amount: -48.16,
-    rationale: "Similar local restaurant merchants were categorized as Dining.",
-    proposal: "Merchant is exactly “Corner Table” → Dining",
-  },
-  {
-    id: "ai_02",
-    merchant: "Home Supply",
-    raw: "HOME SUPPLY #108",
-    category: "Home",
-    confidence: 61,
-    amount: -118.74,
-    rationale: "The merchant suggests household supplies, but local history is still limited.",
-    proposal: "Description starts with “Home Supply” → Home",
-  },
-];
-
-const demoSuggestions: CursorPage<ApiAiSuggestion> = {
-  data: suggestionFixtures.map((suggestion) => ({
-    id: suggestion.id,
-    transactionId: suggestion.id.replace("ai", "txn"),
-    merchant: suggestion.merchant,
-    categoryId: suggestion.category.toLowerCase(),
-    categoryName: suggestion.category,
-    confidence: suggestion.confidence / 100,
-    rationale: suggestion.rationale,
-    amount: { minorUnits: String(Math.round(suggestion.amount * 100)), currency: "USD" },
-    rawDescription: suggestion.raw,
-    proposedRule: {
-      name: `${suggestion.merchant} ${suggestion.category}`,
-      conditions: {},
-      actions: {},
-    },
-    status: "pending",
-  })),
-  page: { cursor: null, hasMore: false },
-};
-
 function normalized(value: string) {
   return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
 }
@@ -662,10 +504,8 @@ function demoConditionMatches(
     return left.includes(right);
   }
   if (condition.field === "direction") {
-    return (
-      condition.value ===
-      (transaction.amount > 0 ? "inflow" : transaction.amount < 0 ? "outflow" : "zero")
-    );
+    const amount = BigInt(transaction.amountMinorUnits);
+    return condition.value === (amount > 0n ? "inflow" : amount < 0n ? "outflow" : "zero");
   }
   if (condition.field === "status")
     return condition.value === (transaction.pending ? "pending" : "posted");
@@ -676,7 +516,7 @@ function demoConditionMatches(
     );
   }
   if (condition.field === "amount") {
-    const minor = BigInt(Math.round(transaction.amount * 100));
+    const minor = BigInt(transaction.amountMinorUnits);
     if (condition.operator === "exact") return minor === BigInt(String(condition.value));
     const absolute = minor < 0n ? -minor : minor;
     return (
@@ -685,29 +525,6 @@ function demoConditionMatches(
   }
   return false;
 }
-
-function demoTransaction(transaction: (typeof fixtureTransactions)[number]): ApiTransaction {
-  const accountId = fixtureAccounts.find((account) => account.name === transaction.account)?.id;
-  return {
-    id: transaction.id,
-    accountId: accountId ?? "demo-account",
-    effectiveDate: "2026-07-16",
-    description: transaction.rawDescription,
-    merchant: transaction.merchant,
-    amount: { minorUnits: String(Math.round(transaction.amount * 100)), currency: "USD" },
-    accountName: transaction.account,
-    categoryName: transaction.category,
-    status: transaction.pending ? "pending" : "posted",
-    reviewState: transaction.needsReview ? "needs_review" : "ready",
-    source: transaction.provenance.startsWith("CSV") ? "import" : "simplefin",
-    tags: [],
-  };
-}
-
-const demoAutomationTransactions: CursorPage<ApiTransaction> = {
-  data: fixtureTransactions.map(demoTransaction),
-  page: { cursor: null, hasMore: false },
-};
 
 function previewDemoRule(
   input: Pick<ApiRuleWriteInput, "conditions" | "actions">,
@@ -723,12 +540,14 @@ function previewDemoRule(
       rule.id !== excludeRuleId &&
       matching.some((transaction) => demoConditionMatches(transaction, rule.conditions)),
   );
+  const aggregate = matching.reduce(
+    (sum, transaction) => sum + BigInt(transaction.amountMinorUnits),
+    0n,
+  );
   return {
     matchCount: matching.length,
     aggregateAmount: {
-      minorUnits: String(
-        Math.round(matching.reduce((sum, transaction) => sum + transaction.amount, 0) * 100),
-      ),
+      minorUnits: aggregate.toString(10),
       currency: "USD",
     },
     samples: matching.slice(0, 20).map(demoTransaction),
@@ -752,7 +571,10 @@ function toSuggestionView(suggestion: ApiAiSuggestion): SuggestionView {
     raw: suggestion.rawDescription ?? suggestion.merchant,
     category: categoryPath.length > 0 ? categoryPath.join(" › ") : suggestion.categoryName,
     confidence: Math.round(suggestion.confidence * 100),
-    amount: suggestion.amount ? Number(suggestion.amount.minorUnits) / 100 : 0,
+    amount: suggestion.amount
+      ? minorToMajor(suggestion.amount.minorUnits, suggestion.amount.currency)
+      : 0,
+    currency: suggestion.amount?.currency ?? "USD",
     rationale: suggestion.rationale,
     proposal:
       suggestion.proposedRule?.name ?? `Categorize this merchant as ${suggestion.categoryName}`,
@@ -1380,7 +1202,14 @@ function RuleBuilder({
               <Box>
                 <Typography variant="body2" fontWeight={750}>
                   {preview.matchCount} historical match{preview.matchCount === 1 ? "" : "es"} ·{" "}
-                  <Money value={Number(preview.aggregateAmount.minorUnits) / 100} sign />
+                  <Money
+                    value={minorToMajor(
+                      preview.aggregateAmount.minorUnits,
+                      preview.aggregateAmount.currency,
+                    )}
+                    currency={preview.aggregateAmount.currency}
+                    sign
+                  />
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
                   Saving affects future imports and syncs. Existing transactions change only if you
@@ -1405,7 +1234,11 @@ function RuleBuilder({
                   </Typography>
                 </Box>
                 <Typography variant="body2" fontWeight={700}>
-                  <Money value={Number(transaction.amount.minorUnits) / 100} sign />
+                  <Money
+                    value={minorToMajor(transaction.amount.minorUnits, transaction.amount.currency)}
+                    currency={transaction.amount.currency}
+                    sign
+                  />
                 </Typography>
               </Stack>
             ))}
@@ -1644,7 +1477,7 @@ function SuggestionCard({
           </Stack>
           <Box sx={{ textAlign: "right" }}>
             <Typography variant="h3">
-              <Money value={suggestion.amount} sign />
+              <Money value={suggestion.amount} currency={suggestion.currency} sign />
             </Typography>
             <StatusChip label={`${suggestion.confidence}% confidence`} tone="warning" />
           </Box>

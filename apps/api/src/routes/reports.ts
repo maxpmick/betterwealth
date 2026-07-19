@@ -27,6 +27,7 @@ import { ulid } from "ulid";
 import { z } from "zod";
 import { requireAuth, requireCsrf } from "../auth/middleware";
 import type { AppConfig } from "../config";
+import { localDateKey, localMonthKey, localMonthStartInstant, shiftMonthKey } from "../lib/dates";
 import { ConflictError, NotFoundError } from "../lib/errors";
 import {
   isNetWorthAccountIncluded,
@@ -335,7 +336,8 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
     }
 
     const now = new Date();
-    const today = now.toISOString().slice(0, 10);
+    const timeZone = report.household?.timezone ?? "UTC";
+    const today = localDateKey(now, timeZone);
     const activeIncomeRows = await db
       .select({
         nextExpectedDate: incomeSources.nextExpectedDate,
@@ -826,8 +828,12 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
   routes.get("/cash-flow", async (context) => {
     const auth = context.get("auth");
     const report = await reportContext(db, auth.householdId, auth.user.id);
-    const since = new Date();
-    since.setUTCMonth(since.getUTCMonth() - 11, 1);
+    const timeZone = report.household?.timezone ?? "UTC";
+    const now = new Date();
+    const since = localMonthStartInstant(
+      shiftMonthKey(localMonthKey(now, timeZone), -11),
+      timeZone,
+    );
     const rows = await db
       .select()
       .from(transactions)
@@ -852,7 +858,7 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
         transaction.currency !== report.currency
       )
         continue;
-      const key = transaction.transactedOn.slice(0, 7);
+      const key = localMonthKey(new Date(transaction.transactedOn), timeZone);
       const value = months.get(key) ?? { income: 0n, expenses: 0n };
       if (transaction.amount > 0n) {
         if (transaction.isIncome) value.income += transaction.amount;
@@ -880,9 +886,8 @@ export function createReportRoutes(db: BetterWealthDatabase, config: AppConfig) 
   routes.get("/spending", async (context) => {
     const auth = context.get("auth");
     const report = await reportContext(db, auth.householdId, auth.user.id);
-    const monthStart = new Date();
-    monthStart.setUTCDate(1);
-    monthStart.setUTCHours(0, 0, 0, 0);
+    const timeZone = report.household?.timezone ?? "UTC";
+    const monthStart = localMonthStartInstant(localMonthKey(new Date(), timeZone), timeZone);
     const rows = await db
       .select({
         id: transactions.id,

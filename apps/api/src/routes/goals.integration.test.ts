@@ -21,6 +21,9 @@ import { createSession, registerUser } from "../auth/service";
 import { type AppConfig, loadConfig } from "../config";
 
 type Auth = { householdId: string; sessionToken: string; csrfToken: string };
+// Frozen clock injected into the app so month-derived expectations are exact.
+const FROZEN_NOW = new Date("2026-07-15T12:00:00.000Z");
+const FROZEN_MONTH = "2026-07";
 type GoalResponse = {
   id: string;
   remaining: { minorUnits: string; currency: string };
@@ -82,7 +85,7 @@ describe("goal planning API", () => {
       REGISTRATION_MODE: "open",
       WEB_ORIGIN: "http://localhost:5173",
     });
-    application = createApp(config);
+    application = createApp(config, { now: () => FROZEN_NOW });
     const primary = await registerUser(
       application.db,
       {
@@ -203,7 +206,7 @@ describe("goal planning API", () => {
     minimumBufferMinorUnits: string,
     targetLiquidNetWorthMinorUnits = "20000000",
   ) {
-    const now = new Date();
+    const now = FROZEN_NOW;
     const start = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-01`;
     const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0))
       .toISOString()
@@ -229,7 +232,7 @@ describe("goal planning API", () => {
       },
       isSecret: false,
     });
-    const asOf = new Date().toISOString();
+    const asOf = FROZEN_NOW.toISOString();
     await application.db.insert(balanceSnapshots).values([
       {
         id: ulid(),
@@ -353,11 +356,11 @@ describe("goal planning API", () => {
       priority: 2,
     });
 
-    expect(purchase.projectedDate).toBe(`${new Date().toISOString().slice(0, 7)}-01`);
+    expect(purchase.projectedDate).toBe(`${FROZEN_MONTH}-01`);
     expect(purchase.comfortablePurchase).toMatchObject({
       status: "comfortable",
       comfortable: true,
-      comfortableMonth: addMonths(new Date().toISOString().slice(0, 7), 1),
+      comfortableMonth: addMonths(FROZEN_MONTH, 1),
       monthsUntilPurchase: 1,
       controllingConstraint: "checkingBuffer",
       missingInputs: [],
@@ -398,7 +401,7 @@ describe("goal planning API", () => {
     expect(purchase.comfortablePurchase).toMatchObject({
       status: "comfortable",
       comfortable: true,
-      comfortableMonth: addMonths(new Date().toISOString().slice(0, 7), 2),
+      comfortableMonth: addMonths(FROZEN_MONTH, 2),
       monthsUntilPurchase: 2,
       controllingConstraint: "emergencyFloor",
       missingInputs: [],
@@ -426,7 +429,7 @@ describe("goal planning API", () => {
       monthlyContribution: { minorUnits: "0", currency: "USD" },
       priority: 2,
     });
-    const targetMonth = addMonths(new Date().toISOString().slice(0, 7), 96);
+    const targetMonth = addMonths(FROZEN_MONTH, 96);
 
     expect(purchase.comfortablePurchase).toMatchObject({
       status: "comfortable",
@@ -500,7 +503,7 @@ describe("goal planning API", () => {
       currentBalance: 50_000n,
       availableBalance: 50_000n,
       currency: "USD",
-      asOf: new Date().toISOString(),
+      asOf: FROZEN_NOW.toISOString(),
       source: "manual",
     });
     await application.db
@@ -716,7 +719,7 @@ describe("goal planning API", () => {
     await application.db
       .delete(incomeSources)
       .where(eq(incomeSources.householdId, auth.householdId));
-    const oldDate = new Date(Date.now() - 70 * 86_400_000).toISOString().slice(0, 10);
+    const oldDate = new Date(FROZEN_NOW.getTime() - 70 * 86_400_000).toISOString().slice(0, 10);
     await application.db.insert(transactions).values({
       id: ulid(),
       householdId: auth.householdId,
@@ -753,9 +756,9 @@ describe("goal planning API", () => {
     await application.db
       .delete(incomeSources)
       .where(eq(incomeSources.householdId, auth.householdId));
-    const oldest = new Date(Date.now() - 70 * 86_400_000).toISOString().slice(0, 10);
-    const middle = new Date(Date.now() - 35 * 86_400_000).toISOString().slice(0, 10);
-    const newest = new Date().toISOString().slice(0, 10);
+    const oldest = new Date(FROZEN_NOW.getTime() - 70 * 86_400_000).toISOString().slice(0, 10);
+    const middle = new Date(FROZEN_NOW.getTime() - 35 * 86_400_000).toISOString().slice(0, 10);
+    const newest = FROZEN_NOW.toISOString().slice(0, 10);
     const spendingId = ulid();
     const creditId = ulid();
     await application.db.insert(transactions).values([
@@ -841,7 +844,7 @@ describe("goal planning API", () => {
   });
 
   test("derives exact pace, links valid accounts, and reorders goals atomically", async () => {
-    const startMonth = new Date().toISOString().slice(0, 7);
+    const startMonth = FROZEN_MONTH;
     const targetMonth = addMonths(startMonth, 10);
     const emergency = await createGoal({ priority: 1 });
     const debt = await createGoal({

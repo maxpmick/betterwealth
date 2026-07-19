@@ -91,9 +91,9 @@ else
 fi
 
 case "$registration_mode" in
-  closed|invite) pass "public registration is disabled" ;;
+  closed) pass "public registration is disabled" ;;
   open) warn "REGISTRATION_MODE=open allows anyone who can reach the site to register" ;;
-  *) fail "REGISTRATION_MODE must be closed, invite, or open" ;;
+  *) fail "REGISTRATION_MODE must be closed or open" ;;
 esac
 
 if command -v realpath >/dev/null 2>&1; then

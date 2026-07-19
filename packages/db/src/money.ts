@@ -1,8 +1,9 @@
+import { MAX_INT64, MIN_INT64 } from "@betterwealth/shared";
 import { customType } from "drizzle-orm/sqlite-core";
 
 /** SQLite signed 64-bit bounds. Financial values are deliberately limited to this range. */
-export const MIN_MINOR_UNITS = -(1n << 63n);
-export const MAX_MINOR_UNITS = (1n << 63n) - 1n;
+export const MIN_MINOR_UNITS = MIN_INT64;
+export const MAX_MINOR_UNITS = MAX_INT64;
 
 const CANONICAL_INTEGER = /^(?:0|-[1-9]\d*|[1-9]\d*)$/;
 

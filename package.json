@@ -20,6 +20,7 @@
     "test:unit": "bun test packages apps/api/src",
     "test:web": "bun run --cwd apps/web test",
     "test:e2e": "playwright test",
+    "docs:screenshots": "bun e2e/capture-screenshots.ts",
     "test:all": "bun run audit && bun run db:check && bun run lint && bun run typecheck && bun run test && bun run build && bun run test:e2e",
     "audit": "bun audit",
     "db:generate": "bun run --cwd packages/db generate",

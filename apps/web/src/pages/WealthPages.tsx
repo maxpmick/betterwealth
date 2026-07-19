@@ -70,13 +70,13 @@ import {
   api,
   type ComfortablePurchasePlan,
   type CursorPage,
-  type NetWorthReport,
 } from "../api";
 import { Stack, TextField, Typography } from "../components/mui";
 import {
   ChartMaskedState,
   EmptyState,
   ErrorState,
+  formatMoney,
   LoadingCard,
   MetricCard,
   Money,
@@ -86,83 +86,14 @@ import {
   StatusChip,
 } from "../components/ui";
 import { usePrivacy } from "../contexts";
-import { accounts as demoAccountItems, goals, netWorthHistory } from "../data";
 import { isDemoMode } from "../demo";
-
-const composition = [
-  { group: "Cash", amount: 7500, change: 4.8, kind: "Asset", detail: "Checking + savings" },
-  {
-    group: "Taxable investments",
-    amount: 6500,
-    change: 12.6,
-    kind: "Asset",
-    detail: "Brokerage holdings",
-  },
-  { group: "Retirement", amount: 8000, change: 14.1, kind: "Asset", detail: "401(k)" },
-  {
-    group: "Manual assets",
-    amount: 12000,
-    change: -4.2,
-    kind: "Asset",
-    detail: "Vehicle + security deposit",
-  },
-  { group: "Credit cards", amount: -1200, change: 2.4, kind: "Debt", detail: "Current balance" },
-  { group: "Student loans", amount: -12000, change: 6.1, kind: "Debt", detail: "5.4% APR" },
-];
-
-function wealthMoney(value: number) {
-  return { minorUnits: String(Math.round(value * 100)), currency: "USD" };
-}
-const demoNetWorth: NetWorthReport = {
-  total: wealthMoney(19800),
-  liquid: wealthMoney(16300),
-  investable: wealthMoney(14500),
-  retirement: wealthMoney(8000),
-  assets: wealthMoney(34000),
-  debts: wealthMoney(13200),
-  series: netWorthHistory.map((row, index) => ({
-    date: `2026-${String(index + 1).padStart(2, "0")}-01`,
-    total: wealthMoney(row.total),
-    liquid: wealthMoney(row.liquid),
-    investable: wealthMoney(8_900 + index * 1_120),
-    retirement: wealthMoney(5_250 + index * 550),
-    assets: wealthMoney(row.total + 14_800 - index * 320),
-    debts: wealthMoney(14_800 - index * 320),
-  })),
-  composition: composition.map((row) => ({
-    group: row.group,
-    amount: wealthMoney(row.amount),
-    changePercent: row.change,
-    kind: row.kind === "Asset" ? "asset" : "debt",
-    detail: row.detail,
-  })),
-};
-
-const demoAssets: CursorPage<ApiAsset> = {
-  data: [
-    {
-      id: "asset-civic",
-      name: "2019 Honda Civic",
-      type: "vehicle",
-      value: wealthMoney(9500),
-      valuedAt: "2026-07-01T00:00:00.000Z",
-      source: "manual",
-      confidence: "medium",
-      liquidityClass: "illiquid",
-    },
-    {
-      id: "asset-deposit",
-      name: "Apartment security deposit",
-      type: "custom",
-      value: wealthMoney(2500),
-      valuedAt: "2025-09-03T00:00:00.000Z",
-      source: "manual",
-      confidence: "high",
-      liquidityClass: "illiquid",
-    },
-  ],
-  page: { cursor: null, hasMore: false },
-};
+import {
+  demoGoals as demoApiGoals,
+  demoAssets,
+  demoAccounts as demoGoalAccounts,
+  demoNetWorth,
+} from "../demoApi";
+import { chartTickFormatter, formatMoneyExact, minorToMajor } from "../lib/money";
 
 type WealthHistoryPoint = {
   id: string;
@@ -189,10 +120,12 @@ function WealthHistoryChart({
   history,
   range,
   setRange,
+  currency,
 }: {
   history: WealthHistoryPoint[];
   range: string;
   setRange: (range: string) => void;
+  currency: string;
 }) {
   const { privacyEnabled } = usePrivacy();
   const [metric, setMetric] = useState<WealthMetric>("total");
@@ -261,7 +194,7 @@ function WealthHistoryChart({
               ]}
               yAxis={[
                 {
-                  valueFormatter: (value: number) => `$${Math.round(Number(value) / 1000)}k`,
+                  valueFormatter: chartTickFormatter(currency),
                   width: 48,
                 },
               ]}
@@ -273,7 +206,7 @@ function WealthHistoryChart({
                   showMark: false,
                   color: selected.color,
                   valueFormatter: (value: number | null) =>
-                    `$${Number(value ?? 0).toLocaleString()}`,
+                    formatMoney(Number(value ?? 0), currency),
                 },
               ]}
               grid={{ horizontal: true }}
@@ -285,7 +218,7 @@ function WealthHistoryChart({
           {privacyEnabled
             ? "Chart values are hidden."
             : values.length
-              ? `${selected.label} moved from ${(values[0] ?? 0).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })} to ${(values.at(-1) ?? 0).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })} in this range.`
+              ? `${selected.label} moved from ${(values[0] ?? 0).toLocaleString("en-US", { style: "currency", currency, maximumFractionDigits: 0 })} to ${(values.at(-1) ?? 0).toLocaleString("en-US", { style: "currency", currency, maximumFractionDigits: 0 })} in this range.`
               : `No ${selected.label.toLowerCase()} snapshots in this range.`}
         </Typography>
         <Accordion disableGutters elevation={0} sx={{ mt: 2, "&::before": { display: "none" } }}>
@@ -308,10 +241,14 @@ function WealthHistoryChart({
                   <TableRow key={row.id}>
                     <TableCell>{row.month}</TableCell>
                     <TableCell align="right">
-                      <Money value={row.total} />
+                      <Money value={row.total} currency={currency} />
                     </TableCell>
                     <TableCell align="right">
-                      {typeof row[metric] === "number" ? <Money value={row[metric]} /> : "—"}
+                      {typeof row[metric] === "number" ? (
+                        <Money value={row[metric]} currency={currency} />
+                      ) : (
+                        "—"
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -667,7 +604,10 @@ function ValuationDialog({
                         </Typography>
                         <Typography variant="caption" fontWeight={720}>
                           <Money
-                            value={Number(valuation.amount.minorUnits) / 100}
+                            value={minorToMajor(
+                              valuation.amount.minorUnits,
+                              valuation.amount.currency,
+                            )}
                             currency={valuation.amount.currency}
                           />
                         </Typography>
@@ -895,7 +835,9 @@ export function NetWorthPage() {
   const openValuation = (asset?: ApiAsset) => {
     const target = asset ?? assetsQuery.data?.data[0];
     setValuationAssetId(target?.id ?? "");
-    setValuationAmount(target ? String(Number(target.value.minorUnits) / 100) : "");
+    setValuationAmount(
+      target ? String(minorToMajor(target.value.minorUnits, target.value.currency)) : "",
+    );
     setValuationDate(new Date().toISOString().slice(0, 10));
     setValuationSource("manual");
     setValuationReference("");
@@ -936,16 +878,23 @@ export function NetWorthPage() {
       month: "short",
       ...(report.series.length > 12 ? { year: "2-digit" as const } : {}),
     }),
-    total: Number(row.total.minorUnits) / 100,
-    liquid: Number(row.liquid.minorUnits) / 100,
-    ...(row.investable ? { investable: Number(row.investable.minorUnits) / 100 } : {}),
-    ...(row.retirement ? { retirement: Number(row.retirement.minorUnits) / 100 } : {}),
-    ...(row.assets ? { assets: Number(row.assets.minorUnits) / 100 } : {}),
-    ...(row.debts ? { debts: Math.abs(Number(row.debts.minorUnits) / 100) } : {}),
+    total: minorToMajor(row.total.minorUnits, row.total.currency),
+    liquid: minorToMajor(row.liquid.minorUnits, row.liquid.currency),
+    ...(row.investable
+      ? { investable: minorToMajor(row.investable.minorUnits, row.investable.currency) }
+      : {}),
+    ...(row.retirement
+      ? { retirement: minorToMajor(row.retirement.minorUnits, row.retirement.currency) }
+      : {}),
+    ...(row.assets ? { assets: minorToMajor(row.assets.minorUnits, row.assets.currency) } : {}),
+    ...(row.debts
+      ? { debts: Math.abs(minorToMajor(row.debts.minorUnits, row.debts.currency)) }
+      : {}),
   }));
   const liveComposition = report.composition.map((row) => ({
     group: row.group,
-    amount: Number(row.amount.minorUnits) / 100,
+    amount: minorToMajor(row.amount.minorUnits, row.amount.currency),
+    currency: row.amount.currency,
     change: row.changePercent,
     kind: row.kind === "asset" ? "Asset" : "Debt",
     detail: row.detail ?? row.kind,
@@ -972,26 +921,51 @@ export function NetWorthPage() {
       >
         <MetricCard
           label="Total net worth"
-          value={<Money value={Number(report.total.minorUnits) / 100} />}
+          value={
+            <Money
+              value={minorToMajor(report.total.minorUnits, report.total.currency)}
+              currency={report.total.currency}
+            />
+          }
           helper="Latest dated snapshot"
         />
         <MetricCard
           label="Liquid net worth"
-          value={<Money value={Number(report.liquid.minorUnits) / 100} />}
+          value={
+            <Money
+              value={minorToMajor(report.liquid.minorUnits, report.liquid.currency)}
+              currency={report.liquid.currency}
+            />
+          }
           helper="Available outside retirement"
         />
         <MetricCard
           label="Investable"
-          value={<Money value={Number(report.investable.minorUnits) / 100} />}
+          value={
+            <Money
+              value={minorToMajor(report.investable.minorUnits, report.investable.currency)}
+              currency={report.investable.currency}
+            />
+          }
           helper="Brokerage + retirement"
         />
         <MetricCard
           label="Total debt"
-          value={<Money value={Math.abs(Number(report.debts.minorUnits) / 100)} />}
+          value={
+            <Money
+              value={Math.abs(minorToMajor(report.debts.minorUnits, report.debts.currency))}
+              currency={report.debts.currency}
+            />
+          }
           helper="Current liabilities"
         />
       </Box>
-      <WealthHistoryChart history={history} range={range} setRange={setRange} />
+      <WealthHistoryChart
+        history={history}
+        range={range}
+        setRange={setRange}
+        currency={report.total.currency}
+      />
       <Card>
         <CardContent sx={{ p: { xs: 4, sm: 5 } }}>
           <SectionHeader
@@ -1039,7 +1013,7 @@ export function NetWorthPage() {
                   </Box>
                   <Box sx={{ textAlign: "right" }}>
                     <Typography variant="body2" fontWeight={760}>
-                      <Money value={row.amount} />
+                      <Money value={row.amount} currency={row.currency} />
                     </Typography>
                     <Typography
                       variant="caption"
@@ -1137,7 +1111,7 @@ export function NetWorthPage() {
                     </Typography>
                     <Typography sx={{ fontSize: 29, fontWeight: 760, mt: 1 }}>
                       <Money
-                        value={Number(asset.value.minorUnits) / 100}
+                        value={minorToMajor(asset.value.minorUnits, asset.value.currency)}
                         currency={asset.value.currency}
                       />
                     </Typography>
@@ -1219,7 +1193,9 @@ export function NetWorthPage() {
         setSelectedId={(id) => {
           setValuationAssetId(id);
           const asset = assetsList.find((candidate) => candidate.id === id);
-          setValuationAmount(asset ? String(Number(asset.value.minorUnits) / 100) : "");
+          setValuationAmount(
+            asset ? String(minorToMajor(asset.value.minorUnits, asset.value.currency)) : "",
+          );
           setValuationConfidence(asset?.confidence ?? "medium");
         }}
         amount={valuationAmount}
@@ -1259,132 +1235,22 @@ export function NetWorthPage() {
   );
 }
 
-function goalMoney(value: number) {
-  return { minorUnits: String(Math.round(value * 100)), currency: "USD" };
-}
-
-const demoComfortablePurchasePlan: ComfortablePurchasePlan = {
-  status: "comfortable",
-  comfortable: true,
-  comfortableMonth: "2027-04",
-  monthsUntilPurchase: 9,
-  controllingConstraint: "targetNetWorth",
-  limitingConstraints: [
-    {
-      code: "targetNetWorth",
-      label: "Wealth target preserved",
-      satisfied: true,
-      detail:
-        "Projected liquid net worth still reaches the saved age-30 target after a conservative full purchase-price write-off.",
-    },
-  ],
-  constraints: [],
-  missingInputs: [],
-  inputs: {
-    spendableLiquidity: goalMoney(8_750),
-    unreservedLiquidity: goalMoney(2_990),
-    fundingAccountBalance: goalMoney(4_250),
-    verifiedPurchaseSavings: goalMoney(2_400),
-    protectedMinimumBuffer: goalMoney(2_500),
-    requiredMonthlyBills: goalMoney(1_450),
-    requiredObligationShortfall: goalMoney(0),
-    higherPriorityMonthlyFunding: goalMoney(650),
-    monthlySurplus: goalMoney(1_230),
-    monthlySurplusSource: "explicit_budget",
-    currentLiquidNetWorth: goalMoney(24_900),
-    targetLiquidNetWorth: goalMoney(100_000),
-    targetWealthDate: "2034-07-01",
-    projectedLiquidNetWorthAtTarget: goalMoney(101_200),
-  },
-  assumptions: [
-    "A purchase before the wealth milestone is treated as a 100% liquid-net-worth write-off.",
-  ],
-};
-
 type GoalStatus = "active" | "paused" | "completed" | "cancelled";
 type GoalLiquidity = "cash" | "liquid" | "investable" | "any";
 
-type GoalRecord = ApiGoal & {
-  targetDate?: string | null;
-  status?: GoalStatus;
-  fundingAccountId?: string | null;
-  linkedDebtAccountId?: string | null;
-  liquidityConstraint?: GoalLiquidity;
-  createdAt?: string;
-  updatedAt?: string;
-};
-
-const demoTargetDates = ["2027-07-01", "2027-02-01", "2028-10-01", "2032-05-01"];
-
-const demoApiGoals: CursorPage<GoalRecord> = {
-  data: goals.map((goal, index) => ({
-    id: goal.id,
-    name: goal.name,
-    type:
-      index === 0
-        ? "emergency_fund"
-        : index === 1
-          ? "purchase"
-          : index === 2
-            ? "debt_payoff"
-            : "investment",
-    target: goalMoney(goal.target),
-    funded: goalMoney(goal.funded),
-    monthlyContribution: goalMoney(goal.monthly),
-    targetDate: demoTargetDates[index] ?? "2032-05-01",
-    priority: index + 1,
-    paused: false,
-    status: "active",
-    liquidityConstraint: index === 3 ? "investable" : "liquid",
-    ...(index === 1 ? { comfortablePurchase: demoComfortablePurchasePlan } : {}),
-  })),
-  page: { cursor: null, hasMore: false },
-};
-
-const demoGoalAccounts: CursorPage<ApiAccount> = {
-  data: demoAccountItems.map((account) => {
-    const group: ApiAccount["group"] =
-      account.group === "Cash"
-        ? "cash"
-        : account.group === "Investments"
-          ? "investment"
-          : account.group === "Credit"
-            ? "credit"
-            : account.group === "Loans"
-              ? "loan"
-              : "custom";
-    return {
-      id: account.id,
-      name: account.name,
-      mask: account.mask,
-      group,
-      balance: goalMoney(account.balance),
-      syncStatus:
-        account.status === "Healthy"
-          ? "healthy"
-          : account.status === "Attention"
-            ? "attention"
-            : "manual",
-      updatedAt: "2026-07-16T12:00:00.000Z",
-    };
-  }),
-  page: { cursor: null, hasMore: false },
-};
+// Every optional record field the goals page reads is part of ApiGoal already.
+type GoalRecord = ApiGoal;
 
 function minorUnits(value: ApiGoal["target"]): bigint {
   return BigInt(value.minorUnits);
 }
 
 function moneyValue(value: ApiGoal["target"]): number {
-  return Number(minorUnits(value)) / 100;
+  return minorToMajor(value.minorUnits, value.currency);
 }
 
 function formatMinor(value: bigint, currency = "USD") {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 2,
-  }).format(Number(value) / 100);
+  return formatMoneyExact(value, currency);
 }
 
 function monthLabel(value: string | null) {
@@ -1461,7 +1327,7 @@ function toGoalItem(
     funded: moneyValue(goal.funded),
     target: moneyValue(goal.target),
     monthly: moneyValue(goal.monthlyContribution),
-    remaining: Number(pace.remainingAmount.minorUnits) / 100,
+    remaining: minorToMajor(pace.remainingAmount.minorUnits, pace.remainingAmount.currency),
     remainingMinor: pace.remainingAmount.minorUnits,
     requiredMonthlyMinor: pace.requiredMonthlyContribution?.minorUnits ?? null,
     shortfallMinor: pace.monthlyShortfall.minorUnits,
@@ -1530,7 +1396,7 @@ export function ComfortablePurchaseSummary({
       label: "Verified purchase savings",
       value: verifiedSavings ? (
         <Money
-          value={Number(verifiedSavings.minorUnits) / 100}
+          value={minorToMajor(verifiedSavings.minorUnits, verifiedSavings.currency)}
           currency={verifiedSavings.currency}
         />
       ) : (
@@ -1540,7 +1406,10 @@ export function ComfortablePurchaseSummary({
     {
       label: "Unreserved cash",
       value: unreserved ? (
-        <Money value={Number(unreserved.minorUnits) / 100} currency={unreserved.currency} />
+        <Money
+          value={minorToMajor(unreserved.minorUnits, unreserved.currency)}
+          currency={unreserved.currency}
+        />
       ) : (
         "—"
       ),
@@ -1548,7 +1417,10 @@ export function ComfortablePurchaseSummary({
     {
       label: "Protected buffer",
       value: buffer ? (
-        <Money value={Number(buffer.minorUnits) / 100} currency={buffer.currency} />
+        <Money
+          value={minorToMajor(buffer.minorUnits, buffer.currency)}
+          currency={buffer.currency}
+        />
       ) : (
         "—"
       ),
@@ -1556,7 +1428,7 @@ export function ComfortablePurchaseSummary({
     {
       label: "Required bills / month",
       value: bills ? (
-        <Money value={Number(bills.minorUnits) / 100} currency={bills.currency} />
+        <Money value={minorToMajor(bills.minorUnits, bills.currency)} currency={bills.currency} />
       ) : (
         "—"
       ),
@@ -1566,7 +1438,7 @@ export function ComfortablePurchaseSummary({
       value: monthlySurplus ? (
         <>
           <Money
-            value={Number(monthlySurplus.minorUnits) / 100}
+            value={minorToMajor(monthlySurplus.minorUnits, monthlySurplus.currency)}
             currency={monthlySurplus.currency}
           />{" "}
           · {surplusSource}
@@ -1580,7 +1452,10 @@ export function ComfortablePurchaseSummary({
       value:
         wealthTarget && plan.inputs.targetWealthDate ? (
           <>
-            <Money value={Number(wealthTarget.minorUnits) / 100} currency={wealthTarget.currency} />{" "}
+            <Money
+              value={minorToMajor(wealthTarget.minorUnits, wealthTarget.currency)}
+              currency={wealthTarget.currency}
+            />{" "}
             by {monthLabel(plan.inputs.targetWealthDate.slice(0, 7))}
           </>
         ) : (
@@ -1591,7 +1466,7 @@ export function ComfortablePurchaseSummary({
       label: "Projected liquid wealth at target month",
       value: projectedAtTarget ? (
         <Money
-          value={Number(projectedAtTarget.minorUnits) / 100}
+          value={minorToMajor(projectedAtTarget.minorUnits, projectedAtTarget.currency)}
           currency={projectedAtTarget.currency}
         />
       ) : (
@@ -2632,6 +2507,7 @@ export function GoalsPage() {
   const investmentMonthly = activeGoals
     .filter((goal) => goal.record.type === "investment")
     .reduce((sum, goal) => sum + BigInt(goal.record.monthlyContribution.minorUnits), 0n);
+  const goalSummaryCurrency = visibleGoals[0]?.record.target.currency ?? "USD";
   const deadlineGoals = activeGoals.filter((goal) => goal.targetDate);
   const deadlineOnTrack = deadlineGoals.filter((goal) => goal.onTrack).length;
   const recommendation = !recommendedGoal
@@ -2680,17 +2556,32 @@ export function GoalsPage() {
       >
         <MetricCard
           label="Already assigned"
-          value={<Money value={Number(totalFunded) / 100} />}
+          value={
+            <Money
+              value={minorToMajor(totalFunded, goalSummaryCurrency)}
+              currency={goalSummaryCurrency}
+            />
+          }
           helper={`Across ${visibleGoals.length} visible goal${visibleGoals.length === 1 ? "" : "s"}`}
         />
         <MetricCard
           label="Monthly momentum"
-          value={<Money value={Number(monthlyCommitted) / 100} />}
+          value={
+            <Money
+              value={minorToMajor(monthlyCommitted, goalSummaryCurrency)}
+              currency={goalSummaryCurrency}
+            />
+          }
           helper="Active goal commitments"
         />
         <MetricCard
           label="Investing each month"
-          value={<Money value={Number(investmentMonthly) / 100} />}
+          value={
+            <Money
+              value={minorToMajor(investmentMonthly, goalSummaryCurrency)}
+              currency={goalSummaryCurrency}
+            />
+          }
           helper="Investment milestones only"
         />
         <MetricCard

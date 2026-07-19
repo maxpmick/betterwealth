@@ -14,7 +14,7 @@ import {
   transactions,
 } from "@betterwealth/db/schema";
 import { money, ruleSpecificity } from "@betterwealth/shared";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, or } from "drizzle-orm";
 import { Hono } from "hono";
 import { ulid } from "ulid";
 import { z } from "zod";
@@ -31,6 +31,8 @@ import {
 import { claimSimpleFinToken } from "../integrations/simplefin";
 import { FieldCipher, sha256 } from "../lib/crypto";
 import { AppError, ForbiddenError, NotFoundError } from "../lib/errors";
+import { idempotency } from "../lib/idempotency";
+import { listPageParams, paginateList } from "../lib/pagination";
 import { normalizeDescription } from "../sync/reconcile";
 import type { AppEnv } from "../types";
 
@@ -291,6 +293,7 @@ export function createIntegrationRoutes(
   const regenerateCategory =
     dependencies.regenerateTransactionCategory ?? regenerateTransactionCategory;
   routes.use("*", requireAuth(db, config));
+  routes.use("*", idempotency(db));
 
   routes.get("/connections", async (context) => {
     const auth = context.get("auth");
@@ -438,7 +441,6 @@ export function createIntegrationRoutes(
     if (!first) throw new NotFoundError("Active SimpleFIN connection");
     return context.json(
       {
-        syncRunId: first.id,
         syncRunIds: queued.map(({ id }) => id),
         state: queued.some(({ state }) => state === "queued") ? ("queued" as const) : first.state,
       },
@@ -448,13 +450,26 @@ export function createIntegrationRoutes(
 
   routes.get("/sync-runs", async (context) => {
     const auth = context.get("auth");
-    const rows = await db
+    const { limit, cursor } = listPageParams(context.req, 50);
+    const conditions = [eq(syncRuns.householdId, auth.householdId)];
+    if (cursor) {
+      const cursorCondition = or(
+        lt(syncRuns.createdAt, cursor.sortKey),
+        and(eq(syncRuns.createdAt, cursor.sortKey), lt(syncRuns.id, cursor.id)),
+      );
+      if (cursorCondition) conditions.push(cursorCondition);
+    }
+    const fetched = await db
       .select()
       .from(syncRuns)
-      .where(eq(syncRuns.householdId, auth.householdId))
-      .orderBy(desc(syncRuns.createdAt))
-      .limit(50);
-    return context.json({ data: rows, page: { cursor: null, hasMore: false } });
+      .where(and(...conditions))
+      .orderBy(desc(syncRuns.createdAt), desc(syncRuns.id))
+      .limit(limit + 1);
+    const { rows, page } = paginateList(fetched, limit, (row) => ({
+      sortKey: row.createdAt,
+      id: row.id,
+    }));
+    return context.json({ data: rows, page });
   });
 
   routes.get("/settings/integrations/ai", async (context) => {
@@ -539,13 +554,24 @@ export function createIntegrationRoutes(
       .passthrough()
       .parse(await context.req.json());
     if (input.ai) {
+      if (input.ai.enabled && !input.ai.consentedFields?.length) {
+        // Enabling AI records disclosure consent, so the request must carry the
+        // explicit field list the user agreed to — never imply it server-side.
+        throw new AppError(
+          "Enabling AI requires an explicit consentedFields list",
+          400,
+          "ai_consent_required",
+        );
+      }
       const repositories = createHouseholdRepositories(db, auth.householdId);
       const previousStored = repositories.settings.get("integration.openrouter", auth.user.id);
       const cipher = new FieldCipher(config.ENCRYPTION_KEY);
       const previous = previousStored
         ? decodeAiSettings(cipher, auth.householdId, auth.user.id, previousStored.value)
         : undefined;
-      const apiKey = previous?.apiKey ?? config.BOOTSTRAP_OPENROUTER_API_KEY;
+      // Only a key the user configured themselves (via PUT) may back the toggle —
+      // the server bootstrap key is not per-user consent.
+      const apiKey = previous?.apiKey;
       if (input.ai.enabled && !apiKey) throw new NotFoundError("AI API key");
       if (apiKey) {
         const secret: AiSettingsSecret = {
@@ -611,9 +637,14 @@ export function createIntegrationRoutes(
   routes.post("/ai/suggestions/transactions/:id", requireCsrf(config), async (context) => {
     const auth = context.get("auth");
     const transaction = await db
-      .select({ transaction: transactions, account: accounts })
+      .select({
+        transaction: transactions,
+        account: accounts,
+        connectionOwnerUserId: connections.ownerUserId,
+      })
       .from(transactions)
       .innerJoin(accounts, eq(accounts.id, transactions.accountId))
+      .leftJoin(connections, eq(connections.id, accounts.connectionId))
       .where(
         and(
           eq(transactions.householdId, auth.householdId),
@@ -622,6 +653,16 @@ export function createIntegrationRoutes(
       )
       .get();
     if (!transaction) throw new NotFoundError("Transaction");
+    const disclosureOwners = new Set(
+      [transaction.account.ownerUserId, transaction.connectionOwnerUserId].filter(
+        (owner): owner is string => Boolean(owner),
+      ),
+    );
+    if (disclosureOwners.size !== 1 || !disclosureOwners.has(auth.user.id)) {
+      // Fail closed like the batch and regenerate paths: do not disclose whether
+      // another household member owns the underlying transaction.
+      throw new NotFoundError("Transaction");
+    }
     const categoryRows = await db
       .select({
         id: categories.id,
@@ -632,22 +673,9 @@ export function createIntegrationRoutes(
       })
       .from(categories)
       .where(and(eq(categories.householdId, auth.householdId), eq(categories.isActive, true)));
-    const repositories = createHouseholdRepositories(db, auth.householdId);
-    const stored = repositories.settings.get("integration.openrouter", auth.user.id);
-    const cipher = new FieldCipher(config.ENCRYPTION_KEY);
-    const configured = stored
-      ? decodeAiSettings(cipher, auth.householdId, auth.user.id, stored.value)
-      : config.BOOTSTRAP_OPENROUTER_API_KEY
-        ? {
-            enabled: true,
-            consent: true as const,
-            baseUrl: config.OPENROUTER_BASE_URL,
-            model: config.BOOTSTRAP_OPENROUTER_MODEL,
-            apiKey: config.BOOTSTRAP_OPENROUTER_API_KEY,
-            confidenceThreshold: 0.9,
-            webResearchEnabled: false,
-          }
-        : undefined;
+    // Per-user settings only — a bootstrap server key is not disclosure consent
+    // (same source as the regenerate route).
+    const configured = configuredAiForUser(db, config, auth.householdId, auth.user.id);
     if (!configured?.enabled) throw new NotFoundError("Enabled AI integration");
     const suggestion = await suggestTransactionCategory({
       apiKey: configured.apiKey,
@@ -697,7 +725,16 @@ export function createIntegrationRoutes(
 
   routes.get("/ai/suggestions", async (context) => {
     const auth = context.get("auth");
-    const [rows, taxonomy] = await Promise.all([
+    const { limit, cursor } = listPageParams(context.req, 1_000);
+    const conditions = [eq(aiSuggestions.householdId, auth.householdId)];
+    if (cursor) {
+      const cursorCondition = or(
+        lt(aiSuggestions.createdAt, cursor.sortKey),
+        and(eq(aiSuggestions.createdAt, cursor.sortKey), lt(aiSuggestions.id, cursor.id)),
+      );
+      if (cursorCondition) conditions.push(cursorCondition);
+    }
+    const [fetched, taxonomy] = await Promise.all([
       db
         .select({
           suggestion: aiSuggestions,
@@ -710,9 +747,9 @@ export function createIntegrationRoutes(
         .from(aiSuggestions)
         .innerJoin(transactions, eq(transactions.id, aiSuggestions.transactionId))
         .leftJoin(categories, eq(categories.id, aiSuggestions.suggestedCategoryId))
-        .where(eq(aiSuggestions.householdId, auth.householdId))
-        .orderBy(desc(aiSuggestions.createdAt))
-        .limit(1_000),
+        .where(and(...conditions))
+        .orderBy(desc(aiSuggestions.createdAt), desc(aiSuggestions.id))
+        .limit(limit + 1),
       db
         .select({
           id: categories.id,
@@ -724,6 +761,10 @@ export function createIntegrationRoutes(
         .from(categories)
         .where(eq(categories.householdId, auth.householdId)),
     ]);
+    const { rows, page } = paginateList(fetched, limit, ({ suggestion }) => ({
+      sortKey: suggestion.createdAt,
+      id: suggestion.id,
+    }));
     const taxonomyPaths = categoryPathMap(taxonomy);
     return context.json({
       data: rows
@@ -757,7 +798,7 @@ export function createIntegrationRoutes(
             status: suggestion.status,
           }),
         ),
-      page: { cursor: null, hasMore: false },
+      page,
     });
   });
 

@@ -41,19 +41,13 @@ import { LineChart } from "@mui/x-charts/LineChart";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
-import {
-  type ApiForecast,
-  type ApiForecastRangePoint,
-  type Money as ApiMoney,
-  type ApiScenario,
-  api,
-  type CursorPage,
-} from "../api";
+import { type ApiForecast, type Money as ApiMoney, type ApiScenario, api } from "../api";
 import { Stack, TextField, Typography } from "../components/mui";
 import {
   ChartMaskedState,
   EmptyState,
   ErrorState,
+  formatMoney,
   LoadingCard,
   MetricCard,
   Money,
@@ -62,15 +56,16 @@ import {
   StatusChip,
 } from "../components/ui";
 import { usePrivacy } from "../contexts";
-import { forecastHistory } from "../data";
 import { isDemoMode } from "../demo";
+import { demoForecastFor, demoForecasts, demoScenarios } from "../demoApi";
+import { chartTickFormatter, minorToMajor } from "../lib/money";
 
 function forecastMoney(value: number): ApiMoney {
   return { minorUnits: String(Math.round(value * 100)), currency: "USD" };
 }
 
 function minor(money: ApiMoney | undefined): number {
-  return money ? Number(money.minorUnits) / 100 : 0;
+  return money ? minorToMajor(money.minorUnits, money.currency) : 0;
 }
 
 function displayMonth(month: string, includeYear = true): string {
@@ -98,150 +93,6 @@ function sampledRows<T>(rows: T[], maximum = 5): T[] {
   }
   return result;
 }
-
-const demoScenario: ApiScenario = {
-  id: "scenario_demo_baseline",
-  name: "Baseline",
-  preset: "baseline",
-  assumptions: {
-    incomeGrowth: 3.2,
-    inflation: 2.6,
-    investmentReturn: 6.5,
-    cashYield: 4.1,
-    monthlyInvesting: forecastMoney(700),
-  },
-  seed: 300122,
-  isBase: true,
-};
-
-const demoScenarios: CursorPage<ApiScenario> = {
-  data: [
-    {
-      ...demoScenario,
-      id: "scenario_demo_conservative",
-      name: "Conservative",
-      preset: "conservative",
-      assumptions: { ...demoScenario.assumptions, investmentReturn: 4 },
-      seed: 300121,
-      isBase: false,
-    },
-    demoScenario,
-    {
-      ...demoScenario,
-      id: "scenario_demo_ambitious",
-      name: "Ambitious",
-      preset: "ambitious",
-      assumptions: {
-        ...demoScenario.assumptions,
-        incomeGrowth: 5,
-        investmentReturn: 8.5,
-        monthlyInvesting: forecastMoney(1000),
-      },
-      seed: 300123,
-      isBase: false,
-    },
-  ],
-  page: { cursor: null, hasMore: false },
-};
-
-function demoForecastFor(scenario: ApiScenario): ApiForecast {
-  const key =
-    scenario.preset === "conservative"
-      ? "conservative"
-      : scenario.preset === "ambitious"
-        ? "ambitious"
-        : "baseline";
-  const defaults =
-    key === "conservative"
-      ? { incomeGrowth: 3.2, inflation: 2.6, investmentReturn: 4, cashYield: 4.1, monthly: 700 }
-      : key === "ambitious"
-        ? {
-            incomeGrowth: 5,
-            inflation: 2.6,
-            investmentReturn: 8.5,
-            cashYield: 4.1,
-            monthly: 1000,
-          }
-        : {
-            incomeGrowth: 3.2,
-            inflation: 2.6,
-            investmentReturn: 6.5,
-            cashYield: 4.1,
-            monthly: 700,
-          };
-  const monthly = minor(scenario.assumptions.monthlyInvesting);
-  const trajectory = forecastHistory.map((row, index) => {
-    const value = Math.max(
-      0,
-      row[key] +
-        (monthly - defaults.monthly) * 12 * index * (1 + index * 0.025) +
-        (scenario.assumptions.investmentReturn - defaults.investmentReturn) *
-          row[key] *
-          index *
-          0.004 +
-        (scenario.assumptions.incomeGrowth - defaults.incomeGrowth) * 180 * index ** 2 -
-        (scenario.assumptions.inflation - defaults.inflation) * 110 * index ** 2 +
-        (scenario.assumptions.cashYield - defaults.cashYield) * 35 * index ** 2,
-    );
-    return {
-      month: `${2026 + index}-07`,
-      liquidCash: forecastMoney(value),
-      netWorth: forecastMoney(value),
-    };
-  });
-  const ranges: ApiForecastRangePoint[] = trajectory.map((point, index) => {
-    const value = minor(point.netWorth);
-    const wideSpread = Math.min(0.32, index * 0.04);
-    const narrowSpread = wideSpread / 2;
-    const range = {
-      p10: forecastMoney(value * (1 - wideSpread)),
-      p25: forecastMoney(value * (1 - narrowSpread)),
-      p50: forecastMoney(value),
-      p75: forecastMoney(value * (1 + narrowSpread)),
-      p90: forecastMoney(value * (1 + wideSpread)),
-    };
-    return { month: point.month, netWorth: range, liquidCash: range };
-  });
-  const ending = trajectory.at(-1) ?? {
-    month: "2034-07",
-    liquidCash: forecastMoney(0),
-    netWorth: forecastMoney(0),
-  };
-  const finalRange = ranges.at(-1)?.netWorth ?? {};
-  return {
-    id: `forecast_${scenario.id}`,
-    scenarioId: scenario.id,
-    engineVersion: "1.0.0",
-    seed: scenario.seed,
-    state: "succeeded",
-    horizonDate: "2034-07-01",
-    liquidNetWorthAtTarget: ending.liquidCash,
-    totalNetWorthAtTarget: ending.netWorth,
-    lowestCashBalance: forecastMoney(1084),
-    debtFreeDate: "2028-10-01",
-    percentiles: ([10, 25, 50, 75, 90] as const).map((percentile) => ({
-      percentile,
-      amount: finalRange[`p${percentile}`] ?? ending.netWorth,
-    })),
-    trajectory,
-    monteCarlo: {
-      runs: 1000,
-      goalSuccessProbability: Math.max(0.1, Math.min(0.95, minor(ending.netWorth) / 250_000)),
-      ranges,
-    },
-    readiness: {
-      score: 92,
-      missingInputs: ["Confirm the next credit-card statement"],
-      confidenceLabel: "High",
-    },
-    createdAt: "2026-07-16T10:42:00.000Z",
-  };
-}
-
-const demoForecasts: CursorPage<ApiForecast> = {
-  data: demoScenarios.data.map(demoForecastFor),
-  page: { cursor: null, hasMore: false },
-};
 
 function ForecastChart({
   forecast,
@@ -271,6 +122,7 @@ function ForecastChart({
   );
   const hasRanges = Boolean(forecast?.monteCarlo?.ranges.length);
   const tableRows = sampledRows(forecast?.monteCarlo?.ranges ?? []);
+  const currency = forecast?.totalNetWorthAtTarget.currency ?? "USD";
 
   return (
     <Card>
@@ -325,7 +177,7 @@ function ForecastChart({
                   xAxis={[{ dataKey: "month", scaleType: "point" }]}
                   yAxis={[
                     {
-                      valueFormatter: (value: number) => `$${Math.round(Number(value) / 1000)}k`,
+                      valueFormatter: chartTickFormatter(currency),
                       width: 58,
                     },
                   ]}
@@ -338,7 +190,7 @@ function ForecastChart({
                             color: "#D98B2B",
                             showMark: false,
                             valueFormatter: (value: number | null) =>
-                              `$${Number(value ?? 0).toLocaleString()}`,
+                              formatMoney(Number(value ?? 0), currency),
                           },
                           {
                             dataKey: "p50",
@@ -346,7 +198,7 @@ function ForecastChart({
                             color: "#4A7FD1",
                             showMark: false,
                             valueFormatter: (value: number | null) =>
-                              `$${Number(value ?? 0).toLocaleString()}`,
+                              formatMoney(Number(value ?? 0), currency),
                           },
                           {
                             dataKey: "p90",
@@ -354,7 +206,7 @@ function ForecastChart({
                             color: "#7F6BB2",
                             showMark: false,
                             valueFormatter: (value: number | null) =>
-                              `$${Number(value ?? 0).toLocaleString()}`,
+                              formatMoney(Number(value ?? 0), currency),
                           },
                         ]
                       : []),
@@ -365,7 +217,7 @@ function ForecastChart({
                       area: !hasRanges,
                       showMark: false,
                       valueFormatter: (value: number | null) =>
-                        `$${Number(value ?? 0).toLocaleString()}`,
+                        formatMoney(Number(value ?? 0), currency),
                     },
                   ]}
                   grid={{ horizontal: true }}

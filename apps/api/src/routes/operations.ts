@@ -28,7 +28,7 @@ import {
   transactions,
   users,
 } from "@betterwealth/db/schema";
-import { and, desc, eq, ne } from "drizzle-orm";
+import { and, desc, eq, lt, ne, or } from "drizzle-orm";
 import { Hono } from "hono";
 import { ulid } from "ulid";
 import { z } from "zod";
@@ -37,6 +37,8 @@ import { requireRole } from "../auth/service";
 import type { AppConfig } from "../config";
 import { sha256 } from "../lib/crypto";
 import { ForbiddenError, NotFoundError } from "../lib/errors";
+import { idempotency } from "../lib/idempotency";
+import { listPageParams, paginateList } from "../lib/pagination";
 import type { AppEnv } from "../types";
 
 function jsonSafe<T>(value: T): T {
@@ -60,13 +62,27 @@ const profilePatchSchema = z
       .regex(/^[A-Za-z]{3}$/)
       .transform((value) => value.toUpperCase())
       .optional(),
-    timezone: z.string().trim().min(1).max(100).optional(),
+    timezone: z
+      .string()
+      .trim()
+      .min(1)
+      .max(100)
+      .refine((value) => {
+        try {
+          new Intl.DateTimeFormat("en-US", { timeZone: value });
+          return true;
+        } catch {
+          return false;
+        }
+      }, "Expected an IANA timezone such as America/New_York")
+      .optional(),
   })
   .strict();
 
 export function createOperationRoutes(db: BetterWealthDatabase, config: AppConfig) {
   const routes = new Hono<AppEnv>();
   routes.use("*", requireAuth(db, config));
+  routes.use("*", idempotency(db));
 
   routes.get("/profile", async (context) => {
     const auth = context.get("auth");
@@ -225,13 +241,26 @@ export function createOperationRoutes(db: BetterWealthDatabase, config: AppConfi
   routes.get("/audit-events", async (context) => {
     const auth = context.get("auth");
     requireRole(auth, ["owner", "admin"]);
-    const rows = await db
+    const { limit, cursor } = listPageParams(context.req, 250);
+    const conditions = [eq(auditEvents.householdId, auth.householdId)];
+    if (cursor) {
+      const cursorCondition = or(
+        lt(auditEvents.occurredAt, cursor.sortKey),
+        and(eq(auditEvents.occurredAt, cursor.sortKey), lt(auditEvents.id, cursor.id)),
+      );
+      if (cursorCondition) conditions.push(cursorCondition);
+    }
+    const fetched = await db
       .select()
       .from(auditEvents)
-      .where(eq(auditEvents.householdId, auth.householdId))
-      .orderBy(desc(auditEvents.occurredAt))
-      .limit(250);
-    return context.json({ data: rows, page: { cursor: null, hasMore: false } });
+      .where(and(...conditions))
+      .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
+      .limit(limit + 1);
+    const { rows, page } = paginateList(fetched, limit, (row) => ({
+      sortKey: row.occurredAt,
+      id: row.id,
+    }));
+    return context.json({ data: rows, page });
   });
 
   routes.get("/data-export", async (context) => {
