@@ -16,7 +16,6 @@ import {
   AccordionDetails,
   AccordionSummary,
   Alert,
-  alpha,
   Box,
   Button,
   Card,
@@ -33,6 +32,7 @@ import {
   TableCell,
   TableHead,
   TableRow,
+  useTheme,
 } from "@mui/material";
 import { LineChart } from "@mui/x-charts/LineChart";
 import { type UseQueryResult, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -177,36 +177,12 @@ function SafeToSpendHero({
     BigInt(report.goalContributions.minorUnits) -
     BigInt(report.minimumBuffer.minorUnits);
   return (
-    <Card
-      sx={{
-        color: "#fff",
-        overflow: "hidden",
-        border: 0,
-        position: "relative",
-        background: "linear-gradient(122deg, #1B3354 0%, #23546A 57%, #188161 122%)",
-        boxShadow: "0 28px 62px rgba(27,72,82,.24)",
-      }}
-    >
-      <Box
-        aria-hidden
-        sx={{
-          position: "absolute",
-          width: 320,
-          height: 320,
-          borderRadius: "50%",
-          right: -110,
-          top: -165,
-          border: "1px solid rgba(255,255,255,.09)",
-          boxShadow: "0 0 0 55px rgba(255,255,255,.025), 0 0 0 110px rgba(255,255,255,.018)",
-        }}
-      />
-      <CardContent
-        sx={{ position: "relative", p: { xs: 5, sm: 7 }, "&:last-child": { pb: { xs: 5, sm: 7 } } }}
-      >
+    <Card>
+      <CardContent sx={{ p: { xs: 5, sm: 7 }, "&:last-child": { pb: { xs: 5, sm: 7 } } }}>
         <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" gap={3}>
           <Box>
             <Stack direction="row" alignItems="center" gap={1.5}>
-              <Typography sx={{ color: "rgba(255,255,255,.72)", fontWeight: 650 }}>
+              <Typography variant="body2" color="text.secondary">
                 Safe to spend
               </Typography>
               <HelpTip
@@ -217,18 +193,10 @@ function SafeToSpendHero({
                 }
               />
             </Stack>
-            <Typography
-              sx={{
-                mt: 2,
-                fontSize: { xs: "3rem", sm: "4rem" },
-                lineHeight: 1,
-                fontWeight: 760,
-                letterSpacing: "-0.055em",
-              }}
-            >
+            <Typography variant="h3" sx={{ mt: 2 }}>
               <Money value={minor(report.safeToSpend)} currency={report.safeToSpend.currency} />
             </Typography>
-            <Typography sx={{ mt: 2, color: "rgba(255,255,255,.74)" }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
               <Money value={minor(report.safePerDay)} currency={report.safePerDay.currency} /> per
               day ·{" "}
               {report.coveredThroughSource === "income_source" ? "covered" : "planning window"}{" "}
@@ -254,27 +222,15 @@ function SafeToSpendHero({
             />
           </Box>
         </Stack>
-        <Accordion
-          disableGutters
-          elevation={0}
-          sx={{
-            mt: 6,
-            color: "#fff",
-            bgcolor: "rgba(255,255,255,.08)",
-            border: "1px solid rgba(255,255,255,.12)",
-            "&::before": { display: "none" },
-          }}
-        >
+        <Accordion sx={{ mt: 6 }}>
           <AccordionSummary
-            expandIcon={<ExpandMoreRounded sx={{ color: "#fff" }} />}
+            expandIcon={<ExpandMoreRounded />}
             aria-controls="safe-formula-content"
             id="safe-formula-header"
           >
             <Stack direction="row" gap={2} alignItems="center">
-              <ShieldRounded sx={{ fontSize: 19, color: "#69DEB4" }} />
-              <Typography variant="body2" fontWeight={700}>
-                Show how this is calculated
-              </Typography>
+              <ShieldRounded fontSize="small" />
+              <Typography variant="body2">Show how this is calculated</Typography>
             </Stack>
           </AccordionSummary>
           <AccordionDetails id="safe-formula-content">
@@ -293,17 +249,17 @@ function SafeToSpendHero({
                 ["Min. buffer", minor(report.minimumBuffer), "−"],
               ].map(([label, value, operator]) => (
                 <Box key={String(label)}>
-                  <Typography variant="caption" sx={{ color: "rgba(255,255,255,.6)" }}>
+                  <Typography variant="caption" color="text.secondary">
                     {operator} {label}
                   </Typography>
-                  <Typography fontWeight={720} sx={{ mt: 0.5 }}>
+                  <Typography sx={{ mt: 0.5 }}>
                     <Money value={Number(value)} currency={report.safeToSpend.currency} />
                   </Typography>
                 </Box>
               ))}
             </Box>
-            <Divider sx={{ my: 3, borderColor: "rgba(255,255,255,.14)" }} />
-            <Typography variant="body2" sx={{ color: "rgba(255,255,255,.72)" }}>
+            <Divider sx={{ my: 3 }} />
+            <Typography variant="body2" color="text.secondary">
               {rawSafeToSpend < 0n ? (
                 <>
                   The raw formula is{" "}
@@ -311,7 +267,7 @@ function SafeToSpendHero({
                     value={minorToMajor(rawSafeToSpend, report.safeToSpend.currency)}
                     currency={report.safeToSpend.currency}
                   />
-                  . Safe to spend is deliberately floored at{" "}
+                  . Safe to spend is floored at{" "}
                   <Money value={0} currency={report.safeToSpend.currency} />.
                 </>
               ) : (
@@ -328,9 +284,9 @@ function SafeToSpendHero({
           sx={{
             mt: 4,
             p: { xs: 3.5, sm: 4 },
-            borderRadius: 3,
-            bgcolor: "rgba(8,22,29,.22)",
-            border: "1px solid rgba(255,255,255,.1)",
+            border: "1px solid",
+            borderColor: "divider",
+            borderRadius: 1,
           }}
         >
           <Stack
@@ -344,21 +300,22 @@ function SafeToSpendHero({
                 sx={{
                   width: 38,
                   height: 38,
-                  borderRadius: 2.5,
+                  borderRadius: 1,
                   display: "grid",
                   placeItems: "center",
                   flex: "0 0 auto",
-                  bgcolor: "rgba(255,255,255,.12)",
+                  bgcolor: "action.hover",
+                  color: "text.secondary",
                 }}
               >
                 {hasAction ? (
-                  <AutoAwesomeRounded sx={{ fontSize: 20 }} />
+                  <AutoAwesomeRounded fontSize="small" />
                 ) : (
-                  <ShieldRounded sx={{ fontSize: 20 }} />
+                  <ShieldRounded fontSize="small" />
                 )}
               </Box>
               <Box>
-                <Typography variant="body2" fontWeight={750}>
+                <Typography variant="subtitle2">
                   {actionLoading ? (
                     "Calculating this week’s action…"
                   ) : actionError ? (
@@ -378,12 +335,13 @@ function SafeToSpendHero({
                   ) : goal ? (
                     `${goal.name} has no remaining weekly action`
                   ) : (
-                    "Set a goal to give your surplus a job"
+                    "Set a goal to start weekly earmarks"
                   )}
                 </Typography>
                 <Typography
                   variant="caption"
-                  sx={{ display: "block", mt: 0.75, color: "rgba(255,255,255,.65)" }}
+                  color="text.secondary"
+                  sx={{ display: "block", mt: 0.75 }}
                 >
                   {hasAction
                     ? "Capped by the goal’s annualized weekly pace, remaining target, and money already reserved for goals."
@@ -397,11 +355,10 @@ function SafeToSpendHero({
             </Stack>
             {hasAction ? (
               <Button
-                color="inherit"
                 variant="outlined"
                 endIcon={<ArrowForwardRounded />}
                 onClick={() => setImpactOpen(true)}
-                sx={{ color: "#fff", borderColor: "rgba(255,255,255,.25)", whiteSpace: "nowrap" }}
+                sx={{ whiteSpace: "nowrap" }}
               >
                 Preview impact
               </Button>
@@ -409,10 +366,9 @@ function SafeToSpendHero({
               <Button
                 component={RouterLink}
                 to="/goals?action=add"
-                color="inherit"
                 variant="outlined"
                 endIcon={<ArrowForwardRounded />}
-                sx={{ color: "#fff", borderColor: "rgba(255,255,255,.25)", whiteSpace: "nowrap" }}
+                sx={{ whiteSpace: "nowrap" }}
               >
                 Create a goal
               </Button>
@@ -433,22 +389,22 @@ function SafeToSpendHero({
               This records an allocation toward {goal?.name}. It does not move money at your bank or
               rewrite an imported transaction.
             </Typography>
-            <Box sx={{ p: 4, bgcolor: "action.hover", borderRadius: 3 }}>
+            <Box sx={{ p: 4, bgcolor: "action.hover", borderRadius: 1 }}>
               <Stack direction="row" justifyContent="space-between">
                 <Typography variant="body2">Contribution</Typography>
-                <Typography variant="body2" fontWeight={750}>
+                <Typography variant="body2">
                   <Money value={suggested} currency={report.safeToSpend.currency} />
                 </Typography>
               </Stack>
               <Stack direction="row" justifyContent="space-between" sx={{ mt: 2 }}>
                 <Typography variant="body2">Already recorded this week</Typography>
-                <Typography variant="body2" fontWeight={750}>
+                <Typography variant="body2">
                   <Money value={recorded} currency={report.safeToSpend.currency} />
                 </Typography>
               </Stack>
               <Stack direction="row" justifyContent="space-between" sx={{ mt: 2 }}>
                 <Typography variant="body2">Goal remaining afterward</Typography>
-                <Typography variant="body2" fontWeight={750}>
+                <Typography variant="body2">
                   <Money
                     value={Math.max(0, remaining - suggested)}
                     currency={report.safeToSpend.currency}
@@ -457,7 +413,7 @@ function SafeToSpendHero({
               </Stack>
               <Stack direction="row" justifyContent="space-between" sx={{ mt: 2 }}>
                 <Typography variant="body2">Safe-to-spend afterward</Typography>
-                <Typography variant="body2" fontWeight={750}>
+                <Typography variant="body2">
                   <Money value={minor(report.safeToSpend)} currency={report.safeToSpend.currency} />
                 </Typography>
               </Stack>
@@ -507,6 +463,7 @@ function WealthChart({
   onRangeChange: (range: string) => void;
 }) {
   const { privacyEnabled } = usePrivacy();
+  const theme = useTheme();
   const history =
     query.data?.series.map((row) => ({
       month: formatDate(row.date, { month: "short", year: "2-digit" }),
@@ -530,12 +487,7 @@ function WealthChart({
     <Card sx={{ minWidth: 0 }}>
       <CardContent sx={{ p: { xs: 4, sm: 5 } }}>
         <SectionHeader
-          title="Net-worth momentum"
-          description={
-            history.length > 1
-              ? `${history.length} dated account and valuation snapshots are included.`
-              : "Add or sync more than one dated snapshot to reveal momentum."
-          }
+          title="Net worth"
           action={
             <Stack direction="row">
               {["3M", "1Y", "All"].map((item) => (
@@ -574,7 +526,7 @@ function WealthChart({
                     {
                       dataKey: "total",
                       label: "Total net worth",
-                      color: "#1F3A5F",
+                      color: theme.palette.primary.main,
                       area: true,
                       showMark: false,
                       valueFormatter: (value) => formatMoney(Number(value ?? 0), currency),
@@ -582,7 +534,7 @@ function WealthChart({
                     {
                       dataKey: "liquid",
                       label: "Liquid net worth",
-                      color: "#1F9D72",
+                      color: theme.palette.success.main,
                       showMark: false,
                       valueFormatter: (value) => formatMoney(Number(value ?? 0), currency),
                     },
@@ -597,8 +549,8 @@ function WealthChart({
               {privacyEnabled
                 ? "Chart values are hidden."
                 : history.length === 1
-                  ? `Current synced baseline: ${new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(history[0]?.total ?? 0)} total and ${new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(history[0]?.liquid ?? 0)} liquid. Add a later complete snapshot before reading this as momentum.`
-                  : `Summary: total net worth moved from ${new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(history[0]?.total ?? 0)} to ${new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(history.at(-1)?.total ?? 0)}.`}
+                  ? `Current synced baseline: ${new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(history[0]?.total ?? 0)} total and ${new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(history[0]?.liquid ?? 0)} liquid.`
+                  : `Total net worth moved from ${new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(history[0]?.total ?? 0)} to ${new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(history.at(-1)?.total ?? 0)}.`}
             </Typography>
             <Accordion
               disableGutters
@@ -606,9 +558,7 @@ function WealthChart({
               sx={{ mt: 2, border: 0, "&::before": { display: "none" } }}
             >
               <AccordionSummary expandIcon={<ExpandMoreRounded />} sx={{ px: 0 }}>
-                <Typography variant="body2" fontWeight={700}>
-                  View chart data table
-                </Typography>
+                <Typography variant="body2">View chart data table</Typography>
               </AccordionSummary>
               <AccordionDetails sx={{ px: 0, overflowX: "auto" }}>
                 <Table size="small">
@@ -670,17 +620,11 @@ function EnvelopeGrid({
       </Card>
     );
   const active = query.data.data.slice(0, 6);
-  const attention = active.filter((envelope) => envelope.pacing !== "on_track").length;
   return (
     <Card>
       <CardContent sx={{ p: { xs: 4, sm: 5 } }}>
         <SectionHeader
           title="Envelope pace"
-          description={
-            active.length
-              ? `${attention} of ${active.length} envelopes ${attention === 1 ? "needs" : "need"} attention.`
-              : "No funded envelopes are available for this period."
-          }
           action={
             <Button component={RouterLink} to="/budget" endIcon={<ArrowForwardRounded />}>
               Open budget
@@ -702,20 +646,18 @@ function EnvelopeGrid({
               const used = funded ? (activity / funded) * 100 : 0;
               const tone =
                 envelope.pacing === "over"
-                  ? "#DD625B"
+                  ? "error"
                   : envelope.pacing === "watch"
-                    ? "#D98B2B"
-                    : "#1F9D72";
+                    ? "warning"
+                    : "success";
               return (
                 <Box
                   key={envelope.id}
-                  sx={{ p: 3.5, border: "1px solid", borderColor: "divider", borderRadius: 3 }}
+                  sx={{ p: 3.5, border: "1px solid", borderColor: "divider", borderRadius: 1 }}
                 >
                   <Stack direction="row" justifyContent="space-between" gap={2}>
-                    <Typography variant="body2" fontWeight={700}>
-                      {envelope.name}
-                    </Typography>
-                    <Typography variant="body2" fontWeight={750}>
+                    <Typography variant="subtitle2">{envelope.name}</Typography>
+                    <Typography variant="body2">
                       <Money
                         value={minor(envelope.available)}
                         currency={envelope.available.currency}
@@ -796,13 +738,6 @@ function ActivityAndBills({
         <CardContent sx={{ p: { xs: 4, sm: 5 } }}>
           <SectionHeader
             title="Recent activity"
-            description={
-              transactionsQuery.isPending
-                ? "Loading your latest ledger entries…"
-                : recent.length
-                  ? `${recent.filter((item) => item.reviewState === "needs_review").length} of the latest ${recent.length} need review.`
-                  : "No imported or manual transactions yet."
-            }
             action={
               <Button component={RouterLink} to="/transactions">
                 View all
@@ -833,14 +768,11 @@ function ActivityAndBills({
                     sx={{
                       width: 38,
                       height: 38,
-                      borderRadius: 2.5,
+                      borderRadius: 1,
                       display: "grid",
                       placeItems: "center",
                       flex: "0 0 auto",
-                      bgcolor:
-                        item.reviewState === "needs_review"
-                          ? alpha("#D98B2B", 0.12)
-                          : "action.hover",
+                      bgcolor: "action.hover",
                       color:
                         item.reviewState === "needs_review" ? "warning.main" : "text.secondary",
                     }}
@@ -852,7 +784,7 @@ function ActivityAndBills({
                     )}
                   </Box>
                   <Box sx={{ minWidth: 0, flex: 1 }}>
-                    <Typography variant="body2" fontWeight={700} noWrap>
+                    <Typography variant="subtitle2" noWrap>
                       {item.merchant || item.description}
                     </Typography>
                     <Typography variant="caption" color="text.secondary" noWrap>
@@ -860,7 +792,7 @@ function ActivityAndBills({
                     </Typography>
                   </Box>
                   <Box sx={{ textAlign: "right" }}>
-                    <Typography variant="body2" fontWeight={750}>
+                    <Typography variant="body2">
                       <Money value={minor(item.amount)} currency={item.amount.currency} sign />
                     </Typography>
                     {item.reviewState === "needs_review" ? (
@@ -879,8 +811,8 @@ function ActivityAndBills({
           ) : (
             <EmptyState
               icon={<ReceiptLongRounded />}
-              title="Your ledger is empty"
-              description="Connect SimpleFIN or add a manual transaction to start tracing where your money goes."
+              title="No transactions yet"
+              description="Connect SimpleFIN or add a manual transaction to get started."
               actionLabel="Open transactions"
               onAction={() => {
                 window.location.href = "/transactions";
@@ -895,7 +827,6 @@ function ActivityAndBills({
             title={
               report.coveredThroughSource === "income_source" ? "Before payday" : "Planning window"
             }
-            description={`${report.coveredThroughSource === "income_source" ? "Covered" : "Temporary window"} through ${formatDate(report.coveredThrough, { month: "short", day: "numeric" })}`}
           />
           {billsQuery.isPending ? (
             <Box sx={{ mt: 4 }}>
@@ -916,16 +847,16 @@ function ActivityAndBills({
                     sx={{
                       width: 40,
                       height: 40,
-                      borderRadius: 2.5,
+                      borderRadius: 1,
                       display: "grid",
                       placeItems: "center",
                       bgcolor: "action.hover",
                     }}
                   >
-                    <CalendarMonthRounded sx={{ fontSize: 19, color: "text.secondary" }} />
+                    <CalendarMonthRounded fontSize="small" sx={{ color: "text.secondary" }} />
                   </Box>
                   <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography variant="body2" fontWeight={700} noWrap>
+                    <Typography variant="subtitle2" noWrap>
                       {bill.name}
                     </Typography>
                     <Typography variant="caption" color="text.secondary">
@@ -933,7 +864,7 @@ function ActivityAndBills({
                       {bill.autopayAccountId ? " · autopay" : bill.isRequired ? " · required" : ""}
                     </Typography>
                   </Box>
-                  <Typography variant="body2" fontWeight={750}>
+                  <Typography variant="body2">
                     <Money value={minor(bill.amountMax)} currency={bill.amountMax.currency} />
                   </Typography>
                 </Stack>
@@ -1076,11 +1007,7 @@ export function TodayPage() {
   if (dashboard.isPending)
     return (
       <Stack gap={4}>
-        <PageHeader
-          eyebrow="Today"
-          title="Loading your plan"
-          description="Reconciling balances, bills, envelopes, and goals."
-        />
+        <PageHeader title="Today" />
         <LoadingCard rows={5} />
         <LoadingCard rows={3} />
       </Stack>
@@ -1088,13 +1015,9 @@ export function TodayPage() {
   if (!dashboard.data)
     return (
       <Stack gap={4}>
-        <PageHeader
-          eyebrow="Today"
-          title="Your plan is temporarily unavailable"
-          description="No estimate is safer than an invented one."
-        />
+        <PageHeader title="Today" />
         <ErrorState
-          message="BetterWealth could not load a trusted dashboard report."
+          message="The dashboard report could not be loaded."
           onRetry={() => dashboard.refetch()}
         />
       </Stack>
@@ -1139,17 +1062,7 @@ export function TodayPage() {
   return (
     <Stack gap={{ xs: 5, sm: 6 }}>
       <PageHeader
-        eyebrow={formatDate(new Date().toISOString(), {
-          weekday: "long",
-          month: "long",
-          day: "numeric",
-        })}
         title={`${greeting()}, ${firstName}`}
-        description={
-          report.trust.state === "ready"
-            ? "Your balances and commitments are reconciled. Here is the next useful move."
-            : "Your planning gaps are explicit below. Treat safe to spend as provisional until setup is complete."
-        }
         actions={
           <Button
             component={RouterLink}
@@ -1187,8 +1100,7 @@ export function TodayPage() {
       />
       <PlanFlowCard
         testId="today-money-loop"
-        title="Your paycheck-to-freedom loop"
-        description="Four connected checks turn income into protected bills, a clean ledger, and measurable progress toward future-you."
+        title="Plan overview"
         steps={[
           {
             id: "paycheck",
@@ -1203,10 +1115,9 @@ export function TodayPage() {
             ),
             detail: currentBudget
               ? `${budgetEnvelopes.length} active envelope${budgetEnvelopes.length === 1 ? "" : "s"} · ${runway} day runway`
-              : "Create the current pay-cycle budget before treating surplus as free cash.",
+              : "No pay-cycle budget yet.",
             icon: <CalendarMonthRounded />,
             to: "/budget",
-            tone: "#4A7FD1",
             status: currentBudget ? "Pay cycle mapped" : "Setup needed",
             statusTone: currentBudget ? "info" : "warning",
           },
@@ -1219,7 +1130,6 @@ export function TodayPage() {
             detail: `${upcomingBills.length} dated obligation${upcomingBills.length === 1 ? "" : "s"} due before ${formatDate(report.coveredThrough, { month: "short", day: "numeric" })}`,
             icon: <ShieldRounded />,
             to: "/budget",
-            tone: "#1F9D72",
             status:
               BigInt(report.reservedBills.minorUnits) > 0n ? "Bills reserved" : "Check due dates",
             statusTone: BigInt(report.reservedBills.minorUnits) > 0n ? "positive" : "neutral",
@@ -1232,16 +1142,15 @@ export function TodayPage() {
               : "No activity",
             detail: latestTransactions.length
               ? `Latest entries categorized · ${reviewCount} need${reviewCount === 1 ? "s" : ""} review`
-              : "Import transactions to start learning narrow merchant patterns.",
+              : "Import transactions to enable automatic categorization.",
             icon: <AutoAwesomeRounded />,
             to: reviewCount ? "/automation?tab=ai" : "/automation",
-            tone: "#D98B2B",
             status: reviewCount ? `${reviewCount} to resolve` : "Ledger clean",
             statusTone: reviewCount ? "warning" : "positive",
           },
           {
             id: "grow",
-            label: "Future you",
+            label: "Goals",
             value: activeGoal ? (
               goalProjection ? (
                 formatDate(goalProjection, { month: "short", year: "numeric" })
@@ -1255,16 +1164,15 @@ export function TodayPage() {
               "Add a goal"
             ),
             detail: activeGoal
-              ? `${activeGoal.name} · ${typeof activeGoal.probability === "number" ? `${Math.round(activeGoal.probability * 100)}% modeled likelihood. ` : ""}Funding projection, not purchase permission.`
-              : "Give surplus a named target and BetterWealth can project its funding date.",
+              ? `${activeGoal.name}${typeof activeGoal.probability === "number" ? ` · ${Math.round(activeGoal.probability * 100)}% modeled likelihood` : ""}`
+              : "Add a goal to project its funding date.",
             icon: <TrendingUpRounded />,
             to: "/goals",
-            tone: "#8B6CCF",
             status: activeGoal
               ? activeGoal.onTrack === false
-                ? "Pace needs work"
-                : "Goal in motion"
-              : "Choose future-you",
+                ? "Behind pace"
+                : "On track"
+              : "No goal",
             statusTone: activeGoal
               ? activeGoal.onTrack === false
                 ? "warning"
@@ -1281,8 +1189,8 @@ export function TodayPage() {
           >
             <Typography variant="body2" color="text.secondary">
               {setupGapCount
-                ? `Decision-readiness gap: ${report.trust.missingInputs[0]}`
-                : "Income, commitments, categorization, and goal pacing are connected to live records."}
+                ? `Setup gap: ${report.trust.missingInputs[0]}`
+                : "All setup steps are complete."}
             </Typography>
             <StatusChip
               label={

@@ -131,7 +131,7 @@ test.describe("security, privacy, and inclusive interaction", () => {
       page.getByRole("heading", { name: /Good (morning|afternoon|evening), Alex/ }),
     ).toBeVisible();
     await page.keyboard.press("Control+K");
-    const commandDialog = page.getByRole("dialog", { name: "Find anything" });
+    const commandDialog = page.getByRole("dialog", { name: "Search" });
     await expect(commandDialog).toBeVisible();
     await expect(commandDialog.getByRole("textbox", { name: "Search BetterWealth" })).toBeFocused();
     await page.keyboard.press("Escape");
@@ -169,11 +169,11 @@ test.describe("security, privacy, and inclusive interaction", () => {
     const routes = [
       ["/today", /Good (morning|afternoon|evening), Alex/],
       ["/transactions", /Transactions/],
-      ["/budget", /A job for every dollar/],
-      ["/goals", /Turn surplus into options/],
-      ["/net-worth", /Net worth, without the blur/],
-      ["/forecast", /See where today’s plan can lead/],
-      ["/automation", /Trust is earned one narrow rule at a time/],
+      ["/budget", /Budget/],
+      ["/goals", /Goals/],
+      ["/net-worth", /Net worth/],
+      ["/forecast", /Forecast/],
+      ["/automation", /Automation/],
       ["/settings?section=security", /Security/],
     ];
 

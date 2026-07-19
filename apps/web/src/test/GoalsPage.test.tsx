@@ -50,9 +50,7 @@ describe("Goals planning", () => {
   it("shows data-derived funding pace without a fabricated probability", () => {
     renderPage();
 
-    expect(
-      screen.getByRole("heading", { level: 1, name: /turn surplus into options/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: /^goals$/i })).toBeInTheDocument();
     expect(screen.getByText(/emergency fund is first in your funding order/i)).toBeInTheDocument();
     expect(screen.getAllByText("On pace").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Pace needed").length).toBeGreaterThan(0);
@@ -72,9 +70,7 @@ describe("Goals planning", () => {
       within(purchaseCard as HTMLElement).getByText(/projected liquid net worth/i),
     ).toBeInTheDocument();
     expect(
-      within(purchaseCard as HTMLElement).getByText(
-        /funding projection:.*funding alone is not purchase permission/i,
-      ),
+      within(purchaseCard as HTMLElement).getByText(/funding projection: january 2027/i),
     ).toBeInTheDocument();
   });
 
@@ -119,7 +115,7 @@ describe("Goals planning", () => {
       </AppProviders>,
     );
 
-    expect(screen.getByText(/no honest comfortable-to-buy date yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/not enough data to estimate a comfortable date/i)).toBeInTheDocument();
     expect(screen.getByText(/confirm a protected minimum cash buffer/i)).toBeInTheDocument();
     expect(screen.getByText(/confirm a liquid wealth target/i)).toBeInTheDocument();
     expect(screen.queryByText(/^guardrails clear$/i)).not.toBeInTheDocument();
@@ -224,7 +220,7 @@ describe("Goals planning", () => {
     expect(screen.queryByText(/jul 1, 2034/i)).not.toBeInTheDocument();
     expect(screen.getByText(/projected liquid wealth at target month/i)).toBeInTheDocument();
     expect(screen.getByText("$124,000")).toBeInTheDocument();
-    expect(screen.getByText(/backed current budget/i)).toBeInTheDocument();
+    expect(screen.getByText(/current budget/i)).toBeInTheDocument();
     expect(screen.getByText(/full write-off/i)).toBeInTheDocument();
   });
 
@@ -273,7 +269,7 @@ describe("Goals planning", () => {
 
     expect(screen.getAllByLabelText("Amount hidden")).toHaveLength(7);
     expect(container.textContent).not.toMatch(/\$\s*\d/);
-    expect(screen.getByText(/backed current budget/i)).toBeInTheDocument();
+    expect(screen.getByText(/· current budget/i)).toBeInTheDocument();
     expect(screen.getByText(/by july 2034/i)).toBeInTheDocument();
     expect(
       screen.getByText(/required bill maximums are not fully represented/i),
@@ -304,7 +300,7 @@ describe("Goals planning", () => {
     expect(card).not.toBeNull();
     await user.click(within(card as HTMLElement).getByRole("button", { name: /what if/i }));
 
-    const dialog = screen.getByRole("dialog", { name: /\$100k invested: test the plan/i });
+    const dialog = screen.getByRole("dialog", { name: /what if: \$100k invested/i });
     expect(within(dialog).getByText(/2036/i)).toBeInTheDocument();
     const monthly = within(dialog).getByRole("textbox", { name: /what-if monthly pace/i });
     await user.clear(monthly);
@@ -323,7 +319,7 @@ describe("Goals planning", () => {
     await user.click(within(card as HTMLElement).getByRole("button", { name: /^fund$/i }));
 
     const dialog = screen.getByRole("dialog", { name: /fund emergency fund/i });
-    expect(within(dialog).getByText(/does not initiate a bank transfer/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/does not move money between accounts/i)).toBeInTheDocument();
     const amount = within(dialog).getByRole("textbox", { name: /contribution/i });
     await user.clear(amount);
     await user.type(amount, "7500.01");

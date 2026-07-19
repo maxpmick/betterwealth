@@ -225,7 +225,7 @@ export function TransactionDetail({
                 {item.rawDescription}
               </Typography>
             </Box>
-            <Typography sx={{ fontSize: 24, fontWeight: 760 }}>
+            <Typography variant="h6">
               <Money value={item.amount} currency={item.currency} sign />
             </Typography>
           </Stack>
@@ -269,16 +269,15 @@ export function TransactionDetail({
           ) : null}
           {item.status === "removed" ? (
             <Alert severity="info" sx={{ mt: 3 }}>
-              This entry is excluded from reports but its imported fact, tags, links, and audit
-              history are intact. Restore it to edit or include it again.
+              This entry is excluded from reports. Restore it to edit or include it again.
             </Alert>
           ) : item.status === "void" ? (
             <Alert severity="info" sx={{ mt: 3 }}>
-              This provider-voided entry is retained as read-only ledger history.
+              This entry was voided by the provider and is read-only.
             </Alert>
           ) : null}
           {details?.splits.length ? (
-            <Paper variant="outlined" sx={{ p: 3, borderRadius: 3, mt: 3 }}>
+            <Paper variant="outlined" sx={{ p: 3, mt: 3 }}>
               <Typography variant="overline" color="text.secondary">
                 Split allocation
               </Typography>
@@ -289,7 +288,7 @@ export function TransactionDetail({
                       {split.categoryName ?? "Uncategorized"}
                       {split.envelopeName ? ` · ${split.envelopeName}` : ""}
                     </Typography>
-                    <Typography variant="body2" fontWeight={750}>
+                    <Typography variant="body2" fontWeight={700}>
                       {formatMinorUnits(BigInt(split.amount.minorUnits), split.amount.currency)}
                     </Typography>
                   </Stack>
@@ -301,14 +300,14 @@ export function TransactionDetail({
             <Paper
               variant="outlined"
               aria-label="Suggested transfer match"
-              sx={{ p: 3, borderRadius: 3, mt: 3, borderColor: "warning.main" }}
+              sx={{ p: 3, mt: 3, borderColor: "warning.main" }}
             >
               <Stack direction="row" justifyContent="space-between" gap={2} alignItems="center">
                 <Box>
                   <Typography variant="overline" color="warning.main">
                     Suggested transfer match
                   </Typography>
-                  <Typography variant="body2" fontWeight={750} sx={{ mt: 0.5 }}>
+                  <Typography variant="body2" fontWeight={700} sx={{ mt: 0.5 }}>
                     Exact {formatMinorUnits(absoluteItemMinorUnits, item.currency)} opposite entry
                   </Typography>
                 </Box>
@@ -366,14 +365,14 @@ export function TransactionDetail({
                   key={match.id}
                   variant="outlined"
                   aria-label="Suggested refund match"
-                  sx={{ p: 3, borderRadius: 3, mt: 3, borderColor: "warning.main" }}
+                  sx={{ p: 3, mt: 3, borderColor: "warning.main" }}
                 >
                   <Stack direction="row" justifyContent="space-between" gap={2} alignItems="center">
                     <Box>
                       <Typography variant="overline" color="warning.main">
                         Suggested refund match
                       </Typography>
-                      <Typography variant="body2" fontWeight={750} sx={{ mt: 0.5 }}>
+                      <Typography variant="body2" fontWeight={700} sx={{ mt: 0.5 }}>
                         Link{" "}
                         {formatMinorUnits(BigInt(match.amount.minorUnits), match.amount.currency)}{" "}
                         to the original purchase
@@ -535,7 +534,7 @@ export function TransactionDetail({
                         Exclude from reports
                       </Typography>
                       <Typography variant="caption" color="text.secondary">
-                        Transaction remains in the ledger and audit history.
+                        The transaction stays in the ledger.
                       </Typography>
                     </Box>
                   }
@@ -599,31 +598,17 @@ export function TransactionDetail({
                   Create rule
                 </Button>
               </Box>
-              <Accordion
-                disableGutters
-                elevation={0}
-                sx={{
-                  mt: 5,
-                  border: "1px solid",
-                  borderColor: "divider",
-                  "&::before": { display: "none" },
-                }}
-              >
+              <Accordion variant="outlined" disableGutters sx={{ mt: 5 }}>
                 <AccordionSummary expandIcon={<ExpandMoreRounded />}>
                   <Stack direction="row" gap={2} alignItems="center">
                     <CloudDownloadRounded fontSize="small" />
                     <Typography variant="body2" fontWeight={700}>
-                      Audit & provenance
+                      Provenance
                     </Typography>
                   </Stack>
                 </AccordionSummary>
                 <AccordionDetails>
-                  <Stack gap={2}>
-                    <Typography variant="body2">{item.provenance}</Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      Raw source retained · User changes are audited · Linked facts stay traceable
-                    </Typography>
-                  </Stack>
+                  <Typography variant="body2">{item.provenance}</Typography>
                 </AccordionDetails>
               </Accordion>
             </>

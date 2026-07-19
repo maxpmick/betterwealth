@@ -14,7 +14,6 @@ import {
 } from "@mui/icons-material";
 import {
   Alert,
-  alpha,
   Box,
   Button,
   Card,
@@ -91,7 +90,14 @@ function percent(numerator: bigint, denominator: bigint) {
   return Math.min(999, Number((numerator * 100n) / denominator));
 }
 
-const planColors = ["#1F3A5F", "#4A7FD1", "#1F9D72", "#5BA98B", "#8B6CCF", "#D98B2B", "#DD625B"];
+const planColors = [
+  "primary.main",
+  "info.main",
+  "success.main",
+  "warning.main",
+  "secondary.main",
+  "error.main",
+];
 
 type EnvelopeEditor = {
   id?: string;
@@ -138,7 +144,7 @@ function EnvelopeCard({
   const available = minor(envelope.available);
   const used = percent(spent, funded || minor(envelope.planned));
   const tone =
-    envelope.pacing === "over" ? "#DD625B" : envelope.pacing === "watch" ? "#D98B2B" : "#1F9D72";
+    envelope.pacing === "over" ? "error" : envelope.pacing === "watch" ? "warning" : "success";
   const status =
     envelope.pacing === "over"
       ? "Over plan"
@@ -146,26 +152,7 @@ function EnvelopeCard({
         ? "Watch pace"
         : "On pace";
   return (
-    <Card
-      sx={{
-        position: "relative",
-        overflow: "visible",
-        borderColor: envelope.pacing === "over" ? alpha("#DD625B", 0.42) : "divider",
-      }}
-    >
-      {envelope.pacing === "over" ? (
-        <Box
-          sx={{
-            position: "absolute",
-            top: -1,
-            left: 18,
-            right: 18,
-            height: 3,
-            borderRadius: "0 0 4px 4px",
-            bgcolor: "error.main",
-          }}
-        />
-      ) : null}
+    <Card>
       <CardContent sx={{ p: 4.5 }}>
         <Stack direction="row" alignItems="flex-start" justifyContent="space-between" gap={2}>
           <Stack direction="row" gap={2.5} alignItems="center">
@@ -173,11 +160,11 @@ function EnvelopeCard({
               sx={{
                 width: 40,
                 height: 40,
-                borderRadius: 2.5,
+                borderRadius: "50%",
                 display: "grid",
                 placeItems: "center",
-                color: tone,
-                bgcolor: alpha(tone, 0.11),
+                color: `${tone}.main`,
+                bgcolor: "action.hover",
               }}
             >
               {envelope.pacing === "over" ? (
@@ -189,7 +176,7 @@ function EnvelopeCard({
               )}
             </Box>
             <Box>
-              <Typography variant="h3">{envelope.name}</Typography>
+              <Typography variant="h6">{envelope.name}</Typography>
               <Typography variant="caption" color="text.secondary">
                 {envelope.isRequired ? "Required" : envelope.cadence} · priority{" "}
                 {envelope.priority ?? 100}
@@ -207,10 +194,9 @@ function EnvelopeCard({
                 Available
               </Typography>
               <Typography
+                variant="h5"
                 sx={{
                   mt: 0.5,
-                  fontSize: 25,
-                  fontWeight: 750,
                   color: available < 0n ? "error.main" : "text.primary",
                 }}
               >
@@ -284,16 +270,18 @@ function FundingPlan({ budget, onEdit }: { budget: ApiBudget; onEdit: () => void
       <CardContent sx={{ p: { xs: 4, sm: 5 } }}>
         <SectionHeader
           title="Paycheck funding plan"
-          description="Required envelopes fund first, then the remaining envelopes follow their saved priority."
           action={
             <Button startIcon={<EditRounded />} onClick={onEdit}>
               Edit plan
             </Button>
           }
         />
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+          Required envelopes fund first, then remaining envelopes by priority.
+        </Typography>
         {total > 0n ? (
           <Box
-            sx={{ display: "flex", height: 14, borderRadius: 99, overflow: "hidden", mt: 5 }}
+            sx={{ display: "flex", height: 14, borderRadius: 1, overflow: "hidden", mt: 5 }}
             role="img"
             aria-label="Paycheck allocation composition"
           >
@@ -328,7 +316,7 @@ function FundingPlan({ budget, onEdit }: { budget: ApiBudget; onEdit: () => void
                 sx={{
                   width: 9,
                   height: 9,
-                  borderRadius: 2,
+                  borderRadius: "50%",
                   bgcolor: planColors[index % planColors.length],
                 }}
               />
@@ -340,7 +328,7 @@ function FundingPlan({ budget, onEdit }: { budget: ApiBudget; onEdit: () => void
                   {item.isRequired ? "Required" : "Flexible"} · priority {item.priority ?? 100}
                 </Typography>
               </Box>
-              <Typography variant="body2" fontWeight={750}>
+              <Typography variant="body2" fontWeight={700}>
                 <Money value={dollars(item.planned)} currency={item.planned.currency} />
               </Typography>
             </Stack>
@@ -351,7 +339,7 @@ function FundingPlan({ budget, onEdit }: { budget: ApiBudget; onEdit: () => void
           <Typography variant="body2" fontWeight={700}>
             Plan total
           </Typography>
-          <Typography variant="body2" fontWeight={750}>
+          <Typography variant="body2" fontWeight={700}>
             <Money
               value={minorToMajor(total, budget.plannedIncome.currency)}
               currency={budget.plannedIncome.currency}
@@ -644,22 +632,14 @@ export function BudgetPage() {
   if (budgetQuery.isPending)
     return (
       <Stack gap={4}>
-        <PageHeader
-          eyebrow="Paycheck envelopes"
-          title="Loading your budget"
-          description="Reconciling funding and posted transaction activity."
-        />
+        <PageHeader title="Budget" />
         <LoadingCard rows={6} />
       </Stack>
     );
   if (budgetQuery.isError)
     return (
       <Stack gap={4}>
-        <PageHeader
-          eyebrow="Paycheck envelopes"
-          title="Budget unavailable"
-          description="No allocation data was changed."
-        />
+        <PageHeader title="Budget" />
         <ErrorState
           message="BetterWealth could not load this budget period."
           onRetry={() => budgetQuery.refetch()}
@@ -669,18 +649,14 @@ export function BudgetPage() {
   if (!budget)
     return (
       <Stack gap={4}>
-        <PageHeader
-          eyebrow="Paycheck envelopes"
-          title="Start your first budget"
-          description="Create a period, then turn monthly estimates into exact envelope targets."
-        />
+        <PageHeader title="Budget" />
         {createPeriod.error instanceof Error ? (
           <Alert severity="error">{createPeriod.error.message}</Alert>
         ) : null}
         <EmptyState
           icon={<PaymentsRounded />}
           title={`No ${apiView === "month" ? "monthly" : "paycheck"} budget yet`}
-          description="Create the period without inventing balances; you can enter income and spending targets next."
+          description="Create a budget period to start planning."
           actionLabel={createPeriod.isPending ? "Creating…" : "Create budget"}
           onAction={() => createPeriod.mutate()}
         />
@@ -718,9 +694,7 @@ export function BudgetPage() {
   return (
     <Stack gap={5}>
       <PageHeader
-        eyebrow="Paycheck envelopes"
-        title="A job for every dollar"
-        description={`${periodName}: ${overages.length ? `${overages.length} envelope${overages.length === 1 ? " needs" : "s need"} attention.` : "every funded envelope is at or above zero."}`}
+        title="Budget"
         actions={
           <Button
             variant="contained"
@@ -731,11 +705,7 @@ export function BudgetPage() {
           </Button>
         }
       />
-      {demo ? (
-        <Alert severity="info">
-          Demo mode is read-only. Every amount below is derived from the demo budget.
-        </Alert>
-      ) : null}
+      {demo ? <Alert severity="info">Demo mode is read-only.</Alert> : null}
       <Card sx={{ p: 1 }}>
         <Tabs
           value={view}
@@ -752,54 +722,50 @@ export function BudgetPage() {
       <PlanFlowCard
         testId="budget-paycheck-flow"
         title="From paycheck to free cash"
-        description="The plan protects required commitments first, caps flexible spending next, then leaves the remainder visibly unassigned."
         steps={[
           {
             id: "income",
             label: "Income",
             value: <Money value={dollars(budget.plannedIncome)} currency={budgetCurrency} />,
-            detail: `${periodName} expected take-home available to assign`,
+            detail: `Expected take-home for ${periodName}`,
             icon: <AccountBalanceWalletRounded />,
             to: "/budget",
-            tone: "#4A7FD1",
             status: budget.status === "closed" ? "Period closed" : "Pay cycle open",
             statusTone: budget.status === "closed" ? "neutral" : "info",
           },
           {
             id: "required",
-            label: "Protect",
+            label: "Required",
             value: (
               <Money
                 value={minorToMajor(requiredPlanned, budgetCurrency)}
                 currency={budgetCurrency}
               />
             ),
-            detail: `${activeEnvelopes.filter((envelope) => envelope.isRequired).length} required envelope${activeEnvelopes.filter((envelope) => envelope.isRequired).length === 1 ? "" : "s"} fund before optional spending`,
+            detail: `${activeEnvelopes.filter((envelope) => envelope.isRequired).length} required envelope${activeEnvelopes.filter((envelope) => envelope.isRequired).length === 1 ? "" : "s"} fund first`,
             icon: <CalendarMonthRounded />,
             to: "/budget",
-            tone: "#1F9D72",
-            status: requiredPlanned > 0n ? "Priority protected" : "Mark essentials",
+            status: requiredPlanned > 0n ? "Priority protected" : "None set",
             statusTone: requiredPlanned > 0n ? "positive" : "warning",
           },
           {
             id: "flexible",
-            label: "Live",
+            label: "Flexible",
             value: (
               <Money
                 value={minorToMajor(flexiblePlanned, budgetCurrency)}
                 currency={budgetCurrency}
               />
             ),
-            detail: `${activeEnvelopes.filter((envelope) => !envelope.isRequired).length} flexible envelope${activeEnvelopes.filter((envelope) => !envelope.isRequired).length === 1 ? "" : "s"} define the lifestyle ceiling`,
+            detail: `${activeEnvelopes.filter((envelope) => !envelope.isRequired).length} flexible envelope${activeEnvelopes.filter((envelope) => !envelope.isRequired).length === 1 ? "" : "s"}`,
             icon: <PaymentsRounded />,
             to: "/budget",
-            tone: "#D98B2B",
             status: overages.length ? `${overages.length} over plan` : "Within plan",
             statusTone: overages.length ? "warning" : "positive",
           },
           {
             id: "surplus",
-            label: "Build wealth",
+            label: "Surplus",
             value: (
               <Money
                 value={minorToMajor(surplus < 0n ? -surplus : surplus, budgetCurrency)}
@@ -807,13 +773,10 @@ export function BudgetPage() {
               />
             ),
             detail:
-              surplus >= 0n
-                ? "Still free after every planned envelope; assign it intentionally."
-                : "Plan exceeds expected income; reduce or defer before funding.",
+              surplus >= 0n ? "Left after all planned envelopes." : "Plan exceeds expected income.",
             icon: <AutoAwesomeRounded />,
             to: surplus >= 0n ? "/goals" : "/budget",
-            tone: surplus >= 0n ? "#8B6CCF" : "#DD625B",
-            status: surplus >= 0n ? "Available for goals" : "Close the gap",
+            status: surplus >= 0n ? "Available for goals" : "Shortfall",
             statusTone: surplus >= 0n ? "info" : "risk",
           },
         ]}
@@ -826,7 +789,7 @@ export function BudgetPage() {
           >
             <Typography variant="body2" color="text.secondary">
               {linkedEnvelopes} of {activeEnvelopes.length} active envelopes are linked to ledger
-              categories. Deterministic rules can route repeat merchants into those envelopes.
+              categories.
             </Typography>
             <Button
               component={RouterLink}
@@ -882,7 +845,6 @@ export function BudgetPage() {
       {overages.length ? (
         <Alert
           severity="warning"
-          icon={<WarningAmberRounded />}
           action={
             <Button color="inherit" onClick={() => openCover(overages[0]!)}>
               Fix now
@@ -894,20 +856,15 @@ export function BudgetPage() {
             {overages.length === 1 ? "is" : "are"}{" "}
             <Money value={minorToMajor(totalOverage, budgetCurrency)} currency={budgetCurrency} />{" "}
             over available funding.
-          </strong>{" "}
-          Move only money that is actually unassigned or available elsewhere.
+          </strong>
         </Alert>
       ) : (
-        <Alert severity="success" icon={<CheckCircleRounded />}>
-          No envelope is overspent in this period. Posted purchases and confirmed refunds are
-          reflected.
-        </Alert>
+        <Alert severity="success">No envelope is overspent in this period.</Alert>
       )}
       <FundingPlan budget={budget} onEdit={() => setBuildOpen(true)} />
       <Box>
         <SectionHeader
           title="Envelopes"
-          description="Available equals funding plus transfers and confirmed refunds, less posted spending. Pending and transfer transactions stay out."
           action={
             <Button
               variant="outlined"
@@ -921,6 +878,9 @@ export function BudgetPage() {
             </Button>
           }
         />
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+          Available equals funding plus transfers and confirmed refunds, less posted spending.
+        </Typography>
         {budget.envelopes.filter((envelope) => envelope.isActive !== false).length ? (
           <Box
             sx={{
@@ -946,19 +906,14 @@ export function BudgetPage() {
             <EmptyState
               icon={<PaymentsRounded />}
               title="No active envelopes"
-              description="Add an envelope or build a complete plan from monthly spending estimates."
+              description="Build a plan from monthly spending estimates."
               actionLabel="Build plan"
               onAction={() => setBuildOpen(true)}
             />
           </Box>
         )}
       </Box>
-      <Card
-        sx={{
-          background: (theme) =>
-            `linear-gradient(135deg, ${alpha(theme.palette.secondary.main, 0.1)}, ${alpha(theme.palette.info.main, 0.06)})`,
-        }}
-      >
+      <Card>
         <CardContent sx={{ p: { xs: 5, sm: 6 } }}>
           <Stack
             direction={{ xs: "column", md: "row" }}
@@ -966,28 +921,13 @@ export function BudgetPage() {
             alignItems={{ xs: "stretch", md: "center" }}
             gap={4}
           >
-            <Stack direction="row" gap={3} alignItems="flex-start">
-              <Box
-                sx={{
-                  width: 44,
-                  height: 44,
-                  borderRadius: 3,
-                  display: "grid",
-                  placeItems: "center",
-                  bgcolor: "background.paper",
-                  color: "secondary.main",
-                }}
-              >
-                <AutoAwesomeRounded />
-              </Box>
-              <Box>
-                <Typography variant="h3">Build a realistic starting plan</Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                  Enter monthly bills and spending estimates once. BetterWealth converts them into
-                  exact per-paycheck targets using your pay frequency.
-                </Typography>
-              </Box>
-            </Stack>
+            <Box>
+              <Typography variant="h6">Build a starting plan</Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                Enter monthly bills and estimates to create per-paycheck targets based on your pay
+                frequency.
+              </Typography>
+            </Box>
             <Button
               variant="outlined"
               endIcon={<ArrowForwardRounded />}
@@ -1003,7 +943,7 @@ export function BudgetPage() {
         <DialogTitle>Cover {selectedOverage?.name ?? "overspending"}</DialogTitle>
         <DialogContent>
           <Typography color="text.secondary">
-            This records an explicit allocation transfer. It never rewrites a transaction.
+            Records an allocation transfer without changing any transactions.
           </Typography>
           <Stack gap={4} sx={{ mt: 5 }}>
             <FormControl fullWidth size="small">
@@ -1036,10 +976,10 @@ export function BudgetPage() {
               }
               InputProps={{ startAdornment: <InputAdornment position="start">$</InputAdornment> }}
             />
-            <Box sx={{ p: 3.5, bgcolor: "action.hover", borderRadius: 3 }}>
+            <Box sx={{ p: 3.5, bgcolor: "action.hover", borderRadius: 1 }}>
               <Stack direction="row" justifyContent="space-between">
                 <Typography variant="body2">{selectedOverage?.name} after transfer</Typography>
-                <Typography variant="body2" fontWeight={750}>
+                <Typography variant="body2" fontWeight={700}>
                   <Money
                     value={minorToMajor(
                       minor(selectedOverage?.available) + (coverMinor ?? 0n),
@@ -1051,7 +991,7 @@ export function BudgetPage() {
               </Stack>
               <Stack direction="row" justifyContent="space-between" sx={{ mt: 2 }}>
                 <Typography variant="body2">Source after transfer</Typography>
-                <Typography variant="body2" fontWeight={750}>
+                <Typography variant="body2" fontWeight={700}>
                   <Money
                     value={minorToMajor(sourceAvailable - (coverMinor ?? 0n), budgetCurrency)}
                     currency={budgetCurrency}
@@ -1089,13 +1029,12 @@ export function BudgetPage() {
         <DialogTitle>Fund {periodName}</DialogTitle>
         <DialogContent>
           <Typography color="text.secondary">
-            Preview the deterministic allocation before committing. Required envelopes stay ahead of
-            flexible spending.
+            Preview the allocation before committing; required envelopes fund first.
           </Typography>
           <Box sx={{ mt: 5 }}>
             <Stack direction="row" justifyContent="space-between">
               <Typography variant="body2">Funding source</Typography>
-              <Typography variant="h3">
+              <Typography variant="h5">
                 <Money
                   value={minorToMajor(fundingAmount, budgetCurrency)}
                   currency={budgetCurrency}
@@ -1138,7 +1077,7 @@ export function BudgetPage() {
             <Divider sx={{ my: 3 }} />
             <Stack direction="row" justifyContent="space-between">
               <Typography variant="body2">Assigned to envelopes</Typography>
-              <Typography variant="body2" fontWeight={750}>
+              <Typography variant="body2" fontWeight={700}>
                 <Money
                   value={minorToMajor(previewAssigned, budgetCurrency)}
                   currency={budgetCurrency}
@@ -1147,7 +1086,7 @@ export function BudgetPage() {
             </Stack>
             <Stack direction="row" justifyContent="space-between" sx={{ mt: 1 }}>
               <Typography variant="body2">Left unassigned</Typography>
-              <Typography variant="body2" fontWeight={750}>
+              <Typography variant="body2" fontWeight={700}>
                 <Money
                   value={minorToMajor(fundingAmount - previewAssigned, budgetCurrency)}
                   currency={budgetCurrency}
@@ -1251,7 +1190,7 @@ export function BudgetPage() {
               label="Optional transaction rule"
               value={editor.matchText}
               onChange={(event) => setEditor({ ...editor, matchText: event.target.value })}
-              helperText="Example: SPOTIFY. Saving creates a deterministic description-contains rule for this envelope."
+              helperText="Saving creates a description-contains rule for this envelope (example: SPOTIFY)."
             />
           </Stack>
         </DialogContent>
@@ -1294,8 +1233,8 @@ export function BudgetPage() {
         <DialogTitle>Build from monthly spending</DialogTitle>
         <DialogContent>
           <Typography color="text.secondary">
-            Monthly estimates are converted with exact integer cents: monthly × 12 ÷ paychecks per
-            year. Existing envelopes with the same name are updated.
+            Each monthly amount is converted to a per-paycheck target (monthly × 12 ÷ paychecks per
+            year), and existing envelopes with the same name are updated.
           </Typography>
           <Stack direction={{ xs: "column", sm: "row" }} gap={3} sx={{ mt: 5 }}>
             <FormControl fullWidth size="small">

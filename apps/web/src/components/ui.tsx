@@ -9,7 +9,6 @@ import {
 } from "@mui/icons-material";
 import {
   Alert,
-  alpha,
   Box,
   Button,
   Card,
@@ -19,7 +18,6 @@ import {
   LinearProgress,
   Skeleton,
   Tooltip,
-  useTheme,
 } from "@mui/material";
 import { format } from "date-fns";
 import type { ReactNode } from "react";
@@ -52,11 +50,7 @@ export function Money({
   const { privacyEnabled } = usePrivacy();
   if (privacyEnabled) {
     return (
-      <Box
-        component="span"
-        aria-label="Amount hidden"
-        sx={{ fontVariantNumeric: "tabular-nums", letterSpacing: "0.08em" }}
-      >
+      <Box component="span" aria-label="Amount hidden" sx={{ fontVariantNumeric: "tabular-nums" }}>
         ••••
       </Box>
     );
@@ -70,37 +64,17 @@ export function Money({
   );
 }
 
-export function PageHeader({
-  eyebrow,
-  title,
-  description,
-  actions,
-}: {
-  eyebrow?: string;
-  title: string;
-  description: string;
-  actions?: ReactNode;
-}) {
+export function PageHeader({ title, actions }: { title: string; actions?: ReactNode }) {
   return (
     <Stack
       direction={{ xs: "column", sm: "row" }}
       justifyContent="space-between"
-      alignItems={{ xs: "stretch", sm: "flex-end" }}
+      alignItems={{ xs: "stretch", sm: "center" }}
       gap={3}
     >
-      <Box sx={{ maxWidth: 720 }}>
-        {eyebrow ? (
-          <Typography variant="overline" color="secondary.main">
-            {eyebrow}
-          </Typography>
-        ) : null}
-        <Typography component="h1" variant="h1">
-          {title}
-        </Typography>
-        <Typography color="text.secondary" sx={{ mt: 1 }}>
-          {description}
-        </Typography>
-      </Box>
+      <Typography component="h1" variant="h4">
+        {title}
+      </Typography>
       {actions ? (
         <Stack direction="row" gap={2} flexWrap="wrap">
           {actions}
@@ -110,31 +84,24 @@ export function PageHeader({
   );
 }
 
-export function SectionHeader({
-  title,
-  description,
-  action,
-}: {
-  title: string;
-  description?: string;
-  action?: ReactNode;
-}) {
+export function SectionHeader({ title, action }: { title: string; action?: ReactNode }) {
   return (
-    <Stack direction="row" justifyContent="space-between" alignItems="flex-start" gap={2}>
-      <Box>
-        <Typography component="h2" variant="h3">
-          {title}
-        </Typography>
-        {description ? (
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-            {description}
-          </Typography>
-        ) : null}
-      </Box>
+    <Stack direction="row" justifyContent="space-between" alignItems="center" gap={2}>
+      <Typography component="h2" variant="h6">
+        {title}
+      </Typography>
       {action}
     </Stack>
   );
 }
+
+const statusChipColors = {
+  positive: "success",
+  warning: "warning",
+  risk: "error",
+  info: "info",
+  neutral: "default",
+} as const;
 
 export function StatusChip({
   label,
@@ -143,21 +110,20 @@ export function StatusChip({
   label: ReactNode;
   tone?: "positive" | "warning" | "risk" | "info" | "neutral";
 }) {
-  const palette = {
-    positive: { light: "#075C40", dark: "#79DDB8", base: "#1F9D72", opacity: 0.12 },
-    warning: { light: "#7A4307", dark: "#F2BA72", base: "#D98B2B", opacity: 0.14 },
-    risk: { light: "#8E2D29", dark: "#F29A94", base: "#DD625B", opacity: 0.13 },
-    info: { light: "#244F86", dark: "#9CC2F2", base: "#4A7FD1", opacity: 0.13 },
-    neutral: { light: "#46505C", dark: "#CBD3DF", base: "#687786", opacity: 0.12 },
-  }[tone];
+  const color = statusChipColors[tone];
+  if (color === "default") {
+    return <Chip size="small" label={label} />;
+  }
+  // MUI's color chips fail WCAG contrast for small labels (even warning.dark is
+  // 3.78:1), so the label keeps the default text color and the tone shows in
+  // the border, which contrast rules do not cover.
   return (
     <Chip
       size="small"
       label={label}
+      variant="outlined"
       sx={(theme) => ({
-        color: theme.palette.mode === "dark" ? palette.dark : palette.light,
-        bgcolor: alpha(palette.base, palette.opacity),
-        fontWeight: 650,
+        borderColor: theme.palette.mode === "light" ? `${color}.main` : `${color}.light`,
       })}
     />
   );
@@ -168,68 +134,33 @@ export function MetricCard({
   value,
   helper,
   trend,
-  tone = "default",
   icon,
 }: {
   label: string;
   value: ReactNode;
   helper: string;
   trend?: number;
-  tone?: "default" | "gradient";
   icon?: ReactNode;
 }) {
-  const isGradient = tone === "gradient";
   return (
-    <Card
-      sx={
-        isGradient
-          ? {
-              color: "#fff",
-              border: 0,
-              background: "linear-gradient(125deg, #1C3558 0%, #245B67 54%, #1A8A69 115%)",
-              boxShadow: "0 24px 58px rgba(27,72,82,0.25)",
-            }
-          : undefined
-      }
-    >
-      <CardContent sx={{ p: { xs: 4, sm: 5 }, "&:last-child": { pb: { xs: 4, sm: 5 } } }}>
+    <Card>
+      <CardContent sx={{ p: 4, "&:last-child": { pb: 4 } }}>
         <Stack direction="row" alignItems="center" justifyContent="space-between" gap={2}>
-          <Typography
-            variant="body2"
-            sx={{
-              color: isGradient ? "rgba(255,255,255,0.78)" : "text.secondary",
-              fontWeight: 650,
-            }}
-          >
+          <Typography variant="body2" color="text.secondary">
             {label}
           </Typography>
           {icon}
         </Stack>
-        <Typography
-          component="p"
-          sx={{
-            mt: 2,
-            fontSize: { xs: "1.65rem", sm: "2rem" },
-            lineHeight: 1.12,
-            fontWeight: 740,
-            letterSpacing: "-0.035em",
-            fontVariantNumeric: "tabular-nums",
-          }}
-        >
+        <Typography component="p" variant="h5" sx={{ mt: 2, fontVariantNumeric: "tabular-nums" }}>
           {value}
         </Typography>
-        <Stack direction="row" alignItems="center" gap={1} sx={{ mt: 2 }}>
+        <Stack direction="row" alignItems="center" gap={1} sx={{ mt: 1 }}>
           {typeof trend === "number" ? (
             <Box
               sx={{
                 display: "inline-flex",
                 alignItems: "center",
-                color: isGradient
-                  ? "rgba(255,255,255,0.86)"
-                  : trend >= 0
-                    ? "success.main"
-                    : "error.main",
-                fontWeight: 700,
+                color: trend >= 0 ? "success.main" : "error.main",
                 fontSize: 12,
               }}
             >
@@ -241,10 +172,7 @@ export function MetricCard({
               {Math.abs(trend)}%
             </Box>
           ) : null}
-          <Typography
-            variant="caption"
-            sx={{ color: isGradient ? "rgba(255,255,255,0.72)" : "text.secondary" }}
-          >
+          <Typography variant="caption" color="text.secondary">
             {helper}
           </Typography>
         </Stack>
@@ -296,9 +224,8 @@ export function TrustStatePanel({
       data-testid="trust-state"
       data-state={state}
       sx={{
-        p: 3.5,
-        borderRadius: 3,
-        bgcolor: "action.hover",
+        p: 4,
+        borderRadius: 1,
         border: "1px solid",
         borderColor: "divider",
       }}
@@ -350,24 +277,15 @@ export function TrustStatePanel({
 
 export function ProgressMeter({
   value,
-  color = "secondary.main",
+  color = "primary",
   label,
 }: {
   value: number;
-  color?: string;
+  color?: "primary" | "secondary" | "success" | "warning" | "error" | "info";
   label?: string;
 }) {
   const clamped = Math.max(0, Math.min(100, value));
-  return (
-    <Box>
-      <LinearProgress
-        variant="determinate"
-        value={clamped}
-        aria-label={label}
-        sx={{ bgcolor: "action.hover", "& .MuiLinearProgress-bar": { bgcolor: color } }}
-      />
-    </Box>
-  );
+  return <LinearProgress variant="determinate" value={clamped} color={color} aria-label={label} />;
 }
 
 export function HelpTip({ title }: { title: string }) {
@@ -389,7 +307,7 @@ export function HelpTip({ title }: { title: string }) {
 export function LoadingCard({ rows = 3 }: { rows?: number }) {
   return (
     <Card aria-label="Loading content">
-      <CardContent sx={{ p: 5 }}>
+      <CardContent sx={{ p: 4 }}>
         <Stack gap={2}>
           <Skeleton width="38%" />
           <Skeleton variant="rounded" height={92} />
@@ -452,12 +370,12 @@ export function EmptyState({
   onAction: () => void;
 }) {
   return (
-    <Stack alignItems="center" textAlign="center" sx={{ py: 9, px: 4 }}>
+    <Stack alignItems="center" textAlign="center" sx={{ py: 8, px: 4 }}>
       <Box
         sx={{
           width: 52,
           height: 52,
-          borderRadius: 3,
+          borderRadius: 1,
           bgcolor: "action.hover",
           display: "grid",
           placeItems: "center",
@@ -466,7 +384,7 @@ export function EmptyState({
       >
         {icon}
       </Box>
-      <Typography variant="h3" sx={{ mt: 3 }}>
+      <Typography variant="h6" sx={{ mt: 3 }}>
         {title}
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mt: 1, maxWidth: 380 }}>
@@ -484,29 +402,12 @@ export function DateLabel({ value }: { value: string | Date }) {
 }
 
 export function ChartMaskedState() {
-  const theme = useTheme();
   return (
     <Box
       aria-label="Chart values hidden"
-      sx={{
-        height: 250,
-        display: "grid",
-        placeItems: "center",
-        position: "relative",
-        overflow: "hidden",
-      }}
+      sx={{ height: 250, display: "grid", placeItems: "center" }}
     >
-      <Box
-        aria-hidden
-        sx={{
-          position: "absolute",
-          inset: 16,
-          opacity: 0.38,
-          background: `linear-gradient(155deg, transparent 0 25%, ${alpha(theme.palette.secondary.main, 0.3)} 26% 30%, transparent 31% 44%, ${alpha(theme.palette.primary.main, 0.25)} 45% 49%, transparent 50%)`,
-          filter: "blur(8px)",
-        }}
-      />
-      <Stack alignItems="center" sx={{ zIndex: 1 }}>
+      <Stack alignItems="center">
         <Typography variant="subtitle1">Values hidden</Typography>
         <Typography variant="caption" color="text.secondary">
           Turn off privacy mode to explore this chart.

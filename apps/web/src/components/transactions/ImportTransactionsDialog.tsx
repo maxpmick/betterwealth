@@ -93,11 +93,7 @@ export function ImportTransactionsDialog({
   return (
     <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="sm">
       <DialogTitle component="div">
-        <DialogHeading
-          eyebrow="Local file import"
-          title="Import transactions"
-          description="CSV, OFX, and QFX files are parsed by your self-hosted API. Existing IDs and fingerprints are deduplicated."
-        />
+        <DialogHeading title="Import transactions" />
       </DialogTitle>
       <DialogContent>
         <Stack gap={3}>
@@ -122,14 +118,13 @@ export function ImportTransactionsDialog({
             variant="outlined"
             sx={{
               p: 4,
-              borderRadius: 3,
               borderStyle: "dashed",
               textAlign: "center",
               bgcolor: "action.hover",
             }}
           >
             <UploadFileRounded color="action" sx={{ fontSize: 34 }} />
-            <Typography variant="body2" fontWeight={750} sx={{ mt: 1 }}>
+            <Typography variant="body2" fontWeight={700} sx={{ mt: 1 }}>
               {filename || "Choose a bank export"}
             </Typography>
             <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
@@ -155,8 +150,7 @@ export function ImportTransactionsDialog({
           </Paper>
           {filename && !result ? (
             <Alert severity="info">
-              Review the account and file summary. Import commits accepted rows immediately and
-              keeps an encrypted raw audit record.
+              Import commits accepted rows immediately; duplicates are skipped.
             </Alert>
           ) : null}
           {result ? (

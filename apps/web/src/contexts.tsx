@@ -48,7 +48,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
   useEffect(() => {
     document
       .querySelector('meta[name="theme-color"]')
-      ?.setAttribute("content", resolvedMode === "dark" ? "#0B1017" : "#F7F7F5");
+      ?.setAttribute("content", resolvedMode === "dark" ? "#121212" : "#ffffff");
   }, [resolvedMode]);
 
   const privacy = useMemo(() => ({ privacyEnabled, setPrivacyEnabled }), [privacyEnabled]);

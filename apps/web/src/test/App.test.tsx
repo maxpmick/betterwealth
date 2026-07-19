@@ -91,7 +91,7 @@ describe("BetterWealth routing and shell", () => {
     renderApp("/today");
 
     await user.click(await screen.findByRole("button", { name: /^search$/i }));
-    const palette = screen.getByRole("dialog", { name: /find anything/i });
+    const palette = screen.getByRole("dialog", { name: /search/i });
     await user.click(within(palette).getByText("Review transactions"));
 
     expect(
@@ -136,9 +136,7 @@ describe("BetterWealth routing and shell", () => {
       expect(within(mobile).getByRole("button", { name: label })).toBeInTheDocument();
     }
     expect(screen.getByRole("main")).toBeInTheDocument();
-    expect(
-      await screen.findByRole("heading", { level: 1, name: /a job for every dollar/i }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: /^budget$/i })).toBeInTheDocument();
   });
 
   it("moves from login to registration without losing keyboard-friendly form semantics", async () => {
@@ -155,9 +153,9 @@ describe("BetterWealth routing and shell", () => {
     await user.click(await screen.findByRole("link", { name: /create an account/i }));
 
     expect(
-      await screen.findByRole("heading", { level: 1, name: /build your better plan/i }),
+      await screen.findByRole("heading", { level: 1, name: /create your account/i }),
     ).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: /create secure account/i })).toHaveAttribute(
+    expect(await screen.findByRole("button", { name: /^create account$/i })).toHaveAttribute(
       "type",
       "submit",
     );
@@ -168,16 +166,16 @@ describe("BetterWealth routing and shell", () => {
 
     expect(await screen.findByText(/new account creation is closed/i)).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /create an account/i })).not.toBeInTheDocument();
-    expect(screen.getByText(/example scenario · not your forecast/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /explore with alex’s demo data/i }),
+    ).toBeInTheDocument();
 
     rendered.unmount();
     renderApp("/register", 1280, "closed");
     expect(
       await screen.findByRole("heading", { level: 1, name: /account creation is closed/i }),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /create secure account/i }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^create account$/i })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /back to sign in/i })).toHaveAttribute(
       "href",
       "/login",

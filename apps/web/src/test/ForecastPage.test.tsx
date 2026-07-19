@@ -44,9 +44,7 @@ describe("Forecast planning", () => {
     const user = userEvent.setup();
     renderPage();
 
-    expect(
-      screen.getByRole("heading", { level: 1, name: /see where today’s plan can lead/i }),
-    ).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: /^forecast$/i })).toBeVisible();
     expect(screen.getByText(/interactive preview: create scenarios/i)).toBeVisible();
     expect(screen.getByRole("button", { name: /run preview/i })).toBeEnabled();
 

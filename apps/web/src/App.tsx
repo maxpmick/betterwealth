@@ -110,9 +110,9 @@ function NotFoundPage() {
     <Stack alignItems="center" textAlign="center" sx={{ py: 18 }}>
       <Box
         sx={{
-          width: 60,
-          height: 60,
-          borderRadius: 4,
+          width: 52,
+          height: 52,
+          borderRadius: 1,
           display: "grid",
           placeItems: "center",
           bgcolor: "action.hover",
@@ -121,11 +121,11 @@ function NotFoundPage() {
       >
         <SearchOffRounded />
       </Box>
-      <Typography component="h1" variant="h1" sx={{ mt: 4 }}>
-        That page isn’t in the plan
+      <Typography component="h1" variant="h4" sx={{ mt: 4 }}>
+        Page not found
       </Typography>
-      <Typography color="text.secondary" sx={{ mt: 2, maxWidth: 460 }}>
-        The link may be out of date. Your financial data has not been changed.
+      <Typography variant="body2" color="text.secondary" sx={{ mt: 2, maxWidth: 460 }}>
+        The link may be out of date, or the page may have been moved.
       </Typography>
       <Button
         variant="contained"
@@ -154,7 +154,7 @@ export function AppRoutes() {
           color: "text.primary",
           px: 4,
           py: 2,
-          borderRadius: 2,
+          borderRadius: 1,
           boxShadow: 4,
           "&:focus": { top: 12 },
         }}

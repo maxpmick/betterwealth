@@ -55,6 +55,7 @@ import {
   TableHead,
   TableRow,
   Tooltip,
+  useTheme,
 } from "@mui/material";
 import { LineChart } from "@mui/x-charts/LineChart";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -107,13 +108,13 @@ type WealthHistoryPoint = {
 };
 type WealthMetric = Exclude<keyof WealthHistoryPoint, "id" | "month">;
 
-const wealthMetrics: Array<{ key: WealthMetric; label: string; color: string }> = [
-  { key: "total", label: "Total", color: "#1F3A5F" },
-  { key: "liquid", label: "Liquid", color: "#1F9D72" },
-  { key: "investable", label: "Investable", color: "#4A7FD1" },
-  { key: "retirement", label: "Retirement", color: "#8B6CCF" },
-  { key: "assets", label: "Assets", color: "#287E80" },
-  { key: "debts", label: "Debts", color: "#DD625B" },
+const wealthMetrics: Array<{ key: WealthMetric; label: string }> = [
+  { key: "total", label: "Total" },
+  { key: "liquid", label: "Liquid" },
+  { key: "investable", label: "Investable" },
+  { key: "retirement", label: "Retirement" },
+  { key: "assets", label: "Assets" },
+  { key: "debts", label: "Debts" },
 ];
 
 function WealthHistoryChart({
@@ -128,11 +129,19 @@ function WealthHistoryChart({
   currency: string;
 }) {
   const { privacyEnabled } = usePrivacy();
+  const theme = useTheme();
   const [metric, setMetric] = useState<WealthMetric>("total");
+  const metricColors: Record<WealthMetric, string> = {
+    total: theme.palette.primary.main,
+    liquid: theme.palette.success.main,
+    investable: theme.palette.info.main,
+    retirement: theme.palette.secondary.main,
+    assets: theme.palette.warning.main,
+    debts: theme.palette.error.main,
+  };
   const selected = wealthMetrics.find((item) => item.key === metric) ?? {
     key: "total" as const,
     label: "Total",
-    color: "#1F3A5F",
   };
   const metricAvailable = (key: WealthMetric) =>
     history.some((point) => typeof point[key] === "number");
@@ -144,11 +153,8 @@ function WealthHistoryChart({
       <CardContent sx={{ p: { xs: 4, sm: 5 } }}>
         <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" gap={3}>
           <Box>
-            <Typography component="h2" variant="h3">
+            <Typography component="h2" variant="h6">
               Wealth history
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-              Switch between every balance and valuation series captured by the ledger.
             </Typography>
           </Box>
           <Stack direction="row" flexWrap="wrap" gap={1}>
@@ -204,7 +210,7 @@ function WealthHistoryChart({
                   label: selected.label,
                   area: true,
                   showMark: false,
-                  color: selected.color,
+                  color: metricColors[selected.key],
                   valueFormatter: (value: number | null) =>
                     formatMoney(Number(value ?? 0), currency),
                 },
@@ -336,12 +342,7 @@ function AssetEditorDialog({
     <Dialog open={open} onClose={saving || deleting ? undefined : onClose} fullWidth maxWidth="sm">
       <DialogTitle>{editing ? "Edit asset details" : "Add a valued asset"}</DialogTitle>
       <DialogContent>
-        <Typography variant="body2" color="text.secondary">
-          {editing
-            ? "Keep identity and liquidity separate from dated valuations."
-            : "Track a home, vehicle, business, collectible, or anything else that belongs in your net worth."}
-        </Typography>
-        <Stack gap={3} sx={{ mt: 4 }}>
+        <Stack gap={3} sx={{ mt: 1 }}>
           <TextField
             autoFocus
             label="Asset name"
@@ -585,8 +586,8 @@ function ValuationDialog({
               inputProps={{ maxLength: 500 }}
               helperText="Paste the source link and enter its estimate above; BetterWealth records the dated value but does not scrape the provider."
             />
-            <Box sx={{ p: 3.5, borderRadius: 3, bgcolor: "action.hover" }}>
-              <Typography variant="body2" fontWeight={720}>
+            <Box sx={{ p: 2, borderRadius: 1, bgcolor: "action.hover" }}>
+              <Typography variant="body2" fontWeight={700}>
                 Valuation history
               </Typography>
               {historyLoading ? (
@@ -602,7 +603,7 @@ function ValuationDialog({
                           {new Date(`${valuation.valuedOn}T12:00:00`).toLocaleDateString()} ·{" "}
                           {valuation.source}
                         </Typography>
-                        <Typography variant="caption" fontWeight={720}>
+                        <Typography variant="caption" fontWeight={700}>
                           <Money
                             value={minorToMajor(
                               valuation.amount.minorUnits,
@@ -643,7 +644,7 @@ function ValuationDialog({
           <EmptyState
             icon={<HomeRounded />}
             title="Add an asset first"
-            description="A valuation belongs to a manually tracked asset so its history stays explainable."
+            description="Add a manually tracked asset before recording a valuation."
             actionLabel="Add asset"
             onAction={onCreateAsset}
           />
@@ -849,22 +850,14 @@ export function NetWorthPage() {
   if (reportQuery.isPending)
     return (
       <Stack gap={4}>
-        <PageHeader
-          eyebrow="Wealth snapshot"
-          title="Loading net worth"
-          description="Reading historical balance and valuation snapshots."
-        />
+        <PageHeader title="Net worth" />
         <LoadingCard rows={7} />
       </Stack>
     );
   if (reportQuery.isError || !reportQuery.data)
     return (
       <Stack gap={4}>
-        <PageHeader
-          eyebrow="Wealth snapshot"
-          title="Net worth unavailable"
-          description="No historical values have been changed."
-        />
+        <PageHeader title="Net worth" />
         <ErrorState
           message="BetterWealth could not load the net-worth report."
           onRetry={() => reportQuery.refetch()}
@@ -903,9 +896,7 @@ export function NetWorthPage() {
   return (
     <Stack gap={5}>
       <PageHeader
-        eyebrow="Wealth snapshot"
-        title="Net worth, without the blur"
-        description="Liquid, investable, retirement, and manually valued wealth stay distinct—because only some dollars can fund today."
+        title="Net worth"
         actions={
           <Button variant="outlined" startIcon={<UpdateRounded />} onClick={() => openValuation()}>
             Add valuation
@@ -968,10 +959,10 @@ export function NetWorthPage() {
       />
       <Card>
         <CardContent sx={{ p: { xs: 4, sm: 5 } }}>
-          <SectionHeader
-            title="Composition"
-            description="Change compares each group with the start of the selected period."
-          />
+          <SectionHeader title="Composition" />
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+            Change compares each group with the start of the selected period.
+          </Typography>
           {liveComposition.length ? (
             <Box sx={{ mt: 4 }}>
               {liveComposition.map((row, index) => (
@@ -990,10 +981,13 @@ export function NetWorthPage() {
                     sx={{
                       width: 40,
                       height: 40,
-                      borderRadius: 2.5,
+                      borderRadius: 1,
                       display: "grid",
                       placeItems: "center",
-                      bgcolor: row.kind === "Asset" ? alpha("#1F9D72", 0.1) : alpha("#DD625B", 0.1),
+                      bgcolor: (theme) =>
+                        row.kind === "Asset"
+                          ? alpha(theme.palette.success.main, 0.1)
+                          : alpha(theme.palette.error.main, 0.1),
                       color: row.kind === "Asset" ? "success.main" : "error.main",
                     }}
                   >
@@ -1012,7 +1006,7 @@ export function NetWorthPage() {
                     </Typography>
                   </Box>
                   <Box sx={{ textAlign: "right" }}>
-                    <Typography variant="body2" fontWeight={760}>
+                    <Typography variant="body2" fontWeight={700}>
                       <Money value={row.amount} currency={row.currency} />
                     </Typography>
                     <Typography
@@ -1031,7 +1025,7 @@ export function NetWorthPage() {
               <EmptyState
                 icon={<SavingsRounded />}
                 title="No composition yet"
-                description="Connect accounts or add a valued asset to build the first wealth snapshot."
+                description="Connect an account or add a valued asset to build a wealth snapshot."
                 actionLabel="Add an asset"
                 onAction={openCreateAsset}
               />
@@ -1042,7 +1036,6 @@ export function NetWorthPage() {
       <Box>
         <SectionHeader
           title="Valued assets"
-          description="Every estimate keeps its source, date, confidence, liquidity, and history."
           action={
             <Button startIcon={<AddRounded />} onClick={openCreateAsset}>
               Add asset
@@ -1087,9 +1080,15 @@ export function NetWorthPage() {
                           flex: "0 0 auto",
                           display: "grid",
                           placeItems: "center",
-                          borderRadius: 3,
-                          bgcolor: alpha(asset.type === "property" ? "#8B6CCF" : "#4A7FD1", 0.1),
-                          color: asset.type === "property" ? "#8B6CCF" : "info.main",
+                          borderRadius: 1,
+                          bgcolor: (theme) =>
+                            alpha(
+                              asset.type === "property"
+                                ? theme.palette.secondary.main
+                                : theme.palette.info.main,
+                              0.1,
+                            ),
+                          color: asset.type === "property" ? "secondary.main" : "info.main",
                         }}
                       >
                         {assetIcon(asset)}
@@ -1106,10 +1105,10 @@ export function NetWorthPage() {
                     >
                       {asset.type} · {asset.liquidityClass}
                     </Typography>
-                    <Typography variant="h3" sx={{ mt: 0.25 }}>
+                    <Typography variant="h6" sx={{ mt: 0.25 }}>
                       {asset.name}
                     </Typography>
-                    <Typography sx={{ fontSize: 29, fontWeight: 760, mt: 1 }}>
+                    <Typography variant="h5" sx={{ mt: 1 }}>
                       <Money
                         value={minorToMajor(asset.value.minorUnits, asset.value.currency)}
                         currency={asset.value.currency}
@@ -1146,8 +1145,8 @@ export function NetWorthPage() {
           <Box sx={{ mt: 4 }}>
             <EmptyState
               icon={<HomeRounded />}
-              title="Your wealth has more than bank balances"
-              description="Add a vehicle, home, business, collectible, or deposit with a dated value. BetterWealth will keep changes in the historical ledger."
+              title="No valued assets yet"
+              description="Add a home, vehicle, business, or collectible with a dated value to track it in your net worth."
               actionLabel="Add your first asset"
               onAction={openCreateAsset}
             />
@@ -1299,12 +1298,7 @@ function goalIcon(type: ApiGoal["type"]) {
   return <TrendingUpRounded />;
 }
 
-function toGoalItem(
-  goal: GoalRecord,
-  index: number,
-  startMonth = new Date().toISOString().slice(0, 7),
-) {
-  const accents = ["#1F9D72", "#4A7FD1", "#8B6CCF", "#D98B2B"];
+function toGoalItem(goal: GoalRecord, startMonth = new Date().toISOString().slice(0, 7)) {
   const pace = deriveGoalPace({
     startMonth,
     currentAmount: { minorUnits: minorUnits(goal.funded), currency: goal.funded.currency },
@@ -1338,7 +1332,6 @@ function toGoalItem(
     onTrack: pace.onTrack,
     paceRatio: pace.paceRatio,
     status,
-    accent: accents[index % accents.length] ?? "#1F9D72",
   };
 }
 
@@ -1377,7 +1370,7 @@ export function ComfortablePurchaseSummary({
         : `Modeled guardrails clear in ${monthLabel(plan.comfortableMonth)}`
       : plan.status === "not_comfortable"
         ? "No comfortable date in the 10-year window"
-        : "No honest comfortable-to-buy date yet";
+        : "Not enough data to estimate a comfortable date";
   const buffer = plan.inputs.protectedMinimumBuffer;
   const bills = plan.inputs.requiredMonthlyBills;
   const wealthTarget = plan.inputs.targetLiquidNetWorth;
@@ -1387,9 +1380,9 @@ export function ComfortablePurchaseSummary({
   const projectedAtTarget = plan.inputs.projectedLiquidNetWorthAtTarget;
   const surplusSource =
     plan.inputs.monthlySurplusSource === "explicit_budget"
-      ? "backed current budget"
+      ? "current budget"
       : plan.inputs.monthlySurplusSource === "observed_90_day"
-        ? "fresh 60+ day cash-flow history"
+        ? "90-day cash-flow history"
         : "not available";
   const modeledAmounts = [
     {
@@ -1480,7 +1473,7 @@ export function ComfortablePurchaseSummary({
       sx={{
         mt: 3,
         p: 3,
-        borderRadius: 3,
+        borderRadius: 1,
         border: "1px solid",
         borderColor:
           plan.status === "comfortable"
@@ -1497,12 +1490,12 @@ export function ComfortablePurchaseSummary({
       }}
     >
       <Stack direction="row" justifyContent="space-between" alignItems="center" gap={2}>
-        <Typography variant="caption" color="text.secondary" fontWeight={750}>
+        <Typography variant="caption" color="text.secondary" fontWeight={700}>
           Comfortable-to-buy check
         </Typography>
         <StatusChip label={status.label} tone={status.tone} />
       </Stack>
-      <Typography variant="body2" fontWeight={800} sx={{ mt: 1 }}>
+      <Typography variant="body2" fontWeight={700} sx={{ mt: 1 }}>
         {title}
       </Typography>
       {plan.status === "incomplete" ? (
@@ -1520,7 +1513,7 @@ export function ComfortablePurchaseSummary({
         <>
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
             {plan.status === "comfortable"
-              ? "Every modeled guardrail clears in this month. This is a planning estimate, not purchase permission."
+              ? "Every modeled guardrail clears in this month."
               : "These guardrails still fail in the modeled window:"}
           </Typography>
           {plan.limitingConstraints.length ? (
@@ -1550,7 +1543,7 @@ export function ComfortablePurchaseSummary({
                 <Typography variant="caption" color="text.secondary">
                   {item.label}
                 </Typography>
-                <Typography variant="caption" fontWeight={750} sx={{ display: "block" }}>
+                <Typography variant="caption" fontWeight={700} sx={{ display: "block" }}>
                   {item.value}
                 </Typography>
               </Box>
@@ -1559,11 +1552,11 @@ export function ComfortablePurchaseSummary({
         </>
       )}
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
-        Funding projection: {fundingProjectedLabel}. Funding alone is not purchase permission.
+        Funding projection: {fundingProjectedLabel}.
       </Typography>
       {plan.assumptions.length ? (
         <Box sx={{ mt: 1.5 }}>
-          <Typography variant="caption" color="text.secondary" fontWeight={750}>
+          <Typography variant="caption" color="text.secondary" fontWeight={700}>
             Model assumptions
           </Typography>
           <Stack component="ul" gap={0.75} sx={{ pl: 2.5, mt: 0.75, mb: 0 }}>
@@ -1606,9 +1599,9 @@ function GoalCard({
             sx={{
               width: 44,
               height: 44,
-              borderRadius: 3,
-              bgcolor: alpha(goal.accent, 0.12),
-              color: goal.accent,
+              borderRadius: 1,
+              bgcolor: "action.hover",
+              color: "text.secondary",
               display: "grid",
               placeItems: "center",
             }}
@@ -1629,11 +1622,11 @@ function GoalCard({
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 4 }}>
           {goal.type}
         </Typography>
-        <Typography variant="h3" sx={{ mt: 0.5 }}>
+        <Typography variant="h6" sx={{ mt: 0.5 }}>
           {goal.name}
         </Typography>
         <Stack direction="row" alignItems="baseline" justifyContent="space-between" sx={{ mt: 4 }}>
-          <Typography sx={{ fontSize: 25, fontWeight: 760 }}>
+          <Typography variant="h5">
             <Money value={goal.funded} currency={goal.record.funded.currency} />
           </Typography>
           <Typography variant="caption" color="text.secondary">
@@ -1642,7 +1635,6 @@ function GoalCard({
         </Stack>
         <ProgressMeter
           value={progress}
-          color={goal.accent}
           label={`${goal.name} ${Math.round(progress)} percent funded`}
         />
         <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 3, mt: 4 }}>
@@ -1816,11 +1808,7 @@ function GoalEditorDialog({
     <Dialog open={open} onClose={saving || archiving ? undefined : onClose} fullWidth maxWidth="sm">
       <DialogTitle>{editing ? "Edit goal" : "Create a goal"}</DialogTitle>
       <DialogContent>
-        <Typography variant="body2" color="text.secondary">
-          Set a real monthly pace and an optional deadline. BetterWealth derives the projected date
-          from exact cents; it does not invent a success probability.
-        </Typography>
-        <Stack gap={3} sx={{ mt: 4 }}>
+        <Stack gap={3} sx={{ mt: 1 }}>
           <TextField
             autoFocus
             required
@@ -1862,11 +1850,11 @@ function GoalEditorDialog({
               InputProps={{ startAdornment: <InputAdornment position="start">$</InputAdornment> }}
             />
             {editing ? (
-              <Box sx={{ px: 3, py: 2, borderRadius: 3, bgcolor: "action.hover" }}>
+              <Box sx={{ px: 3, py: 2, borderRadius: 1, bgcolor: "action.hover" }}>
                 <Typography variant="caption" color="text.secondary">
                   Already funded
                 </Typography>
-                <Typography variant="body2" fontWeight={750}>
+                <Typography variant="body2" fontWeight={700}>
                   {formatMinor(BigInt(fundedMinor ?? "0"))}
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
@@ -2045,8 +2033,7 @@ function ContributionDialog({
       <DialogTitle>Fund {goal?.name}</DialogTitle>
       <DialogContent>
         <Typography variant="body2" color="text.secondary">
-          Record money you have assigned to this goal. This updates your plan; it does not initiate
-          a bank transfer.
+          This updates the goal plan only; it does not move money between accounts.
         </Typography>
         <Stack gap={3} sx={{ mt: 4 }}>
           <TextField
@@ -2079,7 +2066,7 @@ function ContributionDialog({
             minRows={2}
             placeholder="Paycheck allocation"
           />
-          <Box sx={{ p: 3, borderRadius: 3, bgcolor: "action.hover" }}>
+          <Box sx={{ p: 3, borderRadius: 1, bgcolor: "action.hover" }}>
             <Typography variant="caption" color="text.secondary">
               Recent funding
             </Typography>
@@ -2100,7 +2087,7 @@ function ContributionDialog({
                       {dateLabel(contribution.contributedOn)}
                       {contribution.note ? ` · ${contribution.note}` : ""}
                     </Typography>
-                    <Typography variant="caption" fontWeight={750}>
+                    <Typography variant="caption" fontWeight={700}>
                       {formatMinor(
                         BigInt(contribution.amount.minorUnits),
                         contribution.amount.currency,
@@ -2172,14 +2159,11 @@ function WhatIfDialog({
     BigInt(monthlyMinor) >= 0n;
   const scenario =
     goal && valid && targetMinor !== null && monthlyMinor !== null
-      ? toGoalItem(
-          {
-            ...goal.record,
-            target: { ...goal.record.target, minorUnits: targetMinor },
-            monthlyContribution: { ...goal.record.monthlyContribution, minorUnits: monthlyMinor },
-          },
-          0,
-        )
+      ? toGoalItem({
+          ...goal.record,
+          target: { ...goal.record.target, minorUnits: targetMinor },
+          monthlyContribution: { ...goal.record.monthlyContribution, minorUnits: monthlyMinor },
+        })
       : null;
   const monthsChanged =
     scenario?.monthsToGoal !== null &&
@@ -2190,11 +2174,10 @@ function WhatIfDialog({
       : null;
   return (
     <Dialog open={Boolean(goal)} onClose={saving ? undefined : onClose} fullWidth maxWidth="sm">
-      <DialogTitle>{goal?.name}: test the plan</DialogTitle>
+      <DialogTitle>What if: {goal?.name}</DialogTitle>
       <DialogContent>
         <Typography color="text.secondary">
-          Change the target or monthly pace to see the deterministic funding date before saving
-          anything.
+          Change the target or monthly pace to preview the projected funding date before saving.
         </Typography>
         <Box
           sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" }, gap: 3, mt: 4 }}
@@ -2215,10 +2198,10 @@ function WhatIfDialog({
           />
         </Box>
         {scenario ? (
-          <Box sx={{ mt: 4, p: 4, borderRadius: 3, bgcolor: "action.hover" }}>
+          <Box sx={{ mt: 4, p: 4, borderRadius: 1, bgcolor: "action.hover" }}>
             <Stack direction="row" justifyContent="space-between" gap={3}>
               <Typography variant="body2">Projected funding date</Typography>
-              <Typography variant="body2" fontWeight={750}>
+              <Typography variant="body2" fontWeight={700}>
                 {scenario.projectedLabel}
               </Typography>
             </Stack>
@@ -2226,7 +2209,7 @@ function WhatIfDialog({
               <Typography variant="body2">Change from current pace</Typography>
               <Typography
                 variant="body2"
-                fontWeight={750}
+                fontWeight={700}
                 color={
                   monthsChanged !== null && monthsChanged > 0 ? "success.main" : "text.primary"
                 }
@@ -2242,7 +2225,7 @@ function WhatIfDialog({
             </Stack>
             <Stack direction="row" justifyContent="space-between" gap={3} sx={{ mt: 2 }}>
               <Typography variant="body2">Monthly cash commitment</Typography>
-              <Typography variant="body2" fontWeight={750}>
+              <Typography variant="body2" fontWeight={700}>
                 {formatMinor(
                   BigInt(scenario.record.monthlyContribution.minorUnits),
                   scenario.record.monthlyContribution.currency,
@@ -2254,7 +2237,7 @@ function WhatIfDialog({
                 <Typography variant="body2">Target-date pace</Typography>
                 <Typography
                   variant="body2"
-                  fontWeight={750}
+                  fontWeight={700}
                   color={scenario.onTrack ? "success.main" : "error.main"}
                 >
                   {scenario.onTrack
@@ -2270,8 +2253,8 @@ function WhatIfDialog({
           </Alert>
         )}
         <Alert severity="info" sx={{ mt: 4 }}>
-          This view models goal funding only. Market returns, debt interest, and age-30 net worth
-          stay in the full Forecast so they are not double-counted here.
+          This view models goal funding only; market returns and debt interest are handled in the
+          full forecast.
         </Alert>
       </DialogContent>
       {error ? (
@@ -2334,7 +2317,7 @@ export function GoalsPage() {
   const goalItems: GoalItem[] = useMemo(
     () =>
       (goalsQuery.data?.data ?? [])
-        .map((goal, index) => toGoalItem(goal, index))
+        .map((goal) => toGoalItem(goal))
         .sort(
           (left, right) =>
             left.record.priority - right.record.priority || left.name.localeCompare(right.name),
@@ -2474,22 +2457,14 @@ export function GoalsPage() {
   if (goalsQuery.isPending)
     return (
       <Stack gap={4}>
-        <PageHeader
-          eyebrow="Goals"
-          title="Loading your goals"
-          description="Recalculating funding, safe dates, and plan impact."
-        />
+        <PageHeader title="Goals" />
         <LoadingCard rows={6} />
       </Stack>
     );
   if (goalsQuery.isError)
     return (
       <Stack gap={4}>
-        <PageHeader
-          eyebrow="Goals"
-          title="Goals unavailable"
-          description="No goal policy has been changed."
-        />
+        <PageHeader title="Goals" />
         <ErrorState
           message="BetterWealth could not load your goals."
           onRetry={() => goalsQuery.refetch()}
@@ -2524,23 +2499,21 @@ export function GoalsPage() {
         ? {
             severity: "info" as const,
             title: `Give ${recommendedGoal.name} a monthly pace`,
-            detail: `${formatMinor(recommendedGoal.remainingMinor, recommendedGoal.record.target.currency)} remains, so there is no honest projected date yet.`,
+            detail: `${formatMinor(recommendedGoal.remainingMinor, recommendedGoal.record.target.currency)} remains, so there is no projected date yet.`,
             action: "Set pace",
             kind: "edit" as const,
           }
         : {
             severity: "success" as const,
             title: `${recommendedGoal.name} is first in your funding order`,
-            detail: `Keep ${formatMinor(BigInt(recommendedGoal.record.monthlyContribution.minorUnits), recommendedGoal.record.monthlyContribution.currency)} per month flowing to stay projected for ${recommendedGoal.projectedLabel}.`,
+            detail: `A ${formatMinor(BigInt(recommendedGoal.record.monthlyContribution.minorUnits), recommendedGoal.record.monthlyContribution.currency)} monthly pace keeps the projected date at ${recommendedGoal.projectedLabel}.`,
             action: "Record funding",
             kind: "fund" as const,
           };
   return (
     <Stack gap={5}>
       <PageHeader
-        eyebrow="Wealth by 30"
-        title="Turn surplus into options"
-        description="Build resilience, eliminate expensive debt, and grow investable wealth with a funding order you control."
+        title="Goals"
         actions={
           <Button variant="contained" startIcon={<AddRounded />} onClick={openCreate}>
             New goal
@@ -2565,7 +2538,7 @@ export function GoalsPage() {
           helper={`Across ${visibleGoals.length} visible goal${visibleGoals.length === 1 ? "" : "s"}`}
         />
         <MetricCard
-          label="Monthly momentum"
+          label="Monthly committed"
           value={
             <Money
               value={minorToMajor(monthlyCommitted, goalSummaryCurrency)}
@@ -2636,9 +2609,7 @@ export function GoalsPage() {
           </Stack>
         </Alert>
       ) : visibleGoals.length ? (
-        <Alert severity="success">
-          Every visible goal is funded or paused. Choose the next milestone when you are ready.
-        </Alert>
+        <Alert severity="success">Every visible goal is funded or paused.</Alert>
       ) : null}
       {contribute.error instanceof Error ? (
         <Alert severity="error">{contribute.error.message}</Alert>
@@ -2670,7 +2641,7 @@ export function GoalsPage() {
         <EmptyState
           icon={<FlagRounded />}
           title="No active goals yet"
-          description="Create an emergency fund, debt payoff, purchase, or investment milestone to give surplus a job."
+          description="Create an emergency fund, purchase, debt payoff, or investment goal to track your progress."
           actionLabel="Create a goal"
           onAction={openCreate}
         />
@@ -2679,10 +2650,10 @@ export function GoalsPage() {
       {visibleGoals.length ? (
         <Card>
           <CardContent sx={{ p: { xs: 4, sm: 5 } }}>
-            <SectionHeader
-              title="Goal funding order"
-              description="Surplus flows to the first active, unfinished goal. Move goals to make that policy yours."
-            />
+            <SectionHeader title="Goal funding order" />
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              New contributions fund the first active, unfinished goal in this order.
+            </Typography>
             <Stack sx={{ mt: 4 }}>
               {visibleGoals.map((goal, index) => {
                 const status = goalStatus(goal);
@@ -2713,9 +2684,12 @@ export function GoalsPage() {
                           index === 0 && goal.status === "active"
                             ? "secondary.main"
                             : "action.hover",
-                        color: index === 0 && goal.status === "active" ? "#fff" : "text.secondary",
+                        color:
+                          index === 0 && goal.status === "active"
+                            ? "secondary.contrastText"
+                            : "text.secondary",
                         fontSize: 12,
-                        fontWeight: 750,
+                        fontWeight: 700,
                       }}
                     >
                       {index + 1}
@@ -2829,8 +2803,8 @@ export function GoalsPage() {
         <DialogTitle>Archive {editingGoal?.name}?</DialogTitle>
         <DialogContent>
           <Typography variant="body2" color="text.secondary">
-            The goal will leave your active plan and funding order. Its contribution history stays
-            in the ledger for an accurate audit trail.
+            The goal will be removed from your active plan and funding order. Its contribution
+            history is kept.
           </Typography>
         </DialogContent>
         {archiveGoal.error instanceof Error ? (

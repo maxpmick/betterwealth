@@ -12,7 +12,6 @@ describe("PlanFlowCard", () => {
         <MemoryRouter>
           <PlanFlowCard
             title="Your money loop"
-            description="A connected plan"
             testId="money-loop"
             steps={[
               {
@@ -22,7 +21,6 @@ describe("PlanFlowCard", () => {
                 detail: "Expected take-home",
                 icon: <PaymentsRounded />,
                 to: "/budget",
-                tone: "#4A7FD1",
                 status: "Mapped",
                 statusTone: "positive",
               },
@@ -33,7 +31,6 @@ describe("PlanFlowCard", () => {
                 detail: "Categorized and reviewed",
                 icon: <CheckCircleRounded />,
                 to: "/automation",
-                tone: "#1F9D72",
                 status: "Two to review",
                 statusTone: "warning",
               },

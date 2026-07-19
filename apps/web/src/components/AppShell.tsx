@@ -10,7 +10,6 @@ import {
   FlagRounded,
   KeyboardCommandKeyRounded,
   LightModeRounded,
-  LockOutlineRounded,
   LogoutRounded,
   MoreHorizRounded,
   PaymentsRounded,
@@ -26,13 +25,11 @@ import {
 import {
   Alert,
   Avatar,
-  alpha,
   Badge,
   BottomNavigation,
   BottomNavigationAction,
   Box,
   Button,
-  Chip,
   DialogContent,
   DialogTitle,
   Divider,
@@ -107,20 +104,17 @@ function Wordmark() {
         sx={{
           width: 32,
           height: 32,
-          borderRadius: 2.5,
+          borderRadius: 1,
           display: "grid",
           placeItems: "center",
-          color: "#fff",
-          fontWeight: 800,
-          background: "linear-gradient(140deg, #1F3A5F, #1F9D72)",
-          boxShadow: "0 8px 18px rgba(31,157,114,0.2)",
+          color: "primary.contrastText",
+          bgcolor: "primary.main",
+          fontWeight: 700,
         }}
       >
         B
       </Box>
-      <Typography sx={{ fontSize: 16, fontWeight: 760, letterSpacing: "-0.025em" }}>
-        BetterWealth
-      </Typography>
+      <Typography variant="subtitle1">BetterWealth</Typography>
     </Stack>
   );
 }
@@ -247,7 +241,6 @@ function DesktopRail({ onExit, exiting }: { onExit: () => void; exiting: boolean
                   sx={{
                     minHeight: 44,
                     px: 2.5,
-                    borderRadius: 2.5,
                     color: "text.secondary",
                     "&.active": {
                       bgcolor: "action.selected",
@@ -266,10 +259,7 @@ function DesktopRail({ onExit, exiting }: { onExit: () => void; exiting: boolean
                       <Icon sx={{ fontSize: 20 }} />
                     </Badge>
                   </ListItemIcon>
-                  <ListItemText
-                    primary={item.label}
-                    primaryTypographyProps={{ fontSize: 13, fontWeight: 650 }}
-                  />
+                  <ListItemText primary={item.label} />
                 </ListItemButton>
               </ListItem>
             );
@@ -280,7 +270,7 @@ function DesktopRail({ onExit, exiting }: { onExit: () => void; exiting: boolean
         <Box
           sx={{
             p: 3,
-            borderRadius: 3,
+            borderRadius: 1,
             bgcolor: "action.hover",
             border: "1px solid",
             borderColor: "divider",
@@ -291,23 +281,16 @@ function DesktopRail({ onExit, exiting }: { onExit: () => void; exiting: boolean
               sx={{
                 width: 8,
                 height: 8,
-                borderRadius: 9,
+                borderRadius: "50%",
                 bgcolor: health.isError
                   ? "warning.main"
                   : health.isPending
                     ? "text.disabled"
                     : "success.main",
-                boxShadow:
-                  health.isError || health.isPending ? "none" : "0 0 0 4px rgba(31,157,114,0.12)",
               }}
             />
-            <Typography variant="caption" sx={{ fontWeight: 750 }}>
-              {runtimeLabel}
-            </Typography>
+            <Typography variant="caption">{runtimeLabel}</Typography>
           </Stack>
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
-            Sensitive credentials are field-encrypted
-          </Typography>
         </Box>
         <Button
           fullWidth
@@ -349,7 +332,7 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
     >
       <DialogTitle id="command-title" sx={{ pb: 2 }}>
         <Stack direction="row" justifyContent="space-between" alignItems="center">
-          <Typography variant="h3">Find anything</Typography>
+          <Typography variant="h3">Search</Typography>
           <IconButton aria-label="Close search" onClick={onClose}>
             <CloseRounded />
           </IconButton>
@@ -374,15 +357,8 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
         <List sx={{ mt: 2 }}>
           {filtered.map((command) => (
             <ListItem key={command.label} disablePadding>
-              <ListItemButton
-                onClick={() => go(command.path)}
-                sx={{ minHeight: 52, borderRadius: 2 }}
-              >
-                <ListItemText
-                  primary={command.label}
-                  secondary={command.group}
-                  primaryTypographyProps={{ fontWeight: 650 }}
-                />
+              <ListItemButton onClick={() => go(command.path)} sx={{ minHeight: 52 }}>
+                <ListItemText primary={command.label} secondary={command.group} />
               </ListItemButton>
             </ListItem>
           ))}
@@ -410,9 +386,7 @@ function TopBar() {
     mutationFn: api.sync,
     onSuccess: async () => {
       await queryClient.invalidateQueries();
-      setSyncNotice(
-        "Account sync queued. Fresh balances and transactions will appear as the run completes.",
-      );
+      setSyncNotice("Account sync queued.");
     },
   });
 
@@ -455,8 +429,7 @@ function TopBar() {
           display: "flex",
           alignItems: "center",
           px: { xs: 2, sm: 4, lg: 6 },
-          bgcolor: (theme) => alpha(theme.palette.background.default, 0.86),
-          backdropFilter: "blur(16px)",
+          bgcolor: "background.paper",
           borderBottom: "1px solid",
           borderColor: "divider",
         }}
@@ -496,7 +469,7 @@ function TopBar() {
               <SearchRounded />
             </IconButton>
           </Tooltip>
-          <Tooltip title={privacyEnabled ? "Show monetary values" : "Hide every monetary value"}>
+          <Tooltip title={privacyEnabled ? "Show monetary values" : "Hide monetary values"}>
             <IconButton
               aria-label={privacyEnabled ? "Show monetary values" : "Hide monetary values"}
               aria-pressed={privacyEnabled}
@@ -658,7 +631,6 @@ function MobileBottomBar({ onExit, exiting }: { onExit: () => void; exiting: boo
               color: "text.secondary",
             },
             "& .Mui-selected": { color: "secondary.main" },
-            "& .MuiBottomNavigationAction-label": { fontSize: "0.66rem", fontWeight: 700, mt: 0.5 },
           }}
         >
           {mobilePrimary.map((item) => {
@@ -687,16 +659,11 @@ function MobileBottomBar({ onExit, exiting }: { onExit: () => void; exiting: boo
         anchor="bottom"
         open={moreOpen}
         onClose={() => setMoreOpen(false)}
-        PaperProps={{ sx: { borderRadius: "18px 18px 0 0", pb: "env(safe-area-inset-bottom)" } }}
+        PaperProps={{ sx: { pb: "env(safe-area-inset-bottom)" } }}
       >
         <Box sx={{ p: 4 }}>
           <Stack direction="row" justifyContent="space-between" alignItems="center">
-            <Box>
-              <Typography variant="h3">More</Typography>
-              <Typography variant="body2" color="text.secondary">
-                Your full BetterWealth workspace
-              </Typography>
-            </Box>
+            <Typography variant="h3">More</Typography>
             <IconButton onClick={() => setMoreOpen(false)} aria-label="Close more menu">
               <CloseRounded />
             </IconButton>
@@ -711,42 +678,20 @@ function MobileBottomBar({ onExit, exiting }: { onExit: () => void; exiting: boo
                       setMoreOpen(false);
                       navigate(item.path);
                     }}
-                    sx={{ minHeight: 56, borderRadius: 2.5 }}
+                    sx={{ minHeight: 56 }}
                   >
                     <ListItemIcon>
                       <Badge badgeContent={item.badge} color="error">
                         <Icon />
                       </Badge>
                     </ListItemIcon>
-                    <ListItemText
-                      primary={item.label}
-                      primaryTypographyProps={{ fontWeight: 650 }}
-                    />
+                    <ListItemText primary={item.label} />
                   </ListItemButton>
                 </ListItem>
               );
             })}
           </List>
           <Divider sx={{ my: 2 }} />
-          <Stack
-            direction="row"
-            alignItems="center"
-            justifyContent="space-between"
-            sx={{ minHeight: 52 }}
-          >
-            <Stack direction="row" alignItems="center" gap={2}>
-              <LockOutlineRounded color="success" />
-              <Box>
-                <Typography variant="body2" fontWeight={700}>
-                  Private by design
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  No analytics or ad tracking
-                </Typography>
-              </Box>
-            </Stack>
-            <Chip label="Local" size="small" />
-          </Stack>
           <Button
             fullWidth
             color="inherit"

@@ -129,19 +129,17 @@ export function SplitTransactionDialog({
     <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="md">
       <DialogTitle component="div">
         <DialogHeading
-          eyebrow="Exact allocation"
           title={detail?.splits.length ? "Edit transaction split" : "Split transaction"}
-          description={`${item.merchant} · ${formatMinorUnits(BigInt(item.amountMinorUnits), item.currency)}`}
+          subtitle={`${item.merchant} · ${formatMinorUnits(BigInt(item.amountMinorUnits), item.currency)}`}
         />
       </DialogTitle>
       <DialogContent>
         <Alert severity="info" sx={{ mb: 4 }}>
-          Split amounts must equal the original transaction exactly. Reports use these parts instead
-          of double-counting the parent.
+          Split amounts must equal the original transaction exactly.
         </Alert>
         <Stack gap={3}>
           {rows.map((row, index) => (
-            <Paper key={row.key} variant="outlined" sx={{ p: 3, borderRadius: 3 }}>
+            <Paper key={row.key} variant="outlined" sx={{ p: 3 }}>
               <Stack
                 direction={{ xs: "column", md: "row" }}
                 gap={2}

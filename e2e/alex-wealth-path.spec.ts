@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import {
   authenticatedApi,
+  e2eLabel,
   expectNoHorizontalOverflow,
   loginAsAlex,
   patchTransactionByMerchant,
@@ -67,7 +68,7 @@ test.describe("Alex's age-22 path to wealth at 30", () => {
     await page.goto("/budget");
     const budget = await authenticatedApi(page, "GET", "/budgets");
     expect(budget.status).toBe(200);
-    await expect(page.getByRole("heading", { name: "A job for every dollar" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Budget" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Rent" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Groceries" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Emergency Fund" })).toBeVisible();
@@ -82,10 +83,10 @@ test.describe("Alex's age-22 path to wealth at 30", () => {
 
   test("compares a comfortable purchase goal and an age-30 forecast", async ({ page }) => {
     await page.goto("/goals");
-    await expect(page.getByRole("heading", { name: "Turn surplus into options" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Goals" })).toBeVisible();
     await expect(page.getByRole("heading", { name: /emergency fund/i }).first()).toBeVisible();
     await page.getByRole("button", { name: "What if" }).first().click();
-    await expect(page.getByRole("heading", { name: /test the plan/ })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /what if/i })).toBeVisible();
     await expect(page.getByText("Projected funding date", { exact: true })).toBeVisible();
     const monthlyPace = page.getByRole("textbox", { name: "What-if monthly pace" });
     await monthlyPace.fill("900");
@@ -94,9 +95,7 @@ test.describe("Alex's age-22 path to wealth at 30", () => {
     await page.getByRole("button", { name: "Close" }).click();
 
     await page.goto("/forecast");
-    await expect(
-      page.getByRole("heading", { name: "See where today’s plan can lead" }),
-    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Forecast" })).toBeVisible();
     await expect(page.getByText("Liquid cash at horizon", { exact: true })).toBeVisible();
     await expect(page.getByText("Total net worth at horizon", { exact: true })).toBeVisible();
     await page.getByRole("tab", { name: /Alex accelerated path/ }).click();
@@ -107,11 +106,12 @@ test.describe("Alex's age-22 path to wealth at 30", () => {
     await expectNoHorizontalOverflow(page);
   });
 
-  test("creates, funds, edits, and archives a real savings goal", async ({ page }) => {
+  test("creates, funds, edits, and archives a real savings goal", async ({ page }, testInfo) => {
+    const goalName = e2eLabel(testInfo, "Laptop without debt");
     await page.goto("/goals?action=add");
     const createDialog = page.getByRole("dialog", { name: "Create a goal" });
     await expect(createDialog).toBeVisible();
-    await createDialog.getByRole("textbox", { name: "Goal name" }).fill("Laptop without debt");
+    await createDialog.getByRole("textbox", { name: "Goal name" }).fill(goalName);
     await createDialog.getByRole("textbox", { name: "Target amount" }).fill("1800");
     await createDialog.getByRole("textbox", { name: "Already saved" }).fill("200");
     await createDialog.getByRole("textbox", { name: "Monthly contribution" }).fill("200");
@@ -119,26 +119,26 @@ test.describe("Alex's age-22 path to wealth at 30", () => {
     await createDialog.getByRole("button", { name: "Create goal" }).click();
 
     const goalCard = page
-      .getByRole("heading", { name: "Laptop without debt" })
+      .getByRole("heading", { name: goalName, exact: true })
       .locator("xpath=ancestor::*[contains(@class, 'MuiCard-root')][1]");
     await expect(goalCard).toBeVisible();
     await expect(goalCard).toContainText("$200");
     await goalCard.getByRole("button", { name: "Fund" }).click();
-    const fundingDialog = page.getByRole("dialog", { name: "Fund Laptop without debt" });
-    await expect(fundingDialog.getByText(/does not initiate a bank transfer/)).toBeVisible();
+    const fundingDialog = page.getByRole("dialog", { name: `Fund ${goalName}` });
+    await expect(fundingDialog.getByText(/does not move money between accounts/)).toBeVisible();
     await fundingDialog.getByRole("textbox", { name: "Note" }).fill("Paycheck surplus");
     await fundingDialog.getByRole("button", { name: "Record contribution" }).click();
     await expect(fundingDialog).toBeHidden();
     await expect(goalCard).toContainText("$400");
 
-    await goalCard.getByRole("button", { name: "Edit Laptop without debt" }).click();
+    await goalCard.getByRole("button", { name: `Edit ${goalName}` }).click();
     const editDialog = page.getByRole("dialog", { name: "Edit goal" });
     await editDialog.getByRole("button", { name: "Archive" }).click();
-    const archiveDialog = page.getByRole("dialog", { name: "Archive Laptop without debt?" });
-    await expect(archiveDialog.getByText(/contribution history stays/)).toBeVisible();
+    const archiveDialog = page.getByRole("dialog", { name: `Archive ${goalName}?` });
+    await expect(archiveDialog.getByText(/contribution history is kept/)).toBeVisible();
     await archiveDialog.getByRole("button", { name: "Archive goal" }).click();
     await expect(editDialog).toBeHidden();
-    await expect(page.getByRole("heading", { name: "Laptop without debt" })).toBeHidden();
+    await expect(page.getByRole("heading", { name: goalName, exact: true })).toBeHidden();
     await expectNoHorizontalOverflow(page);
   });
 });

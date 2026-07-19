@@ -76,7 +76,7 @@ describe("new-user onboarding", () => {
     expect(
       screen.getByRole("heading", { level: 1, name: /your first plan is ready/i }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/alex’s fictional, fully reconciled fixture/i)).toBeInTheDocument();
+    expect(screen.getByText(/alex’s fictional demo data/i)).toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -129,13 +129,11 @@ describe("new-user onboarding", () => {
     await user.type(screen.getByRole("textbox", { name: /opening balance/i }), "3850.25");
     await user.click(screen.getByRole("button", { name: /^continue$/i }));
 
-    expect(
-      screen.getByRole("heading", { level: 1, name: /define your age-30 horizon/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: /set your target/i })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /^continue$/i }));
 
     expect(
-      await screen.findByRole("heading", { level: 1, name: /give the next paycheck a job/i }),
+      await screen.findByRole("heading", { level: 1, name: /estimate your cash flow/i }),
     ).toBeInTheDocument();
     await user.type(screen.getByRole("textbox", { name: /net pay per paycheck/i }), "2200");
     await user.type(screen.getByRole("textbox", { name: /required bills before payday/i }), "0");
@@ -144,11 +142,11 @@ describe("new-user onboarding", () => {
     expect(
       await screen.findByRole("heading", {
         level: 1,
-        name: /your first plan has clear next steps/i,
+        name: /your plan is incomplete/i,
       }),
     ).toBeInTheDocument();
     expect(screen.getByText(/1 input still needs attention/i)).toBeInTheDocument();
-    expect(screen.getByText(/not a simulated completion score/i)).toBeInTheDocument();
+    expect(screen.getByText(/keeps each missing input visible/i)).toBeInTheDocument();
 
     expect(
       requests.find(({ path, method }) => path === "/api/v1/accounts" && method === "POST")?.body,
@@ -234,14 +232,10 @@ describe("Today weekly action", () => {
     expect(screen.getAllByText("Ready").length).toBeGreaterThan(0);
     expect(screen.queryByText(/% ready/i)).not.toBeInTheDocument();
     const moneyLoop = screen.getByTestId("today-money-loop");
-    expect(
-      within(moneyLoop).getByRole("heading", { name: /paycheck-to-freedom loop/i }),
-    ).toBeInTheDocument();
+    expect(within(moneyLoop).getByRole("heading", { name: /plan overview/i })).toBeInTheDocument();
     expect(within(moneyLoop).getByText("Pay cycle mapped")).toBeInTheDocument();
     expect(within(moneyLoop).getByText("1 to resolve")).toBeInTheDocument();
-    expect(
-      within(moneyLoop).getByText(/funding projection, not purchase permission/i),
-    ).toBeInTheDocument();
+    expect(within(moneyLoop).getByText(/modeled likelihood/i)).toBeInTheDocument();
     expect(within(moneyLoop).getByText(/plan surplus/i)).toHaveTextContent("Plan surplus $150");
     expect(screen.getByText(/this week: earmark/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /preview impact/i }));

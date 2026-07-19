@@ -71,18 +71,14 @@ export function MatchTransferDialog({
   return (
     <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="sm">
       <DialogTitle component="div">
-        <DialogHeading
-          eyebrow="Cash flow cleanup"
-          title="Match both sides of a transfer"
-          description="Matched transfers stay visible but leave spending and income reports."
-        />
+        <DialogHeading title="Match both sides of a transfer" />
       </DialogTitle>
       <DialogContent>
-        <Paper variant="outlined" sx={{ p: 3, borderRadius: 3, mb: 3 }}>
+        <Paper variant="outlined" sx={{ p: 3, mb: 3 }}>
           <Typography variant="caption" color="text.secondary">
             Selected {directionLabel(item)}
           </Typography>
-          <Typography variant="body2" fontWeight={750} sx={{ mt: 1 }}>
+          <Typography variant="body2" fontWeight={700} sx={{ mt: 1 }}>
             {candidateLabel(item)}
           </Typography>
         </Paper>

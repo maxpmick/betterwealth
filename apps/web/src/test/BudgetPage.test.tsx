@@ -42,9 +42,7 @@ describe("Budget planning", () => {
   it("renders only computed plan totals and priority funding rows", async () => {
     renderPage();
 
-    expect(
-      screen.getByRole("heading", { level: 1, name: /a job for every dollar/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: /^budget$/i })).toBeInTheDocument();
     expect(screen.getByText("Plan surplus")).toBeInTheDocument();
     const paycheckFlow = screen.getByTestId("budget-paycheck-flow");
     expect(
