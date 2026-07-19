@@ -293,7 +293,7 @@ test.describe("live finance workflows", () => {
 
     const accountName = e2eLabel(testInfo, "Freelance cash reserve");
     await page.goto("/accounts?action=add");
-    const chooser = page.getByRole("dialog", { name: "Add to BetterWealth" });
+    const chooser = page.getByRole("dialog", { name: "Add account or asset" });
     await chooser.getByRole("button", { name: /Manual account/ }).click();
     const accountDialog = page.getByRole("dialog", { name: "Add manual account" });
     await accountDialog.getByRole("textbox", { name: "Name" }).fill(accountName);
@@ -335,7 +335,7 @@ test.describe("live finance workflows", () => {
     const normalizedPattern = merchant.replaceAll("-", " ");
     await page.goto("/automation?action=add");
     const builder = page.getByRole("presentation");
-    await expect(page.getByRole("heading", { name: "Build a narrow rule" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "New rule" })).toBeVisible();
     await builder.getByRole("textbox", { name: "Rule name" }).fill(ruleName);
     await builder.getByRole("combobox", { name: "Condition 1 field" }).click();
     await page.getByRole("option", { name: "Description" }).click();
@@ -346,7 +346,7 @@ test.describe("live finance workflows", () => {
     await expect(builder.getByText("1 historical match", { exact: false })).toBeVisible();
     await builder.getByLabel(/Apply to these 1 existing match/).check();
     await builder.getByRole("button", { name: "Save rule" }).click();
-    await expect(page.getByRole("heading", { name: "Build a narrow rule" })).toBeHidden();
+    await expect(page.getByRole("heading", { name: "New rule" })).toBeHidden();
     await expect(page.getByText(ruleName, { exact: true })).toBeVisible();
 
     const transaction = await authenticatedApi(page, "GET", "/transactions");

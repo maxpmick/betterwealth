@@ -15,7 +15,6 @@ import {
 } from "@mui/icons-material";
 import {
   Alert,
-  alpha,
   Box,
   Button,
   Card,
@@ -1014,7 +1013,9 @@ function RuleBuilder({
         sx={{ p: 4, borderBottom: "1px solid", borderColor: "divider" }}
       >
         <Box>
-          <Typography variant="h3">{rule ? `Edit ${rule.name}` : "Build a narrow rule"}</Typography>
+          <Typography component="h3" variant="h6">
+            {rule ? `Edit ${rule.name}` : "New rule"}
+          </Typography>
           <Typography variant="caption" color="text.secondary">
             Every condition must match; higher priority evaluates first.
           </Typography>
@@ -1070,14 +1071,9 @@ function RuleBuilder({
           alignItems="end"
           sx={{ mt: 6, mb: 2 }}
         >
-          <Box>
-            <Typography variant="overline" color="text.secondary">
-              When all are true
-            </Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-              Keep patterns specific enough to avoid accidental matches.
-            </Typography>
-          </Box>
+          <Typography variant="overline" color="text.secondary">
+            When all are true
+          </Typography>
           <Chip
             size="small"
             label={`${draft.conditions.length} condition${draft.conditions.length === 1 ? "" : "s"}`}
@@ -1126,7 +1122,7 @@ function RuleBuilder({
               Then
             </Typography>
             <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-              Actions are deterministic and run in the order shown.
+              Actions run in the order shown.
             </Typography>
           </Box>
           <Chip
@@ -1175,7 +1171,9 @@ function RuleBuilder({
           gap={3}
         >
           <Box>
-            <Typography variant="h3">Historical preview</Typography>
+            <Typography component="h3" variant="h6">
+              Historical preview
+            </Typography>
             <Typography variant="caption" color="text.secondary">
               A preview reads transactions but never changes them.
             </Typography>
@@ -1196,11 +1194,11 @@ function RuleBuilder({
               direction="row"
               gap={2}
               alignItems="center"
-              sx={{ p: 4, bgcolor: alpha(theme.palette.success.main, 0.07) }}
+              sx={{ p: 4, bgcolor: "action.hover" }}
             >
               <CheckCircleRounded color="success" />
               <Box>
-                <Typography variant="body2" fontWeight={750}>
+                <Typography variant="body2">
                   {preview.matchCount} historical match{preview.matchCount === 1 ? "" : "es"} ·{" "}
                   <Money
                     value={minorToMajor(
@@ -1226,14 +1224,14 @@ function RuleBuilder({
                 sx={{ px: 4, py: 2.5, borderTop: "1px solid", borderColor: "divider" }}
               >
                 <Box sx={{ minWidth: 0, flex: 1 }}>
-                  <Typography variant="body2" fontWeight={680} noWrap>
+                  <Typography variant="body2" noWrap>
                     {transaction.merchant}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
                     {transaction.accountName} · {transaction.effectiveDate}
                   </Typography>
                 </Box>
-                <Typography variant="body2" fontWeight={700}>
+                <Typography variant="body2">
                   <Money
                     value={minorToMajor(transaction.amount.minorUnits, transaction.amount.currency)}
                     currency={transaction.amount.currency}
@@ -1267,7 +1265,7 @@ function RuleBuilder({
             }
             label={
               <Box>
-                <Typography variant="body2" fontWeight={680}>
+                <Typography variant="body2">
                   Apply to these {preview.matchCount} existing matches after saving
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
@@ -1340,11 +1338,11 @@ function RuleRow({
           sx={{
             width: 42,
             height: 42,
-            borderRadius: 2.5,
+            borderRadius: 1,
             display: "grid",
             placeItems: "center",
             flex: "0 0 auto",
-            bgcolor: alpha("#1F9D72", 0.1),
+            bgcolor: "action.hover",
             color: "success.main",
           }}
         >
@@ -1352,9 +1350,7 @@ function RuleRow({
         </Box>
         <Box sx={{ minWidth: 0 }}>
           <Stack direction="row" gap={1.5} alignItems="center" flexWrap="wrap">
-            <Typography variant="body2" fontWeight={720}>
-              {rule.name}
-            </Typography>
+            <Typography variant="body2">{rule.name}</Typography>
             <StatusChip label={source} tone={source === "Approved AI" ? "info" : "neutral"} />
             {!rule.enabled ? <StatusChip label="Paused" tone="warning" /> : null}
           </Stack>
@@ -1370,7 +1366,7 @@ function RuleRow({
         gap={2}
       >
         <Box sx={{ textAlign: { xs: "left", sm: "right" }, mr: 1 }}>
-          <Typography variant="body2" fontWeight={700}>
+          <Typography variant="body2">
             {rule.matchCount} match{rule.matchCount === 1 ? "" : "es"}
           </Typography>
           <Typography variant="caption" color="text.secondary">
@@ -1459,24 +1455,26 @@ function SuggestionCard({
               sx={{
                 width: 44,
                 height: 44,
-                borderRadius: 3,
+                borderRadius: 1,
                 display: "grid",
                 placeItems: "center",
-                bgcolor: alpha("#8B6CCF", 0.1),
-                color: "#8B6CCF",
+                bgcolor: "action.hover",
+                color: "text.secondary",
               }}
             >
               <SmartToyRounded />
             </Box>
             <Box>
-              <Typography variant="h3">{suggestion.merchant}</Typography>
+              <Typography component="h3" variant="h6">
+                {suggestion.merchant}
+              </Typography>
               <Typography variant="caption" color="text.secondary">
                 {suggestion.raw}
               </Typography>
             </Box>
           </Stack>
           <Box sx={{ textAlign: "right" }}>
-            <Typography variant="h3">
+            <Typography component="h3" variant="h5">
               <Money value={suggestion.amount} currency={suggestion.currency} sign />
             </Typography>
             <StatusChip label={`${suggestion.confidence}% confidence`} tone="warning" />
@@ -1488,9 +1486,7 @@ function SuggestionCard({
             <Typography variant="caption" color="text.secondary">
               Suggested category
             </Typography>
-            <Typography variant="body2" fontWeight={720}>
-              {suggestion.category}
-            </Typography>
+            <Typography variant="body2">{suggestion.category}</Typography>
           </Box>
           <Box>
             <Typography variant="caption" color="text.secondary">
@@ -1498,11 +1494,11 @@ function SuggestionCard({
             </Typography>
             <Typography variant="body2">{suggestion.rationale}</Typography>
           </Box>
-          <Box sx={{ p: 3.5, borderRadius: 3, bgcolor: "action.hover" }}>
+          <Box sx={{ p: 3.5, borderRadius: 1, bgcolor: "action.hover" }}>
             <Typography variant="caption" color="text.secondary">
-              Narrow reusable rule proposal
+              Rule proposal
             </Typography>
-            <Typography variant="body2" fontWeight={700} sx={{ mt: 1 }}>
+            <Typography variant="body2" sx={{ mt: 1 }}>
               {suggestion.proposal}
             </Typography>
           </Box>
@@ -1539,7 +1535,7 @@ function SuggestionCard({
                 }
                 label={
                   <Box>
-                    <Typography variant="body2" fontWeight={700}>
+                    <Typography variant="body2">
                       Research merchant on the web when needed
                     </Typography>
                     <Typography variant="caption" color="text.secondary">
@@ -1883,11 +1879,7 @@ export function AutomationPage() {
   if (rulesQuery.isPending) {
     return (
       <Stack gap={4}>
-        <PageHeader
-          eyebrow="Automation"
-          title="Loading automation"
-          description="Reading deterministic rules and match history."
-        />
+        <PageHeader title="Loading automation" />
         <LoadingCard rows={7} />
       </Stack>
     );
@@ -1895,11 +1887,7 @@ export function AutomationPage() {
   if (rulesQuery.isError) {
     return (
       <Stack gap={4}>
-        <PageHeader
-          eyebrow="Automation"
-          title="Automation unavailable"
-          description="No rule was evaluated or changed."
-        />
+        <PageHeader title="Automation unavailable" />
         <ErrorState
           message="BetterWealth could not load automation rules."
           onRetry={() => rulesQuery.refetch()}
@@ -1911,9 +1899,7 @@ export function AutomationPage() {
   return (
     <Stack gap={5}>
       <PageHeader
-        eyebrow="Automation"
-        title="Trust is earned one narrow rule at a time"
-        description="Deterministic rules categorize, budget, and flag transactions. Every new pattern is previewed before it can touch your ledger."
+        title="Automation"
         actions={
           <Button variant="contained" startIcon={<AddRounded />} onClick={openNewRule}>
             New rule
@@ -1922,8 +1908,7 @@ export function AutomationPage() {
       />
       <PlanFlowCard
         testId="automation-money-pipeline"
-        title="From raw swipe to trusted budget"
-        description="Every imported pattern moves through deterministic matching and an approval-gated review before it becomes dependable planning data."
+        title="Automation pipeline"
         steps={[
           {
             id: "observe",
@@ -1932,11 +1917,10 @@ export function AutomationPage() {
               ? coverageTransactions.length.toLocaleString()
               : "No activity",
             detail: coverageTransactions.length
-              ? "Latest non-transfer ledger entries checked for repeatable patterns"
-              : "Sync or import transactions to begin pattern discovery.",
+              ? "Recent non-transfer transactions checked for matching patterns"
+              : "Sync or import transactions to start matching.",
             icon: <SearchRounded />,
             to: "/transactions",
-            tone: "#4A7FD1",
             status: transactionsQuery.isError ? "Coverage unavailable" : "Live ledger sample",
             statusTone: transactionsQuery.isError ? "warning" : "info",
           },
@@ -1944,10 +1928,9 @@ export function AutomationPage() {
             id: "rules",
             label: "Match",
             value: activeRules.length.toLocaleString(),
-            detail: `${aiRules.length} AI-approved · ${handledCount.toLocaleString()} auditable historical matches`,
+            detail: `${aiRules.length} AI-approved · ${handledCount.toLocaleString()} historical matches`,
             icon: <RuleRounded />,
             to: "/automation",
-            tone: "#1F9D72",
             status: activeRules.length ? "Deterministic rules" : "Build first rule",
             statusTone: activeRules.length ? "positive" : "warning",
           },
@@ -1956,11 +1939,10 @@ export function AutomationPage() {
             label: "Review",
             value: suggestionViews.length.toLocaleString(),
             detail: suggestionViews.length
-              ? "AI proposals waiting for category-only or category-plus-rule approval"
+              ? "AI proposals waiting for approval"
               : "No AI proposal can change the ledger without your approval.",
             icon: <SmartToyRounded />,
             to: "/automation?tab=ai",
-            tone: "#D98B2B",
             status: suggestionViews.length ? "Approval required" : "Queue clear",
             statusTone: suggestionViews.length ? "warning" : "positive",
           },
@@ -1975,7 +1957,6 @@ export function AutomationPage() {
               : "Coverage appears after the first imported ledger entries.",
             icon: <CheckCircleRounded />,
             to: "/budget",
-            tone: "#8B6CCF",
             status:
               readyCount === coverageTransactions.length && coverageTransactions.length
                 ? "Planning clean"
@@ -1996,14 +1977,14 @@ export function AutomationPage() {
             <Typography variant="body2" color="text.secondary">
               {coverageTransactions.length
                 ? `${Math.round((readyCount / coverageTransactions.length) * 100)}% of this ledger sample is categorized and review-ready.`
-                : "Coverage is intentionally not estimated until real ledger data exists."}
+                : "No ledger data yet."}
             </Typography>
             <Button
               size="small"
               endIcon={<PlayArrowRounded />}
               onClick={() => (suggestionViews.length ? setTab("ai") : openNewRule())}
             >
-              {suggestionViews.length ? "Review next proposal" : "Teach a new pattern"}
+              {suggestionViews.length ? "Review proposals" : "New rule"}
             </Button>
           </Stack>
         }
@@ -2038,7 +2019,6 @@ export function AutomationPage() {
             <Box sx={{ p: 5 }}>
               <SectionHeader
                 title="Categorization rules"
-                description="Higher priority evaluates first; specificity breaks ties. System rules can be paused but not rewritten."
                 action={
                   <TextField
                     placeholder="Search rules"
@@ -2055,6 +2035,10 @@ export function AutomationPage() {
                   />
                 }
               />
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                Higher priority runs first; specificity breaks ties. System rules can be paused but
+                not edited.
+              </Typography>
             </Box>
             {filteredRules.length ? (
               filteredRules.map((rule) => (
@@ -2078,7 +2062,7 @@ export function AutomationPage() {
                 description={
                   search
                     ? "Try a merchant, action, source, or rule name."
-                    : "Create a narrow rule and preview historical matches before saving."
+                    : "Create a rule and preview historical matches before saving."
                 }
                 actionLabel={search ? "Clear search" : "Create rule"}
                 onAction={search ? () => setSearch("") : openNewRule}
@@ -2092,11 +2076,11 @@ export function AutomationPage() {
         <>
           <Alert severity="info" icon={<ShieldRounded />}>
             Suggestions never apply themselves. Approving a category changes one transaction;
-            “Approve + rule” also stores the narrow deterministic proposal for future matches.
+            “Approve + rule” also stores the proposed rule for future matches.
           </Alert>
           {suggestionsQuery.isError ? (
             <ErrorState
-              message="AI suggestions are unavailable; deterministic rules still work."
+              message="AI suggestions are unavailable; rules still work."
               onRetry={() => suggestionsQuery.refetch()}
             />
           ) : (
@@ -2121,7 +2105,7 @@ export function AutomationPage() {
                 <EmptyState
                   icon={<CheckCircleRounded />}
                   title="Review queue is clear"
-                  description="Uncertain first-seen patterns appear here only when your AI integration and consent are enabled."
+                  description="Suggestions appear here when your AI integration and consent are enabled."
                   actionLabel="Refresh queue"
                   onAction={() => suggestionsQuery.refetch()}
                 />

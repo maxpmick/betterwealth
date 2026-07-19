@@ -15,7 +15,6 @@ import {
 } from "@mui/icons-material";
 import {
   Alert,
-  alpha,
   Box,
   Button,
   Card,
@@ -152,7 +151,6 @@ function AccountRow({ account, onOpen }: { account: AccountView; onOpen: () => v
       sx={{
         width: "100%",
         p: 3,
-        borderRadius: 2.5,
         justifyContent: "stretch",
         textAlign: "left",
         minWidth: 0,
@@ -163,12 +161,9 @@ function AccountRow({ account, onOpen }: { account: AccountView; onOpen: () => v
           sx={{
             width: 42,
             height: 42,
-            borderRadius: 2.5,
+            borderRadius: 1,
             flex: "0 0 auto",
-            bgcolor:
-              account.group === "Credit" || account.group === "Loans"
-                ? alpha("#DD625B", 0.1)
-                : alpha("#1F9D72", 0.1),
+            bgcolor: "action.hover",
             color:
               account.group === "Credit" || account.group === "Loans"
                 ? "error.main"
@@ -180,7 +175,7 @@ function AccountRow({ account, onOpen }: { account: AccountView; onOpen: () => v
           <AccountIcon group={account.group} />
         </Box>
         <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Typography variant="body2" fontWeight={720} noWrap>
+          <Typography variant="body2" noWrap>
             {account.name}
           </Typography>
           <Typography variant="caption" color="text.secondary" noWrap>
@@ -188,7 +183,7 @@ function AccountRow({ account, onOpen }: { account: AccountView; onOpen: () => v
           </Typography>
         </Box>
         <Box sx={{ textAlign: "right", ml: 2 }}>
-          <Typography variant="body2" fontWeight={760}>
+          <Typography variant="body2">
             <Money value={account.balance} />
           </Typography>
           <Typography variant="caption" color="text.secondary">
@@ -306,7 +301,7 @@ function AccountDetail({
           <Typography variant="caption" color="text.secondary">
             {account.institution} · ••{account.mask.slice(-2)}
           </Typography>
-          <Typography variant="h3" sx={{ mt: 0.5 }}>
+          <Typography component="h3" variant="h6" sx={{ mt: 0.5 }}>
             {account.name}
           </Typography>
         </Box>
@@ -332,7 +327,7 @@ function AccountDetail({
                 <Typography variant="caption" color="text.secondary">
                   Current balance
                 </Typography>
-                <Typography sx={{ fontSize: 34, fontWeight: 760, mt: 0.5 }}>
+                <Typography component="p" variant="h4" sx={{ mt: 0.5 }}>
                   <Money
                     value={
                       balanceQuery.data
@@ -384,7 +379,7 @@ function AccountDetail({
                       label: "Current balance",
                       area: true,
                       showMark: history.length < 12,
-                      color: "#1F9D72",
+                      color: theme.palette.success.main,
                       valueFormatter: (value: number | null) =>
                         formatMoney(Number(value ?? 0), balanceCurrency),
                     },
@@ -507,7 +502,7 @@ function AccountDetail({
                     sx={{
                       width: 38,
                       height: 38,
-                      borderRadius: 2.5,
+                      borderRadius: 1,
                       display: "grid",
                       placeItems: "center",
                       bgcolor: "action.hover",
@@ -517,7 +512,7 @@ function AccountDetail({
                     <ReceiptLongRounded fontSize="small" />
                   </Box>
                   <Box sx={{ minWidth: 0, flex: 1 }}>
-                    <Typography variant="body2" fontWeight={700} noWrap>
+                    <Typography variant="body2" noWrap>
                       {transaction.merchant || transaction.description}
                     </Typography>
                     <Typography variant="caption" color="text.secondary" noWrap>
@@ -525,7 +520,7 @@ function AccountDetail({
                       {new Date(transaction.effectiveDate).toLocaleDateString()}
                     </Typography>
                   </Box>
-                  <Typography variant="body2" fontWeight={750}>
+                  <Typography variant="body2">
                     <Money
                       value={minorToMajor(
                         transaction.amount.minorUnits,
@@ -714,22 +709,14 @@ export function AccountsPage() {
   if (accountsQuery.isPending || assetsQuery.isPending || connectionsQuery.isPending)
     return (
       <Stack gap={4}>
-        <PageHeader
-          eyebrow="Accounts & assets"
-          title="Loading balances"
-          description="Reading accounts, connection state, and dated valuations."
-        />
+        <PageHeader title="Loading balances" />
         <LoadingCard rows={8} />
       </Stack>
     );
   if (accountsQuery.isError || assetsQuery.isError || connectionsQuery.isError)
     return (
       <Stack gap={4}>
-        <PageHeader
-          eyebrow="Accounts & assets"
-          title="Accounts unavailable"
-          description="No account truth has been changed."
-        />
+        <PageHeader title="Accounts unavailable" />
         <ErrorState
           message="BetterWealth could not load accounts and assets."
           onRetry={() => {
@@ -797,9 +784,7 @@ export function AccountsPage() {
   return (
     <Stack gap={5}>
       <PageHeader
-        eyebrow="Accounts & assets"
-        title="Every balance, in its proper place"
-        description="Connection health stays separate from account truth. Manual accounts remain first-class and editable."
+        title="Accounts"
         actions={
           <>
             {connectionsQuery.data?.data.length ? (
@@ -868,7 +853,6 @@ export function AccountsPage() {
         <CardContent sx={{ p: 5 }}>
           <SectionHeader
             title="Institution connections"
-            description="Provider access and sync state, independent of individual accounts."
             action={
               <Button
                 component={RouterLink}
@@ -891,14 +875,12 @@ export function AccountsPage() {
               connectionsQuery.data.data.map((connection) => (
                 <Box
                   key={connection.id}
-                  sx={{ p: 4, border: "1px solid", borderColor: "divider", borderRadius: 3 }}
+                  sx={{ p: 4, border: "1px solid", borderColor: "divider", borderRadius: 1 }}
                 >
                   <Stack direction="row" alignItems="center" gap={2}>
                     <CloudSyncRounded color="action" />
                     <Box sx={{ flex: 1 }}>
-                      <Typography variant="body2" fontWeight={720}>
-                        {connection.displayName}
-                      </Typography>
+                      <Typography variant="body2">{connection.displayName}</Typography>
                       <Typography variant="caption" color="text.secondary">
                         {connection.provider} ·{" "}
                         {connection.lastSuccessfulAt
@@ -923,10 +905,10 @@ export function AccountsPage() {
       </Card>
       {groups.map((accountGroup) => (
         <Box key={accountGroup}>
-          <SectionHeader
-            title={accountGroup}
-            description={`${activeAccountItems.filter((account) => account.group === accountGroup).length} account${activeAccountItems.filter((account) => account.group === accountGroup).length === 1 ? "" : "s"}`}
-          />
+          <SectionHeader title={accountGroup} />
+          <Typography variant="body2" color="text.secondary">
+            {`${activeAccountItems.filter((account) => account.group === accountGroup).length} account${activeAccountItems.filter((account) => account.group === accountGroup).length === 1 ? "" : "s"}`}
+          </Typography>
           <Card sx={{ mt: 3 }}>
             <Stack divider={<Divider />}>
               {activeAccountItems
@@ -960,10 +942,10 @@ export function AccountsPage() {
       ) : null}
       {archivedAccountItems.length ? (
         <Box>
-          <SectionHeader
-            title="Hidden & closed accounts"
-            description={`${archivedAccountItems.length} account${archivedAccountItems.length === 1 ? " is" : "s are"} excluded from active totals, net worth, budgets, and safe to spend. Reopening restores each account's saved inclusion settings.`}
-          />
+          <SectionHeader title="Hidden & closed accounts" />
+          <Typography variant="body2" color="text.secondary">
+            {`${archivedAccountItems.length} account${archivedAccountItems.length === 1 ? " is" : "s are"} excluded from active totals, net worth, budgets, and safe to spend. Reopening restores each account's saved inclusion settings.`}
+          </Typography>
           <Card sx={{ mt: 3 }}>
             <Stack divider={<Divider />}>
               {archivedAccountItems.map((account) => (
@@ -1022,7 +1004,6 @@ export function AccountsPage() {
       <Box>
         <SectionHeader
           title="Manual assets"
-          description="Dated manual values with an explicit source and confidence level."
           action={
             <Button
               startIcon={<AddRounded />}
@@ -1051,23 +1032,25 @@ export function AccountsPage() {
                     sx={{
                       width: 42,
                       height: 42,
-                      borderRadius: 2.5,
+                      borderRadius: 1,
                       display: "grid",
                       placeItems: "center",
-                      bgcolor: alpha("#4A7FD1", 0.1),
-                      color: "info.main",
+                      bgcolor: "action.hover",
+                      color: "text.secondary",
                     }}
                   >
                     {asset.type === "vehicle" ? <DirectionsCarRounded /> : <SavingsRounded />}
                   </Box>
                   <Box>
-                    <Typography variant="h3">{asset.name}</Typography>
+                    <Typography component="h3" variant="h6">
+                      {asset.name}
+                    </Typography>
                     <Typography variant="body2" color="text.secondary">
                       {asset.source} · {asset.confidence} confidence
                     </Typography>
                   </Box>
                 </Stack>
-                <Typography sx={{ mt: 4, fontSize: 27, fontWeight: 760 }}>
+                <Typography component="p" variant="h5" sx={{ mt: 4 }}>
                   <Money
                     value={minorToMajor(asset.value.minorUnits, asset.value.currency)}
                     currency={asset.value.currency}
@@ -1128,7 +1111,7 @@ export function AccountsPage() {
       <Dialog open={addOpen} onClose={() => setAddOpen(false)} fullWidth maxWidth="sm">
         <DialogTitle>
           {addMode === "choose"
-            ? "Add to BetterWealth"
+            ? "Add account or asset"
             : addMode === "account"
               ? "Add manual account"
               : "Add manual asset"}
@@ -1151,7 +1134,7 @@ export function AccountsPage() {
               >
                 <Stack alignItems="flex-start">
                   <AccountBalanceRounded />
-                  <Typography variant="body2" fontWeight={720} sx={{ mt: 2 }}>
+                  <Typography variant="body2" sx={{ mt: 2 }}>
                     Manual account
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
@@ -1167,7 +1150,7 @@ export function AccountsPage() {
               >
                 <Stack alignItems="flex-start">
                   <DirectionsCarRounded />
-                  <Typography variant="body2" fontWeight={720} sx={{ mt: 2 }}>
+                  <Typography variant="body2" sx={{ mt: 2 }}>
                     Manual asset
                   </Typography>
                   <Typography variant="caption" color="text.secondary">

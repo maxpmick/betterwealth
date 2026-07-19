@@ -43,16 +43,14 @@ describe("Automation rules", () => {
     const user = userEvent.setup();
     renderPage();
 
-    expect(
-      screen.getByRole("heading", { level: 1, name: /trust is earned one narrow rule/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: /^automation$/i })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /^rules$/i })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /ai review/i })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /merchants/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /recurring/i })).not.toBeInTheDocument();
     const pipeline = screen.getByTestId("automation-money-pipeline");
     expect(
-      within(pipeline).getByRole("heading", { name: /from raw swipe to trusted budget/i }),
+      within(pipeline).getByRole("heading", { name: /automation pipeline/i }),
     ).toBeInTheDocument();
     expect(within(pipeline).getByText("7/9")).toBeInTheDocument();
     expect(within(pipeline).getByText(/1 ai-approved/i)).toBeInTheDocument();
@@ -70,9 +68,7 @@ describe("Automation rules", () => {
     const user = userEvent.setup();
     renderPage("/automation?action=add");
 
-    expect(
-      await screen.findByRole("heading", { name: /build a narrow rule/i }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /^new rule$/i })).toBeInTheDocument();
     const name = screen.getByRole("textbox", { name: /rule name/i });
     const merchant = screen.getByRole("textbox", { name: /merchant name/i });
     await user.type(name, "Corner Table dining");

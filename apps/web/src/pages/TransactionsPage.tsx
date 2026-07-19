@@ -9,7 +9,6 @@ import {
 } from "@mui/icons-material";
 import {
   Alert,
-  alpha,
   Box,
   Button,
   Chip,
@@ -353,7 +352,7 @@ export function TransactionsPage() {
     setSelected((current) => current.filter((id) => id !== item.id));
     setTab("removed");
     await invalidateLedgerAction();
-    setToast(`${item.merchant} removed from reports · restore remains available`);
+    setToast(`${item.merchant} removed`);
   };
   const restoreTransaction = async (item: TransactionView) => {
     const restoredStatus = demo
@@ -373,14 +372,14 @@ export function TransactionsPage() {
     );
     setTab("all");
     await invalidateLedgerAction();
-    setToast(`${item.merchant} restored to the ledger`);
+    setToast(`${item.merchant} restored`);
   };
   const saveSplits = async (splits: SplitDraft[]) => {
     if (!detail) return;
     if (!demo) await api.replaceTransactionSplits(detail.id, splits);
     setDetail((current) => (current ? { ...current, hasSplits: true } : current));
     await invalidateLedgerAction();
-    setToast(`${detail.merchant} split saved exactly`);
+    setToast(`${detail.merchant} split saved`);
   };
   const matchTransfer = async (input: {
     outflowTransactionId: string;
@@ -398,7 +397,7 @@ export function TransactionsPage() {
         : current,
     );
     await invalidateLedgerAction();
-    setToast("Transfer matched · both sides removed from spending");
+    setToast("Transfer matched");
   };
   const linkRefund = async (input: {
     refundTransactionId: string;
@@ -409,7 +408,7 @@ export function TransactionsPage() {
       current ? { ...current, refundLinkIds: [...current.refundLinkIds, "confirmed"] } : current,
     );
     await invalidateLedgerAction();
-    setToast("Refund linked · net spending updated");
+    setToast("Refund linked");
   };
   const confirmTransferSuggestion = (match: ApiTransferMatch) =>
     matchTransfer({
@@ -424,7 +423,7 @@ export function TransactionsPage() {
       return { ...remaining, isTransfer: false, excluded: false };
     });
     await invalidateLedgerAction();
-    setToast("Transfer suggestion rejected · it will not be suggested again");
+    setToast("Transfer suggestion rejected");
   };
   const confirmRefundSuggestion = (match: ApiRefundLinkMatch) =>
     linkRefund({
@@ -443,7 +442,7 @@ export function TransactionsPage() {
         : current,
     );
     await invalidateLedgerAction();
-    setToast("Refund suggestion rejected · it will not be suggested again");
+    setToast("Refund suggestion rejected");
   };
   const previewRule = (input: Pick<ApiRule, "conditions" | "actions">): Promise<RulePreview> => {
     if (!demo) return api.previewRule(input);
@@ -459,7 +458,7 @@ export function TransactionsPage() {
   const createRule = async (input: RuleCreateInput) => {
     if (!demo) await api.createRule(input);
     await queryClient.invalidateQueries({ queryKey: ["rules"] });
-    setToast(`Rule “${input.name}” created after preview`);
+    setToast(`Rule “${input.name}” created`);
   };
   const createManualTransaction = async (input: Parameters<typeof api.createTransaction>[0]) => {
     if (!demo) {
@@ -493,7 +492,7 @@ export function TransactionsPage() {
       ]);
     }
     await invalidateLedgerAction();
-    setToast("Manual transaction added to the reviewable ledger");
+    setToast("Transaction added");
   };
   const importTransactions = async (
     input: Parameters<typeof api.importTransactions>[0],
@@ -520,11 +519,7 @@ export function TransactionsPage() {
   if (!demo && result.isPending) {
     return (
       <Stack gap={4}>
-        <PageHeader
-          eyebrow="Ledger"
-          title="Loading transactions"
-          description="Fetching the latest reconciled ledger."
-        />
+        <PageHeader title="Transactions" />
         <LoadingCard rows={8} />
       </Stack>
     );
@@ -532,11 +527,7 @@ export function TransactionsPage() {
   if (!demo && result.isError) {
     return (
       <Stack gap={4}>
-        <PageHeader
-          eyebrow="Ledger"
-          title="Transactions unavailable"
-          description="No ledger changes have been made."
-        />
+        <PageHeader title="Transactions" />
         <ErrorState
           message="BetterWealth could not load the transaction ledger."
           onRetry={() => result.refetch()}
@@ -548,9 +539,7 @@ export function TransactionsPage() {
   return (
     <Stack gap={5}>
       <PageHeader
-        eyebrow="Ledger"
         title="Transactions"
-        description="Every imported fact stays traceable. Review uncertain edge cases; let narrow, previewed rules handle the rest."
         actions={
           <>
             <Button
@@ -589,11 +578,10 @@ export function TransactionsPage() {
             {suggestedMatchCount} transfer or refund{" "}
             {suggestedMatchCount === 1 ? "match" : "matches"}
           </strong>{" "}
-          need confirmation. Suggestions do not change spending, income, or budgets until you
-          approve them.
+          need confirmation.
         </Alert>
       ) : null}
-      <Paper variant="outlined" sx={{ overflow: "hidden", borderRadius: 3.5 }}>
+      <Paper variant="outlined" sx={{ overflow: "hidden" }}>
         <Stack
           direction={{ xs: "column", md: "row" }}
           alignItems={{ xs: "stretch", md: "center" }}
@@ -609,15 +597,15 @@ export function TransactionsPage() {
           >
             <Tab
               value="all"
-              label={`Loaded ${allItems.filter(({ status }) => status !== "removed").length}`}
+              label={`All ${allItems.filter(({ status }) => status !== "removed").length}`}
             />
             <Tab
               value="review"
-              label={`Loaded review ${allItems.filter((item) => item.status !== "removed" && (item.needsReview || hasSuggestedMatch(item))).length}`}
+              label={`Review ${allItems.filter((item) => item.status !== "removed" && (item.needsReview || hasSuggestedMatch(item))).length}`}
             />
             <Tab
               value="removed"
-              label={`Loaded removed ${allItems.filter(({ status }) => status === "removed").length}`}
+              label={`Removed ${allItems.filter(({ status }) => status === "removed").length}`}
             />
           </Tabs>
           <Stack direction="row" gap={2}>
@@ -668,7 +656,7 @@ export function TransactionsPage() {
             sx={{
               px: 4,
               py: 2,
-              bgcolor: (theme) => alpha(theme.palette.primary.main, 0.08),
+              bgcolor: "action.hover",
               borderTop: "1px solid",
               borderColor: "divider",
             }}
@@ -731,7 +719,6 @@ export function TransactionsPage() {
                   key={header}
                   variant="caption"
                   color="text.secondary"
-                  fontWeight={750}
                   textAlign={index === 3 ? "right" : "left"}
                 >
                   {header}
@@ -817,7 +804,7 @@ export function TransactionsPage() {
             sx={{ px: 4, py: 3, borderTop: "1px solid", borderColor: "divider" }}
           >
             <Typography variant="caption" color="text.secondary">
-              {allItems.length} transactions loaded. Older ledger history remains available.
+              {allItems.length} transactions loaded
             </Typography>
             <Button
               variant="outlined"
@@ -864,10 +851,7 @@ export function TransactionsPage() {
           sx={{ px: 5, py: 4, borderBottom: "1px solid", borderColor: "divider" }}
         >
           <Box>
-            <Typography variant="h3">Filter ledger</Typography>
-            <Typography variant="caption" color="text.secondary">
-              Combine filters to narrow the truth.
-            </Typography>
+            <Typography variant="h3">Filters</Typography>
           </Box>
           <IconButton onClick={() => setFiltersOpen(false)} aria-label="Close filters">
             <CloseRounded />
@@ -976,9 +960,8 @@ export function TransactionsPage() {
         <DialogTitle>Preview bulk change</DialogTitle>
         <DialogContent>
           <Typography color="text.secondary">
-            You’re about to edit {selected.length} transactions totaling{" "}
-            <Money value={selectedTotal} sign />. The API applies this as one transactional,
-            auditable batch.
+            Apply a new category to {selected.length} transactions totaling{" "}
+            <Money value={selectedTotal} sign />.
           </Typography>
           <TextField
             select

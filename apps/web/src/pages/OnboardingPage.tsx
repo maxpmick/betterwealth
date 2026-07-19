@@ -13,7 +13,6 @@ import {
 } from "@mui/icons-material";
 import {
   Alert,
-  alpha,
   Box,
   Button,
   Card,
@@ -34,6 +33,7 @@ import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, type Money } from "../api";
 import { Stack, TextField, Typography } from "../components/mui";
+import { StatusChip } from "../components/ui";
 import { demoDashboard } from "../demoApi";
 import { formatMoneyExact } from "../lib/money";
 
@@ -110,17 +110,17 @@ function Brand() {
         sx={{
           width: 32,
           height: 32,
-          borderRadius: 2.5,
+          borderRadius: 1,
           color: "#fff",
           display: "grid",
           placeItems: "center",
-          fontWeight: 800,
-          background: "linear-gradient(140deg, #1F3A5F, #1F9D72)",
+          fontWeight: 700,
+          bgcolor: "primary.main",
         }}
       >
         B
       </Box>
-      <Typography fontWeight={760}>BetterWealth</Typography>
+      <Typography variant="h6">BetterWealth</Typography>
     </Stack>
   );
 }
@@ -141,14 +141,7 @@ function ChoiceCard({
   onClick: () => void;
 }) {
   return (
-    <Card
-      sx={{
-        borderColor: selected ? "secondary.main" : "divider",
-        boxShadow: selected
-          ? (theme) => `0 0 0 3px ${alpha(theme.palette.secondary.main, 0.12)}`
-          : undefined,
-      }}
-    >
+    <Card variant="outlined" sx={{ borderColor: selected ? "primary.main" : "divider" }}>
       <CardActionArea
         onClick={onClick}
         sx={{ height: "100%", minHeight: 180, p: 1 }}
@@ -160,20 +153,20 @@ function ChoiceCard({
               sx={{
                 width: 44,
                 height: 44,
-                borderRadius: 3,
+                borderRadius: 1,
                 display: "grid",
                 placeItems: "center",
-                bgcolor: selected ? "secondary.main" : "action.hover",
+                bgcolor: selected ? "primary.main" : "action.hover",
                 color: selected ? "#fff" : "text.secondary",
               }}
             >
               {icon}
             </Box>
             {tag ? (
-              <Chip label={tag} size="small" color={selected ? "secondary" : "default"} />
+              <Chip label={tag} size="small" color={selected ? "primary" : "default"} />
             ) : null}
           </Stack>
-          <Typography variant="h3" sx={{ mt: 4 }}>
+          <Typography variant="h6" sx={{ mt: 4 }}>
             {title}
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
@@ -204,11 +197,8 @@ function StartStep({
 }) {
   return (
     <Box>
-      <Typography component="h1" variant="h1">
-        How would you like to begin?
-      </Typography>
-      <Typography color="text.secondary" sx={{ mt: 2 }}>
-        Use your real data, enter one honest opening balance, or explore a clearly labeled demo.
+      <Typography component="h1" variant="h4">
+        Choose how to start
       </Typography>
       <Box
         sx={{
@@ -221,7 +211,7 @@ function StartStep({
         <ChoiceCard
           icon={<CloudSyncRounded />}
           title="Connect SimpleFIN"
-          description="Claim a one-time setup token and queue your first real account sync."
+          description="Claim a one-time setup token and queue your first account sync."
           tag="Recommended"
           selected={source === "simplefin"}
           onClick={() => setSource("simplefin")}
@@ -229,14 +219,14 @@ function StartStep({
         <ChoiceCard
           icon={<EditRounded />}
           title="Start manually"
-          description="Create a cash account from an opening balance you enter—no invented transactions."
+          description="Create a cash account from an opening balance you enter."
           selected={source === "manual"}
           onClick={() => setSource("manual")}
         />
         <ChoiceCard
           icon={<ScienceRounded />}
           title="Explore demo data"
-          description="Open Alex’s fictional age-22 plan without changing your household data."
+          description="Open Alex’s fictional plan without changing your household data."
           selected={source === "demo"}
           onClick={() => setSource("demo")}
         />
@@ -264,12 +254,12 @@ function StartStep({
         <Card sx={{ mt: 4 }}>
           <CardContent sx={{ p: 5 }}>
             <Stack direction="row" gap={2} alignItems="center">
-              <AccountBalanceRounded color="secondary" />
-              <Typography variant="h3">First cash account</Typography>
+              <AccountBalanceRounded color="primary" />
+              <Typography variant="h6">First cash account</Typography>
             </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-              This creates one manual account after you confirm its reporting currency. You can add
-              liabilities, investments, and transactions next.
+              This creates one manual account; you can add liabilities, investments, and
+              transactions later.
             </Typography>
             <Box
               sx={{
@@ -316,17 +306,17 @@ function TargetStep({
 }) {
   return (
     <Box>
-      <Typography component="h1" variant="h1">
-        Define your age-30 horizon
+      <Typography component="h1" variant="h4">
+        Set your target
       </Typography>
       <Typography color="text.secondary" sx={{ mt: 2 }}>
-        These values are saved to your profile and drive the forecast horizon. They remain editable.
+        These values are saved to your profile and drive the forecast.
       </Typography>
       <Card sx={{ mt: 7 }}>
         <CardContent sx={{ p: { xs: 5, sm: 7 } }}>
           <Stack direction="row" gap={2} alignItems="center">
-            <InsightsRounded color="secondary" />
-            <Typography variant="h3">Profile and target</Typography>
+            <InsightsRounded color="primary" />
+            <Typography variant="h6">Profile and target</Typography>
           </Stack>
           <Box
             sx={{
@@ -342,14 +332,14 @@ function TargetStep({
               value={value.birthDate}
               onChange={(event) => onChange({ ...value, birthDate: event.target.value })}
               slotProps={{ inputLabel: { shrink: true } }}
-              helperText="Used to calculate the exact horizon"
+              helperText="Used to calculate your age"
             />
             <TextField
               label="Target age"
               value={value.targetAge}
               onChange={(event) => onChange({ ...value, targetAge: event.target.value })}
               inputProps={{ inputMode: "numeric", min: 18, max: 120 }}
-              helperText="Your explicit wealth checkpoint"
+              helperText="The age at which you want to reach the target"
             />
             <TextField
               label="Liquid wealth target"
@@ -357,7 +347,7 @@ function TargetStep({
               onChange={(event) => onChange({ ...value, targetLiquidNetWorth: event.target.value })}
               inputProps={{ inputMode: "decimal" }}
               InputProps={{ startAdornment: <InputAdornment position="start">$</InputAdornment> }}
-              helperText="A suggested starting checkpoint—edit it to make it yours"
+              helperText="You can change this later."
             />
             <FormControl size="small">
               <InputLabel id="currency-label">Reporting currency</InputLabel>
@@ -375,8 +365,8 @@ function TargetStep({
             </FormControl>
           </Box>
           <Alert severity="info" sx={{ mt: 5 }}>
-            Dollar goals, scenario assumptions, and your minimum cash buffer stay separate from
-            transaction truth. You can tune them after the first dashboard is calculated.
+            Targets, scenario assumptions, and your minimum cash buffer are stored separately from
+            transactions and can be changed later.
           </Alert>
           {error ? (
             <Alert severity="error" sx={{ mt: 3 }}>
@@ -402,17 +392,16 @@ function CashFlowStep({
 }) {
   return (
     <Box>
-      <Typography component="h1" variant="h1">
-        Give the next paycheck a job
+      <Typography component="h1" variant="h4">
+        Estimate your cash flow
       </Typography>
       <Typography color="text.secondary" sx={{ mt: 2 }}>
-        Optional estimates are saved as editable planning records. Blank fields stay unknown;
-        BetterWealth will not fill them with demo values.
+        All fields are optional; anything left blank stays unknown.
       </Typography>
       {source === "simplefin" ? (
         <Alert severity="success" sx={{ mt: 4 }}>
-          Your initial SimpleFIN sync is queued. These cash-flow estimates help before enough
-          transaction history arrives.
+          Your initial SimpleFIN sync is queued. These estimates are used until enough transaction
+          history arrives.
         </Alert>
       ) : null}
       <Box
@@ -426,8 +415,8 @@ function CashFlowStep({
         <Card>
           <CardContent sx={{ p: 5 }}>
             <Stack direction="row" alignItems="center" gap={2}>
-              <AccountBalanceRounded color="secondary" />
-              <Typography variant="h3">Income timing</Typography>
+              <AccountBalanceRounded color="primary" />
+              <Typography variant="h6">Income timing</Typography>
             </Stack>
             <Stack gap={4} sx={{ mt: 5 }}>
               <TextField
@@ -465,7 +454,7 @@ function CashFlowStep({
                 onChange={(event) => onChange({ ...value, minimumBuffer: event.target.value })}
                 inputProps={{ inputMode: "decimal" }}
                 InputProps={{ startAdornment: <InputAdornment position="start">$</InputAdornment> }}
-                helperText="Protected before BetterWealth calls anything safe to spend"
+                helperText="Kept out of the safe-to-spend amount."
               />
             </Stack>
           </CardContent>
@@ -474,7 +463,7 @@ function CashFlowStep({
           <CardContent sx={{ p: 5 }}>
             <Stack direction="row" alignItems="center" gap={2}>
               <InsightsRounded color="info" />
-              <Typography variant="h3">Near-term obligations</Typography>
+              <Typography variant="h6">Near-term obligations</Typography>
             </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
               Enter only required bills due before that payday. Enter $0 to explicitly confirm none,
@@ -519,8 +508,8 @@ function ReadyStep({ source, syncState }: { source: SourceChoice; syncState: str
   if (!report && dashboard.isPending) {
     return (
       <Box>
-        <Typography component="h1" variant="h1">
-          Calculating your first plan
+        <Typography component="h1" variant="h4">
+          Calculating your plan
         </Typography>
         <Typography color="text.secondary" sx={{ mt: 2 }}>
           Reading saved balances and planning inputs from the API.
@@ -539,11 +528,11 @@ function ReadyStep({ source, syncState }: { source: SourceChoice; syncState: str
   if (!report) {
     return (
       <Box>
-        <Typography component="h1" variant="h1">
+        <Typography component="h1" variant="h4">
           Your setup is saved
         </Typography>
         <Typography color="text.secondary" sx={{ mt: 2 }}>
-          The live dashboard did not load, so no spending estimate is being guessed.
+          The dashboard could not be loaded, so no estimate is shown.
         </Typography>
         <Alert severity="error" sx={{ mt: 6 }}>
           {dashboard.error instanceof Error
@@ -572,17 +561,15 @@ function ReadyStep({ source, syncState }: { source: SourceChoice; syncState: str
     BigInt(report.minimumBuffer.minorUnits);
   return (
     <Box>
-      <Typography component="h1" variant="h1">
+      <Typography component="h1" variant="h4">
         {ready
           ? "Your first plan is ready"
           : stale
             ? "Your plan needs fresh balances"
-            : "Your first plan has clear next steps"}
+            : "Your plan is incomplete"}
       </Typography>
       <Typography color="text.secondary" sx={{ mt: 2 }}>
-        {source === "demo"
-          ? "This is Alex’s fictional, fully reconciled fixture."
-          : report.trust.confidenceLabel}
+        {source === "demo" ? "This is Alex’s fictional demo data." : report.trust.confidenceLabel}
       </Typography>
       {source === "simplefin" && syncState ? (
         <Alert severity="info" sx={{ mt: 4 }}>
@@ -597,19 +584,13 @@ function ReadyStep({ source, syncState }: { source: SourceChoice; syncState: str
           mt: 7,
         }}
       >
-        <Card
-          sx={{
-            color: "#fff",
-            border: 0,
-            background: "linear-gradient(125deg, #1C3558, #236272 58%, #1A8A69 120%)",
-          }}
-        >
+        <Card>
           <CardContent sx={{ p: { xs: 5, sm: 7 } }}>
             <Stack direction="row" justifyContent="space-between" gap={3} alignItems="center">
-              <Typography variant="body2" sx={{ color: "rgba(255,255,255,.72)", fontWeight: 650 }}>
-                {ready ? "Safe to spend" : "Current estimate · not yet decision-ready"}
+              <Typography variant="body2" color="text.secondary">
+                Safe to spend
               </Typography>
-              <Chip
+              <StatusChip
                 label={
                   report.trust.state === "ready"
                     ? "Ready"
@@ -617,36 +598,34 @@ function ReadyStep({ source, syncState }: { source: SourceChoice; syncState: str
                       ? "Stale"
                       : "Incomplete"
                 }
-                size="small"
-                sx={{ color: "#fff", bgcolor: "rgba(255,255,255,.14)" }}
+                tone={
+                  report.trust.state === "ready"
+                    ? "positive"
+                    : report.trust.state === "stale"
+                      ? "risk"
+                      : "warning"
+                }
               />
             </Stack>
             <Typography
-              sx={{
-                mt: 2,
-                fontSize: { xs: 40, sm: 52 },
-                fontWeight: 750,
-                letterSpacing: "-0.05em",
-                fontVariantNumeric: "tabular-nums",
-              }}
+              component="p"
+              variant="h3"
+              sx={{ mt: 2, fontVariantNumeric: "tabular-nums" }}
             >
               {formatMoney(report.safeToSpend)}
             </Typography>
-            <Typography sx={{ color: "rgba(255,255,255,.75)" }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
               {formatMoney(report.safePerDay)} per day through {formatDate(report.coveredThrough)}
             </Typography>
-            <Divider sx={{ my: 5, borderColor: "rgba(255,255,255,.14)" }} />
-            <Typography variant="body2" sx={{ color: "rgba(255,255,255,.78)", lineHeight: 1.8 }}>
+            <Divider sx={{ my: 5 }} />
+            <Typography variant="body2" color="text.secondary">
               Available cash {formatMoney(report.availableCash)} − reserved bills{" "}
               {formatMoney(report.reservedBills)} − envelopes{" "}
               {formatMoney(report.envelopeCommitments)} − goals{" "}
               {formatMoney(report.goalContributions)} − minimum buffer{" "}
               {formatMoney(report.minimumBuffer)}
             </Typography>
-            <Typography
-              variant="caption"
-              sx={{ display: "block", mt: 2, color: "rgba(255,255,255,.68)" }}
-            >
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}>
               {rawSafeToSpend < 0n
                 ? `The formula is ${formatMoney({ minorUnits: rawSafeToSpend.toString(), currency: report.safeToSpend.currency })}; safe to spend is floored at ${formatMoney({ minorUnits: "0", currency: report.safeToSpend.currency })}.`
                 : `The five terms above reconcile exactly to ${formatMoney(report.safeToSpend)}.`}
@@ -655,7 +634,7 @@ function ReadyStep({ source, syncState }: { source: SourceChoice; syncState: str
         </Card>
         <Card>
           <CardContent sx={{ p: 5 }}>
-            <Typography variant="h3">Readiness from your data</Typography>
+            <Typography variant="h6">Readiness</Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
               As of {formatDate(report.trust.asOf)}
             </Typography>
@@ -694,8 +673,7 @@ function ReadyStep({ source, syncState }: { source: SourceChoice; syncState: str
             </Stack>
             {!ready && report.trust.missingInputs.length ? (
               <Alert severity="warning" sx={{ mt: 4 }}>
-                These are real missing inputs, not a simulated completion score. The dashboard will
-                keep each gap visible until you provide it.
+                The dashboard keeps each missing input visible until you provide it.
               </Alert>
             ) : null}
             {source !== "demo" ? (
@@ -937,23 +915,12 @@ export function OnboardingPage() {
           px: { xs: 4, sm: 7 },
           display: "flex",
           alignItems: "center",
-          justifyContent: "space-between",
           bgcolor: "background.paper",
           borderBottom: "1px solid",
           borderColor: "divider",
         }}
       >
         <Brand />
-        <Stack direction="row" alignItems="center" gap={2}>
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            sx={{ display: { xs: "none", sm: "block" } }}
-          >
-            Private setup
-          </Typography>
-          <LockRounded sx={{ color: "success.main", fontSize: 18 }} />
-        </Stack>
       </Box>
       <Box sx={{ borderBottom: "1px solid", borderColor: "divider", bgcolor: "background.paper" }}>
         <LinearProgress
@@ -973,8 +940,8 @@ export function OnboardingPage() {
                   display: "grid",
                   placeItems: "center",
                   fontSize: 11,
-                  fontWeight: 750,
-                  bgcolor: index <= step ? "secondary.main" : "action.hover",
+                  fontWeight: 700,
+                  bgcolor: index <= step ? "primary.main" : "action.hover",
                   color: index <= step ? "#fff" : "text.secondary",
                 }}
               >
@@ -985,7 +952,7 @@ export function OnboardingPage() {
                 color={index <= step ? "text.primary" : "text.secondary"}
                 sx={{
                   display: { xs: index === step ? "block" : "none", sm: "block" },
-                  fontWeight: index === step ? 750 : 500,
+                  fontWeight: index === step ? 700 : 400,
                 }}
               >
                 {label}
@@ -1061,8 +1028,7 @@ export function OnboardingPage() {
           inset: "auto 0 0 0",
           px: { xs: 4, sm: 7 },
           py: 4,
-          bgcolor: (theme) => alpha(theme.palette.background.paper, 0.9),
-          backdropFilter: "blur(14px)",
+          bgcolor: "background.paper",
           borderTop: "1px solid",
           borderColor: "divider",
         }}

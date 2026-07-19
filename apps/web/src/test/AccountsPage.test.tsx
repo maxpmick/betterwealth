@@ -100,9 +100,7 @@ describe("Accounts", () => {
     const user = userEvent.setup();
     renderPage();
 
-    expect(
-      screen.getByRole("heading", { level: 1, name: /every balance, in its proper place/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: /^accounts$/i })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /everyday checking/i }));
 
     const drawer = screen.getByRole("presentation");
@@ -121,7 +119,7 @@ describe("Accounts", () => {
     const user = userEvent.setup();
     renderPage("/accounts?action=add");
 
-    const chooser = await screen.findByRole("dialog", { name: /add to betterwealth/i });
+    const chooser = await screen.findByRole("dialog", { name: /add account or asset/i });
     await user.click(within(chooser).getByRole("button", { name: /manual account/i }));
 
     const form = screen.getByRole("dialog", { name: /add manual account/i });

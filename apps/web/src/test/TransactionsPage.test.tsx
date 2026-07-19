@@ -566,7 +566,7 @@ describe("transaction actions", () => {
       />,
     );
 
-    const dialog = screen.getByRole("dialog", { name: /create a narrow transaction rule/i });
+    const dialog = screen.getByRole("dialog", { name: /create a transaction rule/i });
     const createButton = within(dialog).getByRole("button", { name: /confirm and create rule/i });
     expect(createButton).toBeDisabled();
     await user.click(within(dialog).getByRole("button", { name: /run preview/i }));

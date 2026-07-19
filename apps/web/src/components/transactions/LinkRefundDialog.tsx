@@ -79,21 +79,19 @@ export function LinkRefundDialog({
     <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="sm">
       <DialogTitle component="div">
         <DialogHeading
-          eyebrow="Net spending accuracy"
           title={
             BigInt(item.amountMinorUnits) > 0n
               ? "Link this refund"
               : "Find a refund for this purchase"
           }
-          description="The refund inherits the purchase category so your budget reflects what you actually kept."
         />
       </DialogTitle>
       <DialogContent>
-        <Paper variant="outlined" sx={{ p: 3, borderRadius: 3, mb: 3 }}>
+        <Paper variant="outlined" sx={{ p: 3, mb: 3 }}>
           <Typography variant="caption" color="text.secondary">
             Selected {directionLabel(item)}
           </Typography>
-          <Typography variant="body2" fontWeight={750} sx={{ mt: 1 }}>
+          <Typography variant="body2" fontWeight={700} sx={{ mt: 1 }}>
             {candidateLabel(item)}
           </Typography>
         </Paper>
@@ -118,7 +116,7 @@ export function LinkRefundDialog({
         )}
         {selected ? (
           <Alert severity="info" sx={{ mt: 3 }}>
-            BetterWealth will link only the still-unlinked amount, capped by both sides.
+            Only the still-unlinked amount is linked, capped by both sides.
           </Alert>
         ) : null}
         {error ? (

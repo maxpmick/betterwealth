@@ -1,5 +1,5 @@
 import { ArrowForwardRounded } from "@mui/icons-material";
-import { alpha, Box, Card, CardContent } from "@mui/material";
+import { Box, Card, CardContent } from "@mui/material";
 import type { ReactNode } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import { Stack, Typography } from "./mui";
@@ -12,36 +12,25 @@ export interface PlanFlowStep {
   detail: ReactNode;
   icon: ReactNode;
   to: string;
-  tone: string;
   status: string;
   statusTone?: "positive" | "warning" | "risk" | "info" | "neutral";
 }
 
 export function PlanFlowCard({
   title,
-  description,
   steps,
   footer,
   testId,
 }: {
   title: string;
-  description: string;
   steps: readonly PlanFlowStep[];
   footer?: ReactNode;
   testId?: string;
 }) {
   return (
-    <Card
-      data-testid={testId}
-      sx={{
-        overflow: "hidden",
-        position: "relative",
-        background: (theme) =>
-          `radial-gradient(circle at 92% 5%, ${alpha(theme.palette.secondary.main, 0.09)}, transparent 34%), ${theme.palette.background.paper}`,
-      }}
-    >
+    <Card data-testid={testId}>
       <CardContent sx={{ p: { xs: 4, sm: 5 }, "&:last-child": { pb: { xs: 4, sm: 5 } } }}>
-        <SectionHeader title={title} description={description} />
+        <SectionHeader title={title} />
         <Box
           role="list"
           sx={{
@@ -72,16 +61,11 @@ export function PlanFlowCard({
                   p: 3.5,
                   border: "1px solid",
                   borderColor: "divider",
-                  borderRadius: 3,
+                  borderRadius: 1,
                   color: "text.primary",
                   textDecoration: "none",
-                  bgcolor: (theme) => alpha(theme.palette.background.paper, 0.66),
-                  transition:
-                    "transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease",
                   "&:hover": {
-                    transform: "translateY(-2px)",
-                    borderColor: alpha(step.tone, 0.42),
-                    boxShadow: `0 12px 28px ${alpha(step.tone, 0.1)}`,
+                    bgcolor: "action.hover",
                   },
                 }}
               >
@@ -91,38 +75,24 @@ export function PlanFlowCard({
                       sx={{
                         width: 34,
                         height: 34,
-                        borderRadius: 2.25,
+                        borderRadius: 1,
                         display: "grid",
                         placeItems: "center",
                         flex: "0 0 auto",
-                        color: step.tone,
-                        bgcolor: alpha(step.tone, 0.12),
+                        color: "text.secondary",
+                        bgcolor: "action.hover",
                         "& > svg": { fontSize: 18 },
                       }}
                     >
                       {step.icon}
                     </Box>
-                    <Typography
-                      variant="overline"
-                      color="text.secondary"
-                      noWrap
-                      sx={{ letterSpacing: "0.055em" }}
-                    >
+                    <Typography variant="overline" color="text.secondary" noWrap>
                       {String(index + 1).padStart(2, "0")} · {step.label}
                     </Typography>
                   </Stack>
                   <ArrowForwardRounded sx={{ fontSize: 17, color: "text.disabled" }} />
                 </Stack>
-                <Typography
-                  component="div"
-                  sx={{
-                    mt: 3,
-                    fontSize: { xs: "1.25rem", sm: "1.35rem" },
-                    lineHeight: 1.15,
-                    fontWeight: 750,
-                    letterSpacing: "-0.025em",
-                  }}
-                >
+                <Typography component="div" variant="h6" sx={{ mt: 3 }}>
                   {step.value}
                 </Typography>
                 <Typography

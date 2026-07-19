@@ -39,7 +39,8 @@ async function captureViewport(context: BrowserContext, suffix: string) {
   const page = await context.newPage();
   await page.emulateMedia({ reducedMotion: "reduce", colorScheme: "light" });
   await capture(page, "/today", /Good (morning|afternoon|evening), Alex/, "Safe to spend", suffix);
-  await capture(page, "/budget", /A job for every dollar/, "Paycheck funding plan", suffix);
+  await capture(page, "/budget", /Budget/, "Paycheck funding plan", suffix);
+  await capture(page, "/goals", /Goals/, "Monthly committed", suffix);
   await page.close();
 }
 

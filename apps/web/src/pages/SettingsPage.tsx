@@ -20,7 +20,6 @@ import {
 import {
   Alert,
   Avatar,
-  alpha,
   Box,
   Button,
   Card,
@@ -79,23 +78,17 @@ const trustedAiProviderHosts = new Set([
 
 function SettingsCard({
   title,
-  description,
   children,
   action,
 }: {
   title: string;
-  description?: string;
   children: React.ReactNode;
   action?: React.ReactNode;
 }) {
   return (
     <Card>
       <CardContent sx={{ p: { xs: 4, sm: 5 } }}>
-        <SectionHeader
-          title={title}
-          {...(description ? { description } : {})}
-          {...(action ? { action } : {})}
-        />
+        <SectionHeader title={title} {...(action ? { action } : {})} />
         <Divider sx={{ my: 4 }} />
         {children}
       </CardContent>
@@ -178,10 +171,7 @@ function ProfileSettings() {
   const initial = (displayName || profile.data.user.email).trim().charAt(0).toUpperCase();
   return (
     <Stack gap={4}>
-      <SettingsCard
-        title="Your profile"
-        description="Live account details used by your household plan and forecasts."
-      >
+      <SettingsCard title="Your profile">
         <Stack
           direction={{ xs: "column", sm: "row" }}
           gap={4}
@@ -237,10 +227,7 @@ function ProfileSettings() {
           </Box>
         </Stack>
       </SettingsCard>
-      <SettingsCard
-        title="Household plan"
-        description="Reporting defaults shared by every household member."
-      >
+      <SettingsCard title="Household plan">
         <Box
           sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)" }, gap: 3 }}
         >
@@ -288,8 +275,7 @@ function ProfileSettings() {
           />
         </Box>
         <Alert severity="info" sx={{ mt: 4 }}>
-          Your birth date and target age drive the age-30 forecast horizon. Financial targets are
-          managed as goals, so every dollar remains traceable.
+          Birth date and target age set the forecast horizon.
         </Alert>
         {save.error instanceof Error ? (
           <Alert severity="error" sx={{ mt: 3 }}>
@@ -347,10 +333,7 @@ function HouseholdSettings() {
     );
   return (
     <Stack gap={4}>
-      <SettingsCard
-        title="Household members"
-        description="This single-user release still enforces household-scoped roles and data isolation on every API row."
-      >
+      <SettingsCard title="Household members">
         <Stack divider={<Divider />}>
           {members.data?.data.map((member) => {
             const label = member.displayName || member.email;
@@ -421,10 +404,7 @@ function CurrencySettings() {
     );
   return (
     <Stack gap={4}>
-      <SettingsCard
-        title="Reporting currency"
-        description="Reports use the household base currency; imported accounts retain their native currency."
-      >
+      <SettingsCard title="Reporting currency">
         <Stack direction="row" alignItems="center" justifyContent="space-between" gap={3}>
           <Box>
             <Typography variant="body2" fontWeight={700}>
@@ -437,8 +417,8 @@ function CurrencySettings() {
           <Chip label={profile.data.household.baseCurrency} color="primary" variant="outlined" />
         </Stack>
         <Alert severity="info" sx={{ mt: 3 }}>
-          Accounts keep their native currencies. Cross-currency totals are intentionally omitted
-          without verified exchange-rate data.
+          Accounts keep their native currencies. Cross-currency totals are omitted without verified
+          exchange-rate data.
         </Alert>
       </SettingsCard>
     </Stack>
@@ -461,14 +441,14 @@ function IntegrationCard({
   onAction?: () => void;
 }) {
   return (
-    <Box sx={{ p: 4, border: "1px solid", borderColor: "divider", borderRadius: 3 }}>
+    <Box sx={{ p: 4, border: "1px solid", borderColor: "divider", borderRadius: 1 }}>
       <Stack direction="row" gap={3} alignItems="flex-start">
         <Box
           sx={{
             width: 42,
             height: 42,
             flex: "0 0 auto",
-            borderRadius: 2.5,
+            borderRadius: 1,
             display: "grid",
             placeItems: "center",
             bgcolor: "action.hover",
@@ -479,7 +459,7 @@ function IntegrationCard({
         </Box>
         <Box sx={{ flex: 1 }}>
           <Stack direction="row" justifyContent="space-between" gap={2}>
-            <Typography variant="h3">{title}</Typography>
+            <Typography variant="subtitle1">{title}</Typography>
             <StatusChip
               label={status}
               tone={
@@ -647,10 +627,7 @@ function IntegrationsSettings() {
     );
   return (
     <Stack gap={4}>
-      <SettingsCard
-        title="Financial data"
-        description="Connection status is separate from account health."
-      >
+      <SettingsCard title="Financial data">
         <Stack gap={3}>
           <IntegrationCard
             icon={<CloudSyncRounded />}
@@ -674,10 +651,7 @@ function IntegrationsSettings() {
           />
         </Stack>
       </SettingsCard>
-      <SettingsCard
-        title="Optional providers"
-        description="Configure supported providers here; roadmap-only adapters are shown as non-interactive status."
-      >
+      <SettingsCard title="Optional providers">
         <Stack gap={3}>
           <IntegrationCard
             icon={<SmartToyRounded />}
@@ -703,10 +677,7 @@ function IntegrationsSettings() {
           />
         </Stack>
       </SettingsCard>
-      <SettingsCard
-        title="AI consent & field disclosure"
-        description="Consent is off until explicitly enabled for this household."
-      >
+      <SettingsCard title="AI consent & field disclosure">
         <FormControlLabel
           control={
             <Switch
@@ -740,7 +711,7 @@ function IntegrationsSettings() {
             {saveAi.error.message}
           </Alert>
         ) : null}
-        <Box sx={{ mt: 4, p: 4, borderRadius: 3, bgcolor: "action.hover" }}>
+        <Box sx={{ mt: 4, p: 4, borderRadius: 1, bgcolor: "action.hover" }}>
           <Typography variant="overline" color="text.secondary">
             Fields eligible to be sent
           </Typography>
@@ -963,10 +934,10 @@ function SecuritySettings() {
   const sessions = sessionQuery.data?.data ?? [];
   return (
     <Stack gap={4}>
-      <SettingsCard
-        title="Change password"
-        description="Changing your password revokes every other active session."
-      >
+      <SettingsCard title="Change password">
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+          Changing your password revokes every other active session.
+        </Typography>
         {demo ? (
           <Alert severity="info">
             Password changes apply to a signed-in self-hosted account, not this example session.
@@ -1013,10 +984,7 @@ function SecuritySettings() {
           </>
         )}
       </SettingsCard>
-      <SettingsCard
-        title="Active sessions"
-        description="Live session inventory from the authentication API."
-      >
+      <SettingsCard title="Active sessions">
         <Stack divider={<Divider />}>
           {sessions.map((session) => (
             <Stack key={session.id} direction="row" alignItems="center" gap={3} sx={{ py: 3 }}>
@@ -1076,7 +1044,7 @@ function AppearanceSettings() {
   const { privacyEnabled, setPrivacyEnabled } = usePrivacy();
   return (
     <Stack gap={4}>
-      <SettingsCard title="Theme" description="Warm light, deep dark, or your system preference.">
+      <SettingsCard title="Theme">
         <RadioGroup
           row
           value={preference}
@@ -1091,60 +1059,11 @@ function AppearanceSettings() {
             />
           ))}
         </RadioGroup>
-        <Box
-          sx={{
-            display: "grid",
-            gridTemplateColumns: { xs: "1fr", sm: "repeat(3, 1fr)" },
-            gap: 3,
-            mt: 4,
-          }}
-        >
-          {[
-            ["Light", "#F7F7F5", "#FFFFFF", "#151A22"],
-            ["Dark", "#0B1017", "#111923", "#F3F6F8"],
-            ["System", "#F7F7F5", "#111923", "#1F9D72"],
-          ].map(([label, bg, surface, accent]) => (
-            <Box
-              key={label}
-              sx={{
-                p: 2,
-                border: "1px solid",
-                borderColor: preference === label?.toLowerCase() ? "secondary.main" : "divider",
-                borderRadius: 3,
-                bgcolor: bg,
-              }}
-            >
-              <Box
-                sx={{
-                  height: 68,
-                  borderRadius: 2,
-                  bgcolor: surface,
-                  border: "1px solid rgba(127,127,127,.18)",
-                  p: 2,
-                }}
-              >
-                <Box sx={{ width: "45%", height: 7, borderRadius: 4, bgcolor: accent }} />
-                <Box
-                  sx={{
-                    width: "72%",
-                    height: 5,
-                    borderRadius: 4,
-                    bgcolor: alpha(accent ?? "#000", 0.28),
-                    mt: 2,
-                  }}
-                />
-              </Box>
-              <Typography variant="caption" sx={{ display: "block", mt: 2, color: accent }}>
-                {label}
-              </Typography>
-            </Box>
-          ))}
-        </Box>
       </SettingsCard>
-      <SettingsCard
-        title="Privacy"
-        description="Your display preferences are stored on this device and applied immediately."
-      >
+      <SettingsCard title="Privacy">
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+          Display preferences are stored on this device and applied immediately.
+        </Typography>
         <FormControlLabel
           control={
             <Switch
@@ -1174,10 +1093,11 @@ function DataSettings() {
   const databaseDownload = useMutation({ mutationFn: api.downloadDatabaseBackup });
   return (
     <Stack gap={4}>
-      <SettingsCard
-        title="Portable data export"
-        description="Downloads balances, transactions, rules, budgets, goals, assets, scenarios, and non-secret settings as JSON."
-      >
+      <SettingsCard title="Portable data export">
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+          Includes balances, transactions, rules, budgets, goals, assets, scenarios, and non-secret
+          settings as JSON.
+        </Typography>
         <Alert severity="warning" sx={{ mb: 3 }}>
           The export contains sensitive financial data and is not encrypted. Store it somewhere
           private.
@@ -1208,10 +1128,10 @@ function DataSettings() {
           </Alert>
         ) : null}
       </SettingsCard>
-      <SettingsCard
-        title="SQLite database backup"
-        description="Owners can download a consistent snapshot of the live SQLite database."
-      >
+      <SettingsCard title="SQLite database backup">
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+          Owners can download a consistent snapshot of the live SQLite database.
+        </Typography>
         {demo ? (
           <Alert severity="info">Database snapshots apply to a live self-hosted instance.</Alert>
         ) : (
@@ -1243,16 +1163,13 @@ function DataSettings() {
           <code>bun run db:migrate</code>, then restart and verify diagnostics.
         </Alert>
       </SettingsCard>
-      <SettingsCard
-        title="Automated server backups"
-        description="Use the operator-owned backup command for scheduled, permission-restricted snapshots."
-      >
+      <SettingsCard title="Automated server backups">
         <Box
           component="code"
           sx={{
             display: "block",
             p: 3,
-            borderRadius: 2,
+            borderRadius: 1,
             bgcolor: "action.hover",
             overflowX: "auto",
           }}
@@ -1296,10 +1213,10 @@ function AuditSettings() {
       <ErrorState message="Audit events could not be loaded." onRetry={() => events.refetch()} />
     );
   return (
-    <SettingsCard
-      title="Audit log"
-      description="Live, sanitized, household-scoped history of important changes."
-    >
+    <SettingsCard title="Audit log">
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+        Sanitized, household-scoped history of important changes.
+      </Typography>
       {events.data?.data.length ? (
         <Stack divider={<Divider />}>
           {events.data.data.map((event) => (
@@ -1392,10 +1309,7 @@ function HealthSettings() {
         <strong>The API and database responded.</strong> Items that are not directly probed are
         labeled explicitly; no secret or financial payload is included here.
       </Alert>
-      <SettingsCard
-        title="Runtime diagnostics"
-        description="Safe operational details for a self-hosted installation."
-      >
+      <SettingsCard title="Runtime diagnostics">
         <Stack divider={<Divider />}>
           {rows.map(([name, status, detail]) => (
             <Stack key={name} direction="row" alignItems="center" gap={3} sx={{ py: 3 }}>
@@ -1403,7 +1317,7 @@ function HealthSettings() {
                 sx={{
                   width: 8,
                   height: 8,
-                  borderRadius: 8,
+                  borderRadius: "50%",
                   bgcolor:
                     status === "Healthy"
                       ? "success.main"
@@ -1467,11 +1381,7 @@ export function SettingsPage() {
   const selectedLabel = settingsNavigation.find((item) => item.id === section)?.label ?? "Settings";
   return (
     <Stack gap={5}>
-      <PageHeader
-        eyebrow="Settings"
-        title={selectedLabel}
-        description="Household controls, privacy choices, providers, security, and portable data operations."
-      />
+      <PageHeader title={selectedLabel} />
       <FormControl fullWidth size="small" sx={{ display: { xs: "flex", md: "none" } }}>
         <InputLabel id="settings-section-label">Settings section</InputLabel>
         <Select
@@ -1504,15 +1414,12 @@ export function SettingsPage() {
                   <ListItemButton
                     selected={section === item.id}
                     onClick={() => setSection(item.id)}
-                    sx={{ minHeight: 44, borderRadius: 2.5 }}
+                    sx={{ minHeight: 44, borderRadius: 1 }}
                   >
                     <ListItemIcon sx={{ minWidth: 36 }}>
-                      <Icon sx={{ fontSize: 19 }} />
+                      <Icon />
                     </ListItemIcon>
-                    <ListItemText
-                      primary={item.label}
-                      primaryTypographyProps={{ fontSize: 13, fontWeight: 650 }}
-                    />
+                    <ListItemText primary={item.label} />
                   </ListItemButton>
                 </ListItem>
               );

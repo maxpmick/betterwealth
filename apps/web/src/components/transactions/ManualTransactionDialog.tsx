@@ -84,11 +84,7 @@ export function ManualTransactionDialog({
   return (
     <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="sm">
       <DialogTitle component="div">
-        <DialogHeading
-          eyebrow="Manual ledger entry"
-          title="Add a transaction"
-          description="Use this for cash, reimbursements, or anything your connected accounts do not provide."
-        />
+        <DialogHeading title="Add a transaction" />
       </DialogTitle>
       <DialogContent>
         <Stack gap={3}>

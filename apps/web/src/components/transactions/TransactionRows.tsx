@@ -3,7 +3,7 @@ import {
   RemoveCircleOutlineRounded,
   WarningAmberRounded,
 } from "@mui/icons-material";
-import { alpha, Box, Button, Paper } from "@mui/material";
+import { Box, Button, Paper } from "@mui/material";
 import { Checkbox, Stack, Typography } from "../mui";
 import { Money, StatusChip } from "../ui";
 import type { TransactionView } from "./types";
@@ -77,12 +77,11 @@ export function TransactionRow({
           sx={{
             width: 38,
             height: 38,
-            borderRadius: 2.5,
+            borderRadius: 1,
             flex: "0 0 auto",
             display: "grid",
             placeItems: "center",
-            bgcolor:
-              item.needsReview || hasSuggestedMatch(item) ? alpha("#D98B2B", 0.12) : "action.hover",
+            bgcolor: "action.hover",
             color: item.needsReview || hasSuggestedMatch(item) ? "warning.main" : "text.secondary",
             mr: 2.5,
           }}
@@ -119,7 +118,7 @@ export function TransactionRow({
         </Typography>
       </Box>
       <Box sx={{ textAlign: "right" }}>
-        <Typography variant="body2" fontWeight={760}>
+        <Typography variant="body2" fontWeight={700}>
           <Money value={item.amount} currency={item.currency} sign />
         </Typography>
         <TransactionBadges item={item} />
@@ -140,7 +139,7 @@ export function MobileTransactionRow({
   onOpen: () => void;
 }) {
   return (
-    <Paper variant="outlined" sx={{ p: 3, borderRadius: 3 }}>
+    <Paper variant="outlined" sx={{ p: 3 }}>
       <Stack direction="row" gap={2} alignItems="flex-start">
         {item.status === "removed" ? (
           <RemoveCircleOutlineRounded color="disabled" aria-label="Removed transaction" />
@@ -166,7 +165,7 @@ export function MobileTransactionRow({
           }}
         >
           <Box sx={{ minWidth: 0 }}>
-            <Typography variant="body2" fontWeight={720} noWrap>
+            <Typography variant="body2" fontWeight={700} noWrap>
               {item.merchant}
             </Typography>
             <Typography variant="caption" color="text.secondary" noWrap sx={{ display: "block" }}>
@@ -176,7 +175,7 @@ export function MobileTransactionRow({
               <TransactionBadges item={item} />
             </Box>
           </Box>
-          <Typography variant="body2" fontWeight={760} sx={{ ml: 2 }}>
+          <Typography variant="body2" fontWeight={700} sx={{ ml: 2 }}>
             <Money value={item.amount} currency={item.currency} sign />
           </Typography>
         </Button>

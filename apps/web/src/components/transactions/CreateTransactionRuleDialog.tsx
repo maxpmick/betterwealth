@@ -102,9 +102,8 @@ export function CreateTransactionRuleDialog({
     <Dialog open={open} onClose={working ? undefined : onClose} fullWidth maxWidth="sm">
       <DialogTitle component="div">
         <DialogHeading
-          eyebrow="Deterministic automation"
-          title="Create a narrow transaction rule"
-          description="Preview historical matches first. Saving the rule does not recategorize history."
+          title="Create a transaction rule"
+          subtitle="Saving the rule does not recategorize existing transactions."
         />
       </DialogTitle>
       <DialogContent>
@@ -115,7 +114,7 @@ export function CreateTransactionRuleDialog({
             onChange={(event) => update(() => setName(event.target.value))}
             fullWidth
           />
-          <Paper variant="outlined" sx={{ p: 3, borderRadius: 3 }}>
+          <Paper variant="outlined" sx={{ p: 3 }}>
             <Typography variant="overline" color="text.secondary">
               When
             </Typography>
@@ -141,11 +140,11 @@ export function CreateTransactionRuleDialog({
             </Stack>
             {operator === "contains" ? (
               <Alert severity="warning" sx={{ mt: 2 }}>
-                Contains rules are broader. Keep this provider-specific text distinctive.
+                Contains rules are broader and can match unintended transactions.
               </Alert>
             ) : null}
           </Paper>
-          <Paper variant="outlined" sx={{ p: 3, borderRadius: 3 }}>
+          <Paper variant="outlined" sx={{ p: 3 }}>
             <Typography variant="overline" color="text.secondary">
               Then
             </Typography>
@@ -169,7 +168,7 @@ export function CreateTransactionRuleDialog({
           </Paper>
           <Stack direction="row" justifyContent="space-between" alignItems="center" gap={2}>
             <Box>
-              <Typography variant="body2" fontWeight={750}>
+              <Typography variant="body2" fontWeight={700}>
                 Preview before saving
               </Typography>
               <Typography variant="caption" color="text.secondary">

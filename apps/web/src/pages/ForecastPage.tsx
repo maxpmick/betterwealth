@@ -15,7 +15,6 @@ import {
   AccordionDetails,
   AccordionSummary,
   Alert,
-  alpha,
   Box,
   Button,
   Card,
@@ -129,7 +128,6 @@ function ForecastChart({
       <CardContent sx={{ p: { xs: 4, sm: 5 } }}>
         <SectionHeader
           title="Projected net-worth path"
-          description="The solid line is the exact result of the selected scenario. Seeded ranges appear only when they were calculated."
           action={
             <Chip
               icon={<ScienceRounded />}
@@ -148,7 +146,7 @@ function ForecastChart({
               sx={{
                 width: 48,
                 height: 48,
-                borderRadius: 3,
+                borderRadius: 1,
                 display: "grid",
                 placeItems: "center",
                 bgcolor: "action.hover",
@@ -157,12 +155,11 @@ function ForecastChart({
             >
               <ScienceRounded />
             </Box>
-            <Typography variant="h3" sx={{ mt: 3 }}>
+            <Typography variant="h6" sx={{ mt: 3 }}>
               No completed run for this scenario
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1, maxWidth: 520 }}>
-              Run the forecast to generate a versioned monthly trajectory from the assumptions shown
-              here.
+              Run the forecast to generate the monthly trajectory.
             </Typography>
           </Stack>
         ) : (
@@ -187,7 +184,6 @@ function ForecastChart({
                           {
                             dataKey: "p10",
                             label: "P10",
-                            color: "#D98B2B",
                             showMark: false,
                             valueFormatter: (value: number | null) =>
                               formatMoney(Number(value ?? 0), currency),
@@ -195,7 +191,6 @@ function ForecastChart({
                           {
                             dataKey: "p50",
                             label: "P50",
-                            color: "#4A7FD1",
                             showMark: false,
                             valueFormatter: (value: number | null) =>
                               formatMoney(Number(value ?? 0), currency),
@@ -203,7 +198,6 @@ function ForecastChart({
                           {
                             dataKey: "p90",
                             label: "P90",
-                            color: "#7F6BB2",
                             showMark: false,
                             valueFormatter: (value: number | null) =>
                               formatMoney(Number(value ?? 0), currency),
@@ -213,7 +207,6 @@ function ForecastChart({
                     {
                       dataKey: "deterministic",
                       label: scenarioName,
-                      color: "#1F9D72",
                       area: !hasRanges,
                       showMark: false,
                       valueFormatter: (value: number | null) =>
@@ -549,11 +542,7 @@ export function ForecastPage() {
   if (scenariosQuery.isPending || forecastsQuery.isPending) {
     return (
       <Stack gap={4}>
-        <PageHeader
-          eyebrow="Forecast"
-          title="Loading scenarios"
-          description="Reading the latest versioned assumptions and results."
-        />
+        <PageHeader title="Forecast" />
         <LoadingCard rows={6} />
       </Stack>
     );
@@ -561,13 +550,9 @@ export function ForecastPage() {
   if (scenariosQuery.isError || forecastsQuery.isError) {
     return (
       <Stack gap={4}>
-        <PageHeader
-          eyebrow="Forecast"
-          title="Forecast unavailable"
-          description="No scenario has been changed."
-        />
+        <PageHeader title="Forecast" />
         <ErrorState
-          message="BetterWealth could not load forecast scenarios and results."
+          message="Forecast scenarios and results could not be loaded."
           onRetry={() => {
             void scenariosQuery.refetch();
             void forecastsQuery.refetch();
@@ -579,15 +564,11 @@ export function ForecastPage() {
   if (!selectedScenario) {
     return (
       <Stack gap={4}>
-        <PageHeader
-          eyebrow="Forecast"
-          title="Create your first scenario"
-          description="Start with explicit income, inflation, return, and contribution assumptions."
-        />
+        <PageHeader title="Forecast" />
         <EmptyState
           icon={<ScienceRounded />}
           title="No scenarios yet"
-          description="A scenario is required before the deterministic projection can run."
+          description="Create a scenario to run a forecast."
           actionLabel="New scenario"
           onAction={() => setNewScenarioOpen(true)}
         />
@@ -604,13 +585,7 @@ export function ForecastPage() {
   return (
     <Stack gap={5}>
       <PageHeader
-        eyebrow="Forecast"
-        title="See where today’s plan can lead"
-        description={
-          demo
-            ? "Change one assumption at a time and recalculate an interactive local preview."
-            : "Change one assumption at a time. Every displayed result comes from a stored, reproducible forecast run."
-        }
+        title="Forecast"
         actions={
           <>
             <Button
@@ -677,8 +652,7 @@ export function ForecastPage() {
         </Alert>
       ) : (
         <Alert severity="info" icon={<InfoOutlined />}>
-          This scenario has no completed result yet. Its assumptions are ready to review before the
-          first run.
+          This scenario has no completed result yet.
         </Alert>
       )}
       <Box
@@ -742,11 +716,7 @@ export function ForecastPage() {
         <ForecastChart forecast={latestForecast} scenarioName={selectedScenario.name} />
         <Card>
           <CardContent sx={{ p: 5 }}>
-            <SectionHeader
-              title="Assumptions"
-              description={`${demo ? "Previewed" : "Stored"} with ${selectedScenario.name}.`}
-              action={<TuneRounded color="action" />}
-            />
+            <SectionHeader title="Assumptions" action={<TuneRounded color="action" />} />
             <Stack gap={4} sx={{ mt: 5 }}>
               <AssumptionSlider
                 label="Income growth"
@@ -810,12 +780,7 @@ export function ForecastPage() {
           </CardContent>
         </Card>
       </Box>
-      <Card
-        sx={{
-          background: (theme) =>
-            `linear-gradient(130deg, ${alpha(theme.palette.info.main, 0.1)}, ${alpha(theme.palette.secondary.main, 0.08)})`,
-        }}
-      >
+      <Card>
         <CardContent sx={{ p: { xs: 5, sm: 6 } }}>
           <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" gap={4}>
             <Stack direction="row" gap={3} alignItems="flex-start">
@@ -823,18 +788,18 @@ export function ForecastPage() {
                 sx={{
                   width: 44,
                   height: 44,
-                  borderRadius: 3,
+                  borderRadius: 1,
                   display: "grid",
                   placeItems: "center",
-                  bgcolor: "background.paper",
-                  color: "info.main",
+                  bgcolor: "action.hover",
+                  color: "text.secondary",
                   flexShrink: 0,
                 }}
               >
                 <AutoAwesomeRounded />
               </Box>
               <Box>
-                <Typography variant="h3">Scenario difference, translated</Typography>
+                <Typography variant="h6">Scenario difference</Typography>
                 {comparison ? (
                   <Typography color="text.secondary" sx={{ mt: 1, maxWidth: 760 }}>
                     Compared with {comparison.name} at the same horizon, {selectedScenario.name}{" "}
@@ -851,13 +816,12 @@ export function ForecastPage() {
                   </Typography>
                 ) : latestForecast && selectedScenario.isBase ? (
                   <Typography color="text.secondary" sx={{ mt: 1, maxWidth: 760 }}>
-                    {selectedScenario.name} is the comparison anchor. Select another scenario with a
-                    completed run to see its exact dollar difference here.
+                    {selectedScenario.name} is the baseline. Select another scenario with a
+                    completed run to compare outcomes.
                   </Typography>
                 ) : (
                   <Typography color="text.secondary" sx={{ mt: 1, maxWidth: 760 }}>
-                    A matching completed baseline run is not available, so BetterWealth will not
-                    invent a comparison. Run the baseline at the same horizon to unlock it.
+                    A completed baseline run at the same horizon is required to show a comparison.
                   </Typography>
                 )}
               </Box>
@@ -875,13 +839,10 @@ export function ForecastPage() {
       >
         <Card>
           <CardContent sx={{ p: 5 }}>
-            <SectionHeader
-              title="Target outcome"
-              description="A probability appears only when this scenario has an explicit Monte Carlo success target."
-            />
+            <SectionHeader title="Goal probability" />
             {typeof targetProbability === "number" ? (
               <Stack alignItems="flex-start" gap={2} sx={{ mt: 5 }}>
-                <Typography sx={{ fontSize: 42, fontWeight: 760, letterSpacing: "-0.04em" }}>
+                <Typography variant="h4" sx={{ fontVariantNumeric: "tabular-nums" }}>
                   {Math.round(targetProbability * 100)}%
                 </Typography>
                 <StatusChip
@@ -898,7 +859,7 @@ export function ForecastPage() {
                   sx={{
                     width: 48,
                     height: 48,
-                    borderRadius: 3,
+                    borderRadius: 1,
                     display: "grid",
                     placeItems: "center",
                     bgcolor: "action.hover",
@@ -907,12 +868,11 @@ export function ForecastPage() {
                 >
                   <LockClockRounded />
                 </Box>
-                <Typography variant="h3" sx={{ mt: 3 }}>
+                <Typography variant="h6" sx={{ mt: 3 }}>
                   No probability target configured
                 </Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 1, maxWidth: 520 }}>
-                  The deterministic result is available, but this scenario does not define a success
-                  amount and month. No goal odds are inferred.
+                  This scenario does not define a success amount and month.
                 </Typography>
               </Stack>
             )}
@@ -920,10 +880,7 @@ export function ForecastPage() {
         </Card>
         <Card>
           <CardContent sx={{ p: 5 }}>
-            <SectionHeader
-              title="Readiness gate"
-              description="Missing data widens uncertainty instead of creating false precision."
-            />
+            <SectionHeader title="Readiness" />
             {!latestForecast ? (
               <Typography variant="body2" color="text.secondary" sx={{ mt: 5 }}>
                 Readiness is calculated as part of the first run.

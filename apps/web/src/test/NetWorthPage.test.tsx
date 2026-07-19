@@ -47,9 +47,7 @@ describe("Net Worth assets", () => {
   it("shows live-shaped valued assets and all available wealth metrics", async () => {
     renderPage();
 
-    expect(
-      screen.getByRole("heading", { level: 1, name: /net worth, without the blur/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: /^net worth$/i })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "2019 Honda Civic" })).toBeInTheDocument();
     for (const metric of ["Total", "Liquid", "Investable", "Retirement", "Assets", "Debts"]) {
       expect(
