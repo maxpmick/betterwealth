@@ -556,6 +556,8 @@ export interface ApiConnection {
   status: "healthy" | "syncing" | "attention" | "disabled";
   displayName: string;
   lastSuccessfulAt?: string;
+  lastErrorCode?: string;
+  lastErrorMessage?: string;
   capabilities: string[];
 }
 

@@ -191,6 +191,37 @@ describe("Accounts", () => {
     );
   });
 
+  it("surfaces a degraded provider connection with a path to fix it", async () => {
+    window.sessionStorage.setItem("bw-demo", "false");
+    mockLiveAccountQueries([
+      liveAccount({ id: "01JACCOUNT00000000000000005", name: "Quiet checking" }),
+    ]);
+    vi.spyOn(api, "connections").mockResolvedValue({
+      data: [
+        {
+          id: "01JCONNECTION0000000000000001",
+          provider: "simplefin",
+          status: "attention",
+          displayName: "SimpleFIN",
+          capabilities: ["accounts", "balances", "transactions"],
+          lastSuccessfulAt: "2026-07-19T17:55:02.168Z",
+          lastErrorCode: "provider_warning",
+          lastErrorMessage: "con.auth: Connection to PNC Bank may need attention. Auth required",
+        },
+      ],
+      page: { cursor: null, hasMore: false },
+    });
+    renderPage();
+
+    expect(
+      await screen.findByText(/connection to pnc bank may need attention\. auth required/i),
+    ).toBeVisible();
+    const fixLink = screen.getByRole("link", { name: /open simplefin to fix/i });
+    expect(fixLink).toHaveAttribute("href", "https://beta-bridge.simplefin.org/");
+    expect(fixLink).toHaveAttribute("target", "_blank");
+    expect(fixLink.getAttribute("rel")).toContain("noopener");
+  });
+
   it("requests account-scoped recent activity instead of filtering the global first page", async () => {
     window.sessionStorage.setItem("bw-demo", "false");
     const account = liveAccount({ id: "01JACCOUNT00000000000000001", name: "Quiet checking" });

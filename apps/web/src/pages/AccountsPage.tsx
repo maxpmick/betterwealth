@@ -6,6 +6,7 @@ import {
   CreditCardRounded,
   DirectionsCarRounded,
   LinkRounded,
+  OpenInNewRounded,
   ReceiptLongRounded,
   RefreshRounded,
   RestoreRounded,
@@ -75,6 +76,10 @@ const groupLabels: Record<ApiAccount["group"], string> = {
   crypto: "Crypto",
   custom: "Custom",
 };
+
+// User-facing SimpleFIN dashboard: re-authenticating a bank (e.g. after a con.auth provider
+// warning) happens there, not in BetterWealth.
+const SIMPLEFIN_ACCOUNT_URL = "https://beta-bridge.simplefin.org/";
 
 interface AccountView {
   id: string;
@@ -875,7 +880,12 @@ export function AccountsPage() {
               connectionsQuery.data.data.map((connection) => (
                 <Box
                   key={connection.id}
-                  sx={{ p: 4, border: "1px solid", borderColor: "divider", borderRadius: 1 }}
+                  sx={{
+                    p: 4,
+                    border: "1px solid",
+                    borderColor: connection.status === "attention" ? "warning.main" : "divider",
+                    borderRadius: 1,
+                  }}
                 >
                   <Stack direction="row" alignItems="center" gap={2}>
                     <CloudSyncRounded color="action" />
@@ -893,6 +903,32 @@ export function AccountsPage() {
                       tone={connection.status === "healthy" ? "positive" : "warning"}
                     />
                   </Stack>
+                  {connection.status === "attention" ? (
+                    <Box sx={{ mt: 2 }}>
+                      <Typography
+                        variant="caption"
+                        color="warning.main"
+                        sx={{ display: "block", mb: 1.5 }}
+                      >
+                        {connection.lastErrorMessage ??
+                          "The provider reported a problem with this connection."}
+                      </Typography>
+                      {connection.provider === "simplefin" ? (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          color="warning"
+                          component="a"
+                          href={SIMPLEFIN_ACCOUNT_URL}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          endIcon={<OpenInNewRounded fontSize="small" />}
+                        >
+                          Open SimpleFIN to fix
+                        </Button>
+                      ) : null}
+                    </Box>
+                  ) : null}
                 </Box>
               ))
             ) : (

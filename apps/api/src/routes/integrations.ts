@@ -84,14 +84,23 @@ function decodeAiSettings(
   }
 }
 
-function publicConnection(connection: {
-  id: string;
-  provider: string;
-  displayName: string;
-  status: string;
-  capabilities: string[];
-  lastSuccessAt: string | null;
-}) {
+function publicConnection(
+  connection: {
+    id: string;
+    provider: string;
+    displayName: string;
+    status: string;
+    capabilities: string[];
+    lastSuccessAt: string | null;
+    lastErrorCode: string | null;
+  },
+  latestSyncRun?: { errorCode: string | null; errorMessage: string | null },
+) {
+  // The provider message behind a degraded/reauth state is what the user must act on (the
+  // SimpleFIN developer guide requires surfacing errlist entries to end users). Only expose it
+  // while the connection is actually in an error state so a stale warning never lingers after a
+  // clean sync cleared connection.lastErrorCode.
+  const lastErrorCode = connection.lastErrorCode ?? undefined;
   return {
     id: connection.id,
     provider: connection.provider,
@@ -104,6 +113,12 @@ function publicConnection(connection: {
           : ("attention" as const),
     capabilities: connection.capabilities,
     lastSuccessfulAt: connection.lastSuccessAt ?? undefined,
+    ...(lastErrorCode
+      ? {
+          lastErrorCode,
+          ...(latestSyncRun?.errorMessage ? { lastErrorMessage: latestSyncRun.errorMessage } : {}),
+        }
+      : {}),
     hasCredentials: true,
   };
 }
@@ -298,10 +313,40 @@ export function createIntegrationRoutes(
   routes.get("/connections", async (context) => {
     const auth = context.get("auth");
     const repositories = createHouseholdRepositories(db, auth.householdId);
+    const list = repositories.connections.list();
+    const latestSyncRunByConnection = new Map<
+      string,
+      { errorCode: string | null; errorMessage: string | null }
+    >();
+    if (list.length) {
+      // Ordered newest-first, so the first row seen per connection is its latest sync run.
+      const recentRuns = await db
+        .select({
+          connectionId: syncRuns.connectionId,
+          errorCode: syncRuns.errorCode,
+          errorMessage: syncRuns.errorMessage,
+        })
+        .from(syncRuns)
+        .where(
+          and(
+            eq(syncRuns.householdId, auth.householdId),
+            inArray(
+              syncRuns.connectionId,
+              list.map(({ id }) => id),
+            ),
+          ),
+        )
+        .orderBy(desc(syncRuns.createdAt), desc(syncRuns.id));
+      for (const run of recentRuns) {
+        if (!latestSyncRunByConnection.has(run.connectionId)) {
+          latestSyncRunByConnection.set(run.connectionId, run);
+        }
+      }
+    }
     return context.json({
-      data: repositories.connections
-        .list()
-        .map(({ encryptedCredentials: _secret, ...connection }) => publicConnection(connection)),
+      data: list.map(({ encryptedCredentials: _secret, ...connection }) =>
+        publicConnection(connection, latestSyncRunByConnection.get(connection.id)),
+      ),
       page: { cursor: null, hasMore: false },
     });
   });

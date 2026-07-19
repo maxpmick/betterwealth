@@ -8,9 +8,11 @@ import {
   aiSuggestions,
   auditEvents,
   categories,
+  connections,
   jobs,
   rules,
   settings,
+  syncRuns,
   transactions,
 } from "@betterwealth/db/schema";
 import { eq } from "drizzle-orm";
@@ -801,5 +803,88 @@ describe("per-user integration settings", () => {
     const repeatedBody = (await repeated.json()) as { syncRunIds: string[] };
     expect(new Set(repeatedBody.syncRunIds)).toEqual(new Set(firstBody.syncRunIds));
     expect(await application.db.select().from(jobs)).toHaveLength(2);
+  });
+
+  test("surfaces the provider error behind a degraded connection only", async () => {
+    const owner = await authenticatedOwner(
+      application,
+      "conn-errors@example.com",
+      "ConnErrorsStrong!2026",
+    );
+    const repositories = createHouseholdRepositories(application.db, owner.householdId);
+    const cipher = new FieldCipher("b".repeat(64));
+    const makeConnection = (id: string, status: "active" | "degraded", name: string) => {
+      const aad = `connection:${id}:credentials`;
+      repositories.connections.create({
+        id,
+        ownerUserId: owner.userId,
+        provider: "simplefin",
+        displayName: name,
+        encryptedCredentials: cipher.encrypt(
+          `https://user:password@bridge.example.test/${id}`,
+          aad,
+        ),
+        credentialsAad: aad,
+        capabilities: ["accounts", "balances", "transactions"],
+        status,
+      });
+    };
+    const degradedId = ulid();
+    const healthyId = ulid();
+    makeConnection(degradedId, "degraded", "SimpleFIN degraded");
+    makeConnection(healthyId, "active", "SimpleFIN healthy");
+    await application.db
+      .update(connections)
+      .set({ lastErrorCode: "provider_warning" })
+      .where(eq(connections.id, degradedId));
+    // An older clean run must not win over the latest run that carries the provider warning.
+    await application.db.insert(syncRuns).values({
+      id: ulid(),
+      householdId: owner.householdId,
+      connectionId: degradedId,
+      trigger: "scheduled",
+      state: "succeeded",
+      createdAt: "2026-07-18T00:00:00.000Z",
+    });
+    await application.db.insert(syncRuns).values({
+      id: ulid(),
+      householdId: owner.householdId,
+      connectionId: degradedId,
+      trigger: "scheduled",
+      state: "succeeded",
+      errorCode: "provider_warning",
+      errorMessage: "con.auth: Connection to PNC Bank may need attention. Auth required",
+      createdAt: "2026-07-19T00:00:00.000Z",
+    });
+    await application.db.insert(syncRuns).values({
+      id: ulid(),
+      householdId: owner.householdId,
+      connectionId: healthyId,
+      trigger: "scheduled",
+      state: "succeeded",
+    });
+
+    const response = await application.app.request("/api/v1/connections", {
+      headers: owner.headers,
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      data: Array<{
+        id: string;
+        status: string;
+        lastErrorCode?: string;
+        lastErrorMessage?: string;
+      }>;
+    };
+    const degraded = body.data.find((connection) => connection.id === degradedId);
+    expect(degraded?.status).toBe("attention");
+    expect(degraded?.lastErrorCode).toBe("provider_warning");
+    expect(degraded?.lastErrorMessage).toBe(
+      "con.auth: Connection to PNC Bank may need attention. Auth required",
+    );
+    const healthy = body.data.find((connection) => connection.id === healthyId);
+    expect(healthy?.status).toBe("healthy");
+    expect(healthy?.lastErrorCode).toBeUndefined();
+    expect(healthy?.lastErrorMessage).toBeUndefined();
   });
 });
