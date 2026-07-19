@@ -43,11 +43,9 @@ import { Link as RouterLink, useSearchParams } from "react-router-dom";
 import {
   type AccountUpdateInput,
   type ApiAccount,
-  type ApiAccountBalanceHistory,
   type ApiAsset,
   type ApiTransaction,
   api,
-  type CursorPage,
   type ManualAccountInput,
 } from "../api";
 import { Drawer, Stack, TextField, Typography } from "../components/mui";
@@ -64,8 +62,8 @@ import {
   StatusChip,
 } from "../components/ui";
 import { usePrivacy } from "../contexts";
-import { type AccountItem, accounts as accountFixtures } from "../data";
 import { isDemoMode } from "../demo";
+import { demoAccounts, demoAssets, demoBalanceHistory } from "../demoApi";
 import { chartTickFormatter, minorToMajor } from "../lib/money";
 
 const groupLabels: Record<ApiAccount["group"], string> = {
@@ -78,23 +76,24 @@ const groupLabels: Record<ApiAccount["group"], string> = {
   crypto: "Crypto",
   custom: "Custom",
 };
-const groupTransport: Record<string, ApiAccount["group"]> = {
-  Cash: "cash",
-  Credit: "credit",
-  Loans: "loan",
-  Investments: "investment",
-  Property: "property",
-  Vehicles: "vehicle",
-  Crypto: "crypto",
-  Custom: "custom",
-};
 
-type AccountView = AccountItem & {
+interface AccountView {
+  id: string;
+  name: string;
+  institution: string;
+  type: string;
+  group: string;
+  mask: string;
+  /** Display-only number derived from balanceMinorUnits via minorToMajor. */
+  balance: number;
+  balanceMinorUnits: string;
+  status: "Healthy" | "Manual" | "Attention";
+  updated: string;
   groupKey: ApiAccount["group"];
   accountType: string;
   accountSubtype: string;
   accountStatus: NonNullable<ApiAccount["status"]>;
-};
+}
 
 export function parseSignedCurrencyMinorUnits(value: string): string | null {
   const normalized = value.trim().replace(/[$,\s]/g, "");
@@ -104,79 +103,6 @@ export function parseSignedCurrencyMinorUnits(value: string): string | null {
   const [whole = "0", fraction = ""] = unsigned.split(".");
   const minor = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
   return (negative && minor !== 0n ? -minor : minor).toString();
-}
-
-const demoAccounts: CursorPage<ApiAccount> = {
-  data: accountFixtures.map((account) => ({
-    id: account.id,
-    name: account.name,
-    mask: account.mask,
-    group: groupTransport[account.group] ?? "custom",
-    type: account.type,
-    subtype: null,
-    institutionName: account.institution,
-    isManual: account.status === "Manual",
-    balance: { minorUnits: String(Math.round(account.balance * 100)), currency: "USD" },
-    syncStatus:
-      account.status === "Healthy"
-        ? "healthy"
-        : account.status === "Manual"
-          ? "manual"
-          : "attention",
-    updatedAt: "2026-07-16T10:42:00.000Z",
-  })),
-  page: { cursor: null, hasMore: false },
-};
-const demoAssets: CursorPage<ApiAsset> = {
-  data: [
-    {
-      id: "asset_car",
-      name: "2019 Honda Civic",
-      type: "vehicle",
-      value: { minorUnits: "950000", currency: "USD" },
-      valuedAt: "2026-07-01T00:00:00.000Z",
-      source: "manual",
-      confidence: "medium",
-      liquidityClass: "illiquid",
-    },
-    {
-      id: "asset_deposit",
-      name: "Apartment security deposit",
-      type: "custom",
-      value: { minorUnits: "250000", currency: "USD" },
-      valuedAt: "2025-09-03T00:00:00.000Z",
-      source: "manual",
-      confidence: "high",
-      liquidityClass: "illiquid",
-    },
-  ],
-  page: { cursor: null, hasMore: false },
-};
-
-function demoBalanceHistory(account: AccountItem): ApiAccountBalanceHistory {
-  const currentMinor = Math.round(account.balance * 100);
-  const changes = [-1_850, -1_200, -780, -320, -90, 0];
-  return {
-    account: { id: account.id, name: account.name, currency: "USD" },
-    data: changes.map((change, index) => {
-      const value = currentMinor + change * 100;
-      return {
-        id: `demo-balance-${index}`,
-        asOf: `2026-${String(index + 2).padStart(2, "0")}-01T12:00:00.000Z`,
-        current: { minorUnits: String(value), currency: "USD" },
-        ledger: { minorUnits: String(value), currency: "USD" },
-        available: { minorUnits: String(value), currency: "USD" },
-        source: "fixture",
-        reconciled: true,
-      };
-    }),
-    summary: {
-      current: { minorUnits: String(currentMinor), currency: "USD" },
-      change: { minorUnits: "185000", currency: "USD" },
-      latestAsOf: "2026-07-01T12:00:00.000Z",
-      reconciled: true,
-    },
-  };
 }
 
 function toAccountItem(account: ApiAccount): AccountView {
@@ -194,7 +120,7 @@ function toAccountItem(account: ApiAccount): AccountView {
     group: groupLabels[account.group],
     mask: account.mask,
     balance: minorToMajor(account.balance.minorUnits, account.balance.currency),
-    change: 0,
+    balanceMinorUnits: account.balance.minorUnits,
     status:
       account.syncStatus === "healthy"
         ? "Healthy"
@@ -218,7 +144,7 @@ function AccountIcon({ group }: { group: string }) {
   return <SavingsRounded {...props} />;
 }
 
-function AccountRow({ account, onOpen }: { account: AccountItem; onOpen: () => void }) {
+function AccountRow({ account, onOpen }: { account: AccountView; onOpen: () => void }) {
   return (
     <Button
       color="inherit"
@@ -358,7 +284,7 @@ function AccountDetail({
     ...(accountStatus !== account.accountStatus ? { status: accountStatus } : {}),
     ...(account.status === "Manual" &&
     recordedBalanceMinorUnits !== null &&
-    recordedBalanceMinorUnits !== String(Math.round(account.balance * 100))
+    recordedBalanceMinorUnits !== account.balanceMinorUnits
       ? { balanceMinorUnits: recordedBalanceMinorUnits }
       : {}),
   };

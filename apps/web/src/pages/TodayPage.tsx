@@ -40,7 +40,6 @@ import { useMemo, useState } from "react";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
 import {
   type ApiBill,
-  type ApiBudget,
   type ApiEnvelope,
   type ApiGoal,
   type ApiGoalContribution,
@@ -67,173 +66,18 @@ import {
   TrustStatePanel,
 } from "../components/ui";
 import { usePrivacy } from "../contexts";
-import {
-  envelopes as demoEnvelopeData,
-  goals as demoGoalData,
-  netWorthHistory,
-  recentActivity,
-} from "../data";
 import { isDemoMode } from "../demo";
+import {
+  demoBills,
+  demoBudgets,
+  demoDashboard,
+  demoEnvelopes,
+  demoGoals,
+  demoNetWorth,
+  demoSession,
+  demoRecentTransactions as demoTransactions,
+} from "../demoApi";
 import { chartTickFormatter, minorToMajor } from "../lib/money";
-
-const demoDashboard: DashboardReport = {
-  safeToSpend: { minorUnits: "61200", currency: "USD" },
-  safePerDay: { minorUnits: "4371", currency: "USD" },
-  coveredThrough: "2026-07-30T23:59:59.999Z",
-  coveredThroughSource: "income_source",
-  availableCash: { minorUnits: "300000", currency: "USD" },
-  reservedBills: { minorUnits: "84800", currency: "USD" },
-  envelopeCommitments: { minorUnits: "34000", currency: "USD" },
-  goalContributions: { minorUnits: "20000", currency: "USD" },
-  minimumBuffer: { minorUnits: "100000", currency: "USD" },
-  projectedLiquidNetWorth: { minorUnits: "22340000", currency: "USD" },
-  targetLiquidNetWorth: { minorUnits: "22500000", currency: "USD" },
-  targetAge: 30,
-  projectionSource: "forecast",
-  savingsRate: 24.6,
-  trust: {
-    state: "ready",
-    asOf: "2026-07-16T10:42:00.000Z",
-    pendingImpact: { minorUnits: "-4816", currency: "USD" },
-    missingInputs: [],
-    confidenceLabel: "High",
-  },
-};
-
-const demoEnvelopes: CursorPage<ApiEnvelope> = {
-  data: demoEnvelopeData.map((envelope, index) => ({
-    id: `demo-envelope-${index}`,
-    name: envelope.name,
-    planned: asMoney(envelope.planned),
-    funded: asMoney(envelope.funded),
-    activity: asMoney(envelope.activity),
-    available: asMoney(envelope.available),
-    cadence: envelope.cadence,
-    pacing: envelope.pacing === "on-track" ? "on_track" : envelope.pacing,
-    rolloverPolicy: "reset",
-  })),
-  page: { cursor: null, hasMore: false },
-};
-
-const demoTransactions: CursorPage<ApiTransaction> = {
-  data: recentActivity.map((transaction, index) => ({
-    id: transaction.id,
-    accountId: `demo-account-${index}`,
-    effectiveDate: new Date(2026, 6, 16 - index).toISOString(),
-    description: transaction.rawDescription,
-    merchant: transaction.merchant,
-    amount: asMoney(transaction.amount),
-    accountName: transaction.account,
-    categoryName: transaction.category,
-    status: transaction.pending ? "pending" : "posted",
-    reviewState: transaction.needsReview ? "needs_review" : "ready",
-    source: "simplefin",
-    tags: [],
-  })),
-  page: { cursor: null, hasMore: false },
-};
-
-const demoBills: CursorPage<ApiBill> = {
-  data: [
-    {
-      id: "bill-internet",
-      name: "Home internet",
-      amountMin: asMoney(65),
-      amountMax: asMoney(65),
-      recurrenceConfidenceBps: 9800,
-      nextDueDate: "2026-07-21",
-      dueRule: { cadence: "monthly" },
-      isRequired: true,
-      isActive: true,
-    },
-    {
-      id: "bill-card",
-      name: "Emerald card",
-      amountMin: asMoney(410),
-      amountMax: asMoney(410),
-      recurrenceConfidenceBps: 8000,
-      nextDueDate: "2026-07-24",
-      dueRule: { cadence: "monthly" },
-      isRequired: true,
-      isActive: true,
-    },
-    {
-      id: "bill-insurance",
-      name: "Renter’s insurance",
-      amountMin: asMoney(28),
-      amountMax: asMoney(28),
-      recurrenceConfidenceBps: 9900,
-      nextDueDate: "2026-07-27",
-      dueRule: { cadence: "monthly" },
-      isRequired: true,
-      isActive: true,
-    },
-  ],
-  page: { cursor: null, hasMore: false },
-};
-
-const demoBudgets: CursorPage<ApiBudget> = {
-  data: [
-    {
-      id: "budget-demo-today",
-      periodKind: "pay_cycle",
-      startDate: "2026-07-16",
-      endDate: "2026-07-30",
-      plannedIncome: asMoney(2_200),
-      funded: asMoney(2_050),
-      spent: asMoney(121.73),
-      remaining: asMoney(1_928.27),
-      unassigned: asMoney(150),
-      totalPlanned: asMoney(2_050),
-      surplus: asMoney(150),
-      status: "open",
-      envelopes: demoEnvelopes.data,
-    },
-  ],
-  page: { cursor: null, hasMore: false },
-};
-
-const demoNetWorth: NetWorthReport = {
-  total: asMoney(19_800),
-  liquid: asMoney(16_300),
-  investable: asMoney(14_500),
-  retirement: asMoney(8_000),
-  assets: asMoney(34_000),
-  debts: asMoney(13_200),
-  series: netWorthHistory.map((point, index) => ({
-    date: `2026-${String(index + 1).padStart(2, "0")}-01`,
-    total: asMoney(point.total),
-    liquid: asMoney(point.liquid),
-  })),
-  composition: [],
-};
-
-const demoGoals: CursorPage<ApiGoal> = {
-  data: demoGoalData.map((goal, index) => ({
-    id: goal.id,
-    name: goal.name,
-    type:
-      index === 0
-        ? "emergency_fund"
-        : index === 1
-          ? "purchase"
-          : index === 2
-            ? "debt_payoff"
-            : "investment",
-    target: asMoney(goal.target),
-    funded: asMoney(goal.funded),
-    monthlyContribution: asMoney(goal.monthly),
-    earliestSafeDate: goal.safeDate,
-    probability: goal.probability,
-    priority: index + 1,
-    paused: false,
-  })),
-  page: { cursor: null, hasMore: false },
-};
-
-function asMoney(amount: number, currency = "USD") {
-  return { minorUnits: String(Math.round(amount * 100)), currency };
-}
 
 function minor(money: { minorUnits: string; currency: string }) {
   return minorToMajor(money.minorUnits, money.currency);
@@ -1182,9 +1026,7 @@ export function TodayPage() {
   const sessionQuery = useQuery({
     queryKey: ["session"],
     queryFn: api.session,
-    initialData: demo
-      ? { user: { id: "demo", email: "alex@example.com", name: "Alex" }, householdId: "demo" }
-      : undefined,
+    initialData: demo ? demoSession : undefined,
     enabled: !demo,
     retry: false,
     staleTime: 60_000,

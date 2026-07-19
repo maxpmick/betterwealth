@@ -39,13 +39,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Link as RouterLink, useSearchParams } from "react-router-dom";
-import {
-  type ApiBudget,
-  type ApiEnvelope,
-  api,
-  type CursorPage,
-  type Money as TransportMoney,
-} from "../api";
+import { type ApiBudget, type ApiEnvelope, api, type Money as TransportMoney } from "../api";
 import { Stack, TextField, Typography } from "../components/mui";
 import { PlanFlowCard } from "../components/PlanFlowCard";
 import {
@@ -60,16 +54,12 @@ import {
   SectionHeader,
   StatusChip,
 } from "../components/ui";
-import { envelopes as demoEnvelopeData } from "../data";
 import { isDemoMode } from "../demo";
+import { demoBudgets } from "../demoApi";
 import { formatMoneyExact, minorToMajor } from "../lib/money";
 
 function transportMoneyFromMinor(minorUnits: bigint, currency = "USD"): TransportMoney {
   return { minorUnits: minorUnits.toString(), currency };
-}
-
-function transportMoney(value: number) {
-  return transportMoneyFromMinor(BigInt(Math.round(value * 100)));
 }
 
 function minor(value: TransportMoney | undefined) {
@@ -100,47 +90,6 @@ function percent(numerator: bigint, denominator: bigint) {
   if (denominator <= 0n) return 0;
   return Math.min(999, Number((numerator * 100n) / denominator));
 }
-
-const demoBudget: ApiBudget = {
-  id: "budget_demo",
-  periodKind: "pay_cycle",
-  startDate: "2026-07-16",
-  endDate: "2026-07-30",
-  plannedIncome: transportMoney(2_200),
-  funded: transportMoney(2_050),
-  spent: transportMoney(121.73),
-  remaining: transportMoney(1_928.27),
-  unassigned: transportMoney(150),
-  totalPlanned: transportMoney(2_050),
-  surplus: transportMoney(150),
-  status: "open",
-  envelopes: demoEnvelopeData.map((envelope, index) => ({
-    id: `env_demo_${index}`,
-    name: envelope.name,
-    planned: transportMoney(envelope.planned),
-    funded: transportMoney(envelope.funded),
-    activity: transportMoney(-Math.abs(envelope.activity)),
-    available: transportMoney(envelope.available),
-    cadence: envelope.cadence,
-    pacing: envelope.pacing === "on-track" ? "on_track" : envelope.pacing,
-    rolloverPolicy: "none",
-    transferredIn: transportMoney(0),
-    transferredOut: transportMoney(0),
-    parentId: null,
-    categoryId: null,
-    categoryIds: [],
-    priority: 100 - index * 10,
-    minimumAmount: transportMoney(envelope.planned),
-    targetAmount: transportMoney(envelope.planned),
-    isRequired: index < 3,
-    isActive: true,
-  })),
-};
-
-const demoBudgets: CursorPage<ApiBudget> = {
-  data: [demoBudget],
-  page: { cursor: null, hasMore: false },
-};
 
 const planColors = ["#1F3A5F", "#4A7FD1", "#1F9D72", "#5BA98B", "#8B6CCF", "#D98B2B", "#DD625B"];
 
@@ -685,7 +634,7 @@ export function BudgetPage() {
         periodKind: apiView,
         startDate: start,
         endDate: end,
-        plannedIncome: transportMoney(0),
+        plannedIncome: transportMoneyFromMinor(0n),
         envelopes: [],
       });
     },

@@ -40,12 +40,6 @@ import {
 import { Checkbox, Dialog, Drawer, Menu, Stack, TextField, Typography } from "../components/mui";
 import { CreateTransactionRuleDialog } from "../components/transactions/CreateTransactionRuleDialog";
 import { FilterContent } from "../components/transactions/FilterContent";
-import {
-  demoAccounts,
-  demoApiTransactions,
-  demoCategories,
-  demoEnvelopes,
-} from "../components/transactions/fixtures";
 import { ImportTransactionsDialog } from "../components/transactions/ImportTransactionsDialog";
 import { LinkRefundDialog } from "../components/transactions/LinkRefundDialog";
 import { ManualTransactionDialog } from "../components/transactions/ManualTransactionDialog";
@@ -71,6 +65,12 @@ import {
 } from "../components/transactions/utils";
 import { ErrorState, LoadingCard, Money, PageHeader } from "../components/ui";
 import { isDemoMode } from "../demo";
+import {
+  demoAccounts,
+  demoLedgerTransactions as demoApiTransactions,
+  demoCategories,
+  demoEnvelopes,
+} from "../demoApi";
 
 export type { TransactionView };
 // Re-exported so existing imports from this module keep working.

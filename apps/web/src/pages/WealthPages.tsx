@@ -70,7 +70,6 @@ import {
   api,
   type ComfortablePurchasePlan,
   type CursorPage,
-  type NetWorthReport,
 } from "../api";
 import { Stack, TextField, Typography } from "../components/mui";
 import {
@@ -87,84 +86,14 @@ import {
   StatusChip,
 } from "../components/ui";
 import { usePrivacy } from "../contexts";
-import { accounts as demoAccountItems, goals, netWorthHistory } from "../data";
 import { isDemoMode } from "../demo";
+import {
+  demoGoals as demoApiGoals,
+  demoAssets,
+  demoAccounts as demoGoalAccounts,
+  demoNetWorth,
+} from "../demoApi";
 import { chartTickFormatter, formatMoneyExact, minorToMajor } from "../lib/money";
-
-const composition = [
-  { group: "Cash", amount: 7500, change: 4.8, kind: "Asset", detail: "Checking + savings" },
-  {
-    group: "Taxable investments",
-    amount: 6500,
-    change: 12.6,
-    kind: "Asset",
-    detail: "Brokerage holdings",
-  },
-  { group: "Retirement", amount: 8000, change: 14.1, kind: "Asset", detail: "401(k)" },
-  {
-    group: "Manual assets",
-    amount: 12000,
-    change: -4.2,
-    kind: "Asset",
-    detail: "Vehicle + security deposit",
-  },
-  { group: "Credit cards", amount: -1200, change: 2.4, kind: "Debt", detail: "Current balance" },
-  { group: "Student loans", amount: -12000, change: 6.1, kind: "Debt", detail: "5.4% APR" },
-];
-
-function wealthMoney(value: number) {
-  return { minorUnits: String(Math.round(value * 100)), currency: "USD" };
-}
-const demoNetWorth: NetWorthReport = {
-  total: wealthMoney(19800),
-  liquid: wealthMoney(16300),
-  investable: wealthMoney(14500),
-  retirement: wealthMoney(8000),
-  assets: wealthMoney(34000),
-  debts: wealthMoney(13200),
-  series: netWorthHistory.map((row, index) => ({
-    date: `2026-${String(index + 1).padStart(2, "0")}-01`,
-    total: wealthMoney(row.total),
-    liquid: wealthMoney(row.liquid),
-    investable: wealthMoney(8_900 + index * 1_120),
-    retirement: wealthMoney(5_250 + index * 550),
-    assets: wealthMoney(row.total + 14_800 - index * 320),
-    debts: wealthMoney(14_800 - index * 320),
-  })),
-  composition: composition.map((row) => ({
-    group: row.group,
-    amount: wealthMoney(row.amount),
-    changePercent: row.change,
-    kind: row.kind === "Asset" ? "asset" : "debt",
-    detail: row.detail,
-  })),
-};
-
-const demoAssets: CursorPage<ApiAsset> = {
-  data: [
-    {
-      id: "asset-civic",
-      name: "2019 Honda Civic",
-      type: "vehicle",
-      value: wealthMoney(9500),
-      valuedAt: "2026-07-01T00:00:00.000Z",
-      source: "manual",
-      confidence: "medium",
-      liquidityClass: "illiquid",
-    },
-    {
-      id: "asset-deposit",
-      name: "Apartment security deposit",
-      type: "custom",
-      value: wealthMoney(2500),
-      valuedAt: "2025-09-03T00:00:00.000Z",
-      source: "manual",
-      confidence: "high",
-      liquidityClass: "illiquid",
-    },
-  ],
-  page: { cursor: null, hasMore: false },
-};
 
 type WealthHistoryPoint = {
   id: string;
@@ -1306,117 +1235,11 @@ export function NetWorthPage() {
   );
 }
 
-function goalMoney(value: number) {
-  return { minorUnits: String(Math.round(value * 100)), currency: "USD" };
-}
-
-const demoComfortablePurchasePlan: ComfortablePurchasePlan = {
-  status: "comfortable",
-  comfortable: true,
-  comfortableMonth: "2027-04",
-  monthsUntilPurchase: 9,
-  controllingConstraint: "targetNetWorth",
-  limitingConstraints: [
-    {
-      code: "targetNetWorth",
-      label: "Wealth target preserved",
-      satisfied: true,
-      detail:
-        "Projected liquid net worth still reaches the saved age-30 target after a conservative full purchase-price write-off.",
-    },
-  ],
-  constraints: [],
-  missingInputs: [],
-  inputs: {
-    spendableLiquidity: goalMoney(8_750),
-    unreservedLiquidity: goalMoney(2_990),
-    fundingAccountBalance: goalMoney(4_250),
-    verifiedPurchaseSavings: goalMoney(2_400),
-    protectedMinimumBuffer: goalMoney(2_500),
-    requiredMonthlyBills: goalMoney(1_450),
-    requiredObligationShortfall: goalMoney(0),
-    higherPriorityMonthlyFunding: goalMoney(650),
-    monthlySurplus: goalMoney(1_230),
-    monthlySurplusSource: "explicit_budget",
-    currentLiquidNetWorth: goalMoney(24_900),
-    targetLiquidNetWorth: goalMoney(100_000),
-    targetWealthDate: "2034-07-01",
-    projectedLiquidNetWorthAtTarget: goalMoney(101_200),
-  },
-  assumptions: [
-    "A purchase before the wealth milestone is treated as a 100% liquid-net-worth write-off.",
-  ],
-};
-
 type GoalStatus = "active" | "paused" | "completed" | "cancelled";
 type GoalLiquidity = "cash" | "liquid" | "investable" | "any";
 
-type GoalRecord = ApiGoal & {
-  targetDate?: string | null;
-  status?: GoalStatus;
-  fundingAccountId?: string | null;
-  linkedDebtAccountId?: string | null;
-  liquidityConstraint?: GoalLiquidity;
-  createdAt?: string;
-  updatedAt?: string;
-};
-
-const demoTargetDates = ["2027-07-01", "2027-02-01", "2028-10-01", "2032-05-01"];
-
-const demoApiGoals: CursorPage<GoalRecord> = {
-  data: goals.map((goal, index) => ({
-    id: goal.id,
-    name: goal.name,
-    type:
-      index === 0
-        ? "emergency_fund"
-        : index === 1
-          ? "purchase"
-          : index === 2
-            ? "debt_payoff"
-            : "investment",
-    target: goalMoney(goal.target),
-    funded: goalMoney(goal.funded),
-    monthlyContribution: goalMoney(goal.monthly),
-    targetDate: demoTargetDates[index] ?? "2032-05-01",
-    priority: index + 1,
-    paused: false,
-    status: "active",
-    liquidityConstraint: index === 3 ? "investable" : "liquid",
-    ...(index === 1 ? { comfortablePurchase: demoComfortablePurchasePlan } : {}),
-  })),
-  page: { cursor: null, hasMore: false },
-};
-
-const demoGoalAccounts: CursorPage<ApiAccount> = {
-  data: demoAccountItems.map((account) => {
-    const group: ApiAccount["group"] =
-      account.group === "Cash"
-        ? "cash"
-        : account.group === "Investments"
-          ? "investment"
-          : account.group === "Credit"
-            ? "credit"
-            : account.group === "Loans"
-              ? "loan"
-              : "custom";
-    return {
-      id: account.id,
-      name: account.name,
-      mask: account.mask,
-      group,
-      balance: goalMoney(account.balance),
-      syncStatus:
-        account.status === "Healthy"
-          ? "healthy"
-          : account.status === "Attention"
-            ? "attention"
-            : "manual",
-      updatedAt: "2026-07-16T12:00:00.000Z",
-    };
-  }),
-  page: { cursor: null, hasMore: false },
-};
+// Every optional record field the goals page reads is part of ApiGoal already.
+type GoalRecord = ApiGoal;
 
 function minorUnits(value: ApiGoal["target"]): bigint {
   return BigInt(value.minorUnits);
