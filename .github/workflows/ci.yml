@@ -95,7 +95,7 @@ jobs:
           bun test packages apps/api/src --reporter=junit --reporter-outfile=reports/unit.xml
       - name: Upload test report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-report-unit
           path: reports/unit.xml
@@ -118,7 +118,7 @@ jobs:
             --reporter=default --reporter=junit --outputFile.junit=../../reports/web.xml
       - name: Upload test report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-report-web
           path: reports/web.xml
@@ -137,7 +137,7 @@ jobs:
       - name: Build all workspaces
         run: bun run build
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-${{ github.sha }}
           path: |
@@ -170,7 +170,7 @@ jobs:
           bun run test:e2e
       - name: Upload test report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-report-e2e
           path: reports/e2e.xml
@@ -178,7 +178,7 @@ jobs:
           retention-days: 14
       - name: Preserve browser diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-diagnostics
           path: |
