@@ -40,7 +40,7 @@
     "start:web": "bun run --cwd apps/web serve"
   },
   "devDependencies": {
-    "@axe-core/playwright": "^4.12.1",
+    "@axe-core/playwright": "^4.13.0",
     "@biomejs/biome": "latest",
     "@playwright/test": "latest",
     "concurrently": "latest",
